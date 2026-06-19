@@ -26,7 +26,7 @@ import json
 import logging
 import uuid
 from collections.abc import Callable, Generator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar, Token
 from pathlib import Path
 from typing import Any, TypeVar
@@ -77,6 +77,12 @@ class Tracer:
         self._active_trace_var: ContextVar[Trace | None] = ContextVar(
             "agent_trace_active_trace", default=None
         )
+        # Transport-patch nesting counter and saved originals are initialised
+        # here so their types are declared once and getattr-with-default is
+        # never needed.
+        self._transport_depth: int = 0
+        self._original_httpx_init: Any = None
+        self._original_requests_get_adapter: Any = None
 
     # ------------------------------------------------------------------
     # Trace lifecycle
@@ -111,32 +117,31 @@ class Tracer:
         # directory name ("run_abc123").  Always generate them independently.
         trace = Trace(trace_id=uuid.uuid4().hex, run_id=effective_run_id)
         trace.metadata["name"] = name
-
-        fixture: Any = None
-        # Set the active trace before entering the try block so the ContextVar
-        # token is always available for cleanup in the finally clause.
         token: Token[Trace | None] = self._active_trace_var.set(trace)
 
+        # Use Fixture as a context manager when recording; nullcontext() when
+        # not, so fixture lifecycle and transport patching are always balanced.
+        fixture_ctx: Any = (
+            Fixture(run_dir / "fixture.db", trace_id=effective_run_id)
+            if record
+            else nullcontext()
+        )
         try:
-            if record:
-                fixture = Fixture(run_dir / "fixture.db", trace_id=effective_run_id)
-                self._install_recording_transport(fixture)
-
-            yield trace
-        except Exception as exc:
-            # Mark any open spans as ERROR
-            for span in trace.spans:
-                if span.end_time is None:
-                    span.record_exception(exc)
-                    span.end(SpanStatus.ERROR)
-            raise
+            with fixture_ctx as fixture:
+                if fixture is not None:
+                    self._install_recording_transport(fixture)
+                try:
+                    yield trace
+                except Exception as exc:
+                    for span in trace.spans:
+                        if span.end_time is None:
+                            span.record_exception(exc)
+                            span.end(SpanStatus.ERROR)
+                    raise
+                finally:
+                    if fixture is not None:
+                        self._uninstall_recording_transport()
         finally:
-            if record:
-                self._uninstall_recording_transport()
-            if fixture is not None:
-                fixture.close()
-
-            # Persist trace JSON
             trace_json_path = run_dir / "trace.json"
             try:
                 trace_json_path.write_text(
@@ -148,7 +153,6 @@ class Tracer:
                     trace_json_path,
                     _write_err,
                 )
-
             self._active_trace_var.reset(token)
 
     # ------------------------------------------------------------------
@@ -210,8 +214,6 @@ class Tracer:
             yield s
         except Exception as exc:
             s.record_exception(exc)
-            # record_exception already sets status=ERROR; call end explicitly
-            # to capture end_time.
             if s.end_time is None:
                 s.end(SpanStatus.ERROR)
             raise
@@ -230,20 +232,11 @@ class Tracer:
         span (it will not appear in any serialised output).
         """
         active = self._active_trace_var.get()
-
         span_id = uuid.uuid4().hex[:16]
         trace_id = active.trace_id if active is not None else uuid.uuid4().hex
-
-        s = Span(
-            name=name,
-            span_id=span_id,
-            trace_id=trace_id,
-            parent_id=parent_id,
-        )
-
+        s = Span(name=name, span_id=span_id, trace_id=trace_id, parent_id=parent_id)
         if active is not None:
             active.add_span(s)
-
         return s
 
     # ------------------------------------------------------------------
@@ -266,72 +259,79 @@ class Tracer:
         don't overwrite the saved original with an already-patched method.
         Only the outermost call saves + installs; inner calls are no-ops.
         """
-        depth = getattr(self, "_transport_depth", 0)
-        self._transport_depth: int = depth + 1
-        if depth > 0:
-            # Already patched by an outer trace — don't double-patch.
+        self._transport_depth += 1
+        if self._transport_depth > 1:
             return
-
-        try:
-            import httpx
-
-            from agent_trace.interceptor.httpx_hook import RecordingTransport
-
-            _orig_init = httpx.Client.__init__
-
-            def _patched_init(client_self: Any, *args: Any, **kwargs: Any) -> None:
-                kwargs.setdefault("transport", RecordingTransport(fixture))
-                _orig_init(client_self, *args, **kwargs)
-
-            self._original_httpx_init: Any = _orig_init
-            setattr(httpx.Client, "__init__", _patched_init)
-        except ImportError:
-            pass
-
-        try:
-            import requests
-
-            from agent_trace.interceptor.requests_patch import RecordingAdapter
-
-            _orig_get_adapter = requests.Session.get_adapter
-
-            def _patched_get_adapter(session_self: Any, url: str, **kwargs: Any) -> Any:
-                return RecordingAdapter(fixture)
-
-            self._original_requests_get_adapter: Any = _orig_get_adapter
-            setattr(requests.Session, "get_adapter", _patched_get_adapter)
-        except ImportError:
-            pass
+        self._patch_httpx(fixture)
+        self._patch_requests(fixture)
 
     def _uninstall_recording_transport(self) -> None:
         """Restore the original ``__init__`` / ``get_adapter`` methods.
 
         Only the outermost trace uninstalls; inner traces decrement the counter.
         """
-        depth = getattr(self, "_transport_depth", 1)
-        self._transport_depth = max(0, depth - 1)
+        self._transport_depth = max(0, self._transport_depth - 1)
         if self._transport_depth > 0:
-            return  # Still nested — leave patch in place.
+            return
+        self._unpatch_httpx()
+        self._unpatch_requests()
 
-        orig_httpx = getattr(self, "_original_httpx_init", None)
-        if orig_httpx is not None:
-            try:
-                import httpx
+    def _patch_httpx(self, fixture: Any) -> None:
+        try:
+            import httpx
 
-                setattr(httpx.Client, "__init__", orig_httpx)
-            except ImportError:
-                pass
-            self._original_httpx_init = None
+            from agent_trace.interceptor.httpx_hook import RecordingTransport
 
-        orig_requests = getattr(self, "_original_requests_get_adapter", None)
-        if orig_requests is not None:
-            try:
-                import requests
+            orig = httpx.Client.__init__
 
-                setattr(requests.Session, "get_adapter", orig_requests)
-            except ImportError:
-                pass
-            self._original_requests_get_adapter = None
+            def _patched(client_self: Any, *args: Any, **kwargs: Any) -> None:
+                kwargs.setdefault("transport", RecordingTransport(fixture))
+                orig(client_self, *args, **kwargs)
+
+            self._original_httpx_init = orig
+            setattr(httpx.Client, "__init__", _patched)
+        except ImportError:
+            pass
+
+    def _patch_requests(self, fixture: Any) -> None:
+        try:
+            import requests
+
+            from agent_trace.interceptor.requests_patch import RecordingAdapter
+
+            orig = requests.Session.get_adapter
+
+            def _patched(session_self: Any, url: str, **kwargs: Any) -> Any:
+                return RecordingAdapter(fixture)
+
+            self._original_requests_get_adapter = orig
+            setattr(requests.Session, "get_adapter", _patched)
+        except ImportError:
+            pass
+
+    def _unpatch_httpx(self) -> None:
+        orig = self._original_httpx_init
+        if orig is None:
+            return
+        try:
+            import httpx
+
+            setattr(httpx.Client, "__init__", orig)
+        except ImportError:
+            pass
+        self._original_httpx_init = None
+
+    def _unpatch_requests(self) -> None:
+        orig = self._original_requests_get_adapter
+        if orig is None:
+            return
+        try:
+            import requests
+
+            setattr(requests.Session, "get_adapter", orig)
+        except ImportError:
+            pass
+        self._original_requests_get_adapter = None
 
 
 # ---------------------------------------------------------------------------
@@ -362,8 +362,6 @@ class ReplayContext:
     def __enter__(self) -> ReplayContext:
         from agent_trace._replay.engine import replay_context
 
-        # replay_context yields the Fixture; we capture it via a one-shot
-        # generator wrapper so we can expose it as self._fixture.
         cm = replay_context(self._fixture_path)
         self._fixture = cm.__enter__()
         self._ctx_manager = cm
