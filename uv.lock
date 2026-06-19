@@ -15,7 +15,6 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
-    { name = "pydantic" },
     { name = "rich" },
 ]
 
@@ -56,7 +55,6 @@ requires-dist = [
     { name = "openai-agents", marker = "extra == 'openai-agents'", specifier = ">=0.0.3" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", marker = "extra == 'otlp'", specifier = ">=1.25" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.7" },
-    { name = "pydantic", specifier = ">=2.7" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "pytest-benchmark", extras = ["histogram"], marker = "extra == 'dev'", specifier = ">=4.0" },
