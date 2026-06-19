@@ -40,7 +40,14 @@ class FileExporter:
     def export(self, trace: Trace) -> Path:
         """Write *trace* to ``output_dir/{run_id}.{format}`` and return the path."""
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        out_path = self.output_dir / f"{trace.run_id}.{self.format}"
+        base = self.output_dir.resolve()
+        out_path = (base / f"{trace.run_id}.{self.format}").resolve()
+        try:
+            out_path.relative_to(base)
+        except ValueError:
+            raise ValueError(
+                f"Invalid run_id {trace.run_id!r}: path traversal detected"
+            ) from None
 
         if self.format == "jsonl":
             lines = [

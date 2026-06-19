@@ -324,3 +324,120 @@ class TestReplayFactory:
         ctx = replay(run_id, trace_dir=tmp_path)
         with pytest.raises(RuntimeError, match="context manager"):
             _ = ctx.fixture
+
+
+# ---------------------------------------------------------------------------
+# Path traversal rejection
+# ---------------------------------------------------------------------------
+
+
+class TestPathTraversal:
+    def test_start_trace_rejects_traversal_in_run_id(self, tmp_path: Path) -> None:
+        t = Tracer(trace_dir=tmp_path)
+        with pytest.raises(ValueError, match="path traversal"):
+            with t.start_trace("test", run_id="../../etc/passwd"):
+                pass
+
+    def test_replay_rejects_traversal_in_run_id(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="path traversal"):
+            with replay("../../etc/passwd", trace_dir=tmp_path):
+                pass
+
+    def test_start_trace_accepts_normal_run_id(self, tmp_path: Path) -> None:
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("test", run_id="safe-run-id") as trace:
+            assert trace.run_id == "safe-run-id"
+
+
+# ---------------------------------------------------------------------------
+# Async instrument() support
+# ---------------------------------------------------------------------------
+
+
+class TestAsyncInstrument:
+    def test_instrument_detects_async_function(self, tmp_path: Path) -> None:
+        import inspect
+
+        t = Tracer(trace_dir=tmp_path)
+
+        @t.instrument(name="async-agent")
+        async def async_agent(x: int) -> int:
+            return x * 2
+
+        assert inspect.iscoroutinefunction(async_agent)
+
+    def test_instrument_async_returns_correct_result(self, tmp_path: Path) -> None:
+        import asyncio
+
+        t = Tracer(trace_dir=tmp_path)
+
+        @t.instrument(name="async-agent")
+        async def async_agent(x: int) -> int:
+            return x * 3
+
+        result = asyncio.run(async_agent(7))
+        assert result == 21
+
+    def test_instrument_async_creates_trace_json(self, tmp_path: Path) -> None:
+        import asyncio
+
+        t = Tracer(trace_dir=tmp_path)
+
+        @t.instrument(record=False, name="async-agent")
+        async def async_agent() -> str:
+            return "done"
+
+        asyncio.run(async_agent())
+
+        run_dirs = list(tmp_path.iterdir())
+        assert len(run_dirs) == 1
+        trace_json = run_dirs[0] / "trace.json"
+        assert trace_json.exists()
+
+    def test_instrument_async_propagates_exception(self, tmp_path: Path) -> None:
+        import asyncio
+
+        t = Tracer(trace_dir=tmp_path)
+
+        @t.instrument(name="failing-agent")
+        async def failing_agent() -> None:
+            raise ValueError("async failure")
+
+        with pytest.raises(ValueError, match="async failure"):
+            asyncio.run(failing_agent())
+
+
+# ---------------------------------------------------------------------------
+# Recording transport nesting counter
+# ---------------------------------------------------------------------------
+
+
+class TestRecordingTransportNesting:
+    def test_nested_record_true_does_not_double_patch(self, tmp_path: Path) -> None:
+        """Two nested start_trace(record=True) must not double-patch httpx."""
+        import httpx
+
+        t = Tracer(trace_dir=tmp_path)
+        original_init = httpx.Client.__init__
+
+        with t.start_trace("outer", record=True, run_id="outer"):
+            patched_init = httpx.Client.__init__
+            assert patched_init is not original_init
+
+            with t.start_trace("inner", record=True, run_id="inner"):
+                # The patch should NOT have changed (no double-wrap)
+                assert httpx.Client.__init__ is patched_init
+
+            # After inner exits, outer's patch should still be in place
+            assert httpx.Client.__init__ is patched_init
+
+        # After outer exits, original is restored
+        assert httpx.Client.__init__ is original_init
+
+    def test_depth_returns_to_zero_after_nested_exit(self, tmp_path: Path) -> None:
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("outer", record=True, run_id="outer-d"):
+            with t.start_trace("inner", record=True, run_id="inner-d"):
+                assert t._transport_depth == 2
+            assert t._transport_depth == 1
+        assert t._transport_depth == 0
