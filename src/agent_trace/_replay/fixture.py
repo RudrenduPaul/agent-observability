@@ -42,6 +42,10 @@ CREATE TABLE IF NOT EXISTS http_exchanges (
     recorded_at      REAL NOT NULL,
     sequence_num     INTEGER NOT NULL
 );
+-- Composite index so next_exchange() lookups use the PK order efficiently
+-- instead of scanning and sorting the full table on every call.
+CREATE INDEX IF NOT EXISTS idx_exchanges_method_url_seq
+    ON http_exchanges (method, url, sequence_num);
 CREATE TABLE IF NOT EXISTS metadata (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -70,7 +74,10 @@ class Fixture:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
-        # Per-(method:url) read offset for next_exchange().
+        # Per-(method:url) last-served row id for next_exchange().
+        # Stores the `id` of the most recently served row (0 = none yet).
+        # Using id > last_id avoids O(n^2) OFFSET scans — each lookup is
+        # O(log n) via the composite index on (method, url, sequence_num).
         self._read_cursor: dict[str, int] = {}
 
     # ------------------------------------------------------------------
@@ -132,41 +139,43 @@ class Fixture:
         """Return the next recorded exchange for *(method, url)* or None.
 
         Exchanges are served in the order they were recorded (ascending
-        sequence_num).  Each (method:url) key maintains its own offset so
-        that ``GET /v1/chat/completions`` called three times replays as
-        response-1, response-2, response-3 in order.
+        sequence_num).  Each (method:url) key maintains its own row-id cursor
+        so that the same URL called multiple times replays responses in order.
+
+        Uses ``id > last_served_id`` instead of OFFSET so each call is O(log n)
+        via the composite index — not O(n) like OFFSET would be.
         """
         key = f"{method.upper()}:{url}"
         with self._lock:
-            offset = self._read_cursor.get(key, 0)
+            last_id = self._read_cursor.get(key, 0)
             cur = self._conn.execute(
                 """\
-                SELECT url, method, request_headers, request_body,
+                SELECT id, url, method, request_headers, request_body,
                        response_status, response_headers, response_body,
                        recorded_at, sequence_num
                 FROM http_exchanges
-                WHERE method = ? AND url = ?
+                WHERE method = ? AND url = ? AND id > ?
                 ORDER BY sequence_num ASC
-                LIMIT 1 OFFSET ?
+                LIMIT 1
                 """,
-                (method.upper(), url, offset),
+                (method.upper(), url, last_id),
             )
             row = cur.fetchone()
             if row is None:
                 return None
 
-            self._read_cursor[key] = offset + 1
+            self._read_cursor[key] = int(row[0])
 
             return {
-                "url": row[0],
-                "method": row[1],
-                "request_headers": json.loads(row[2]),
-                "request_body": row[3],
-                "response_status": row[4],
-                "response_headers": json.loads(row[5]),
-                "response_body": row[6],
-                "recorded_at": row[7],
-                "sequence_num": row[8],
+                "url": row[1],
+                "method": row[2],
+                "request_headers": json.loads(row[3]),
+                "request_body": row[4],
+                "response_status": row[5],
+                "response_headers": json.loads(row[6]),
+                "response_body": row[7],
+                "recorded_at": row[8],
+                "sequence_num": row[9],
             }
 
     # ------------------------------------------------------------------

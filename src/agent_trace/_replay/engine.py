@@ -27,9 +27,9 @@ from typing import Any
 
 import httpx
 
+from agent_trace._replay.fixture import Fixture
 from agent_trace.core.clock import FixtureClock, restore_clock, set_clock
 from agent_trace.interceptor.httpx_hook import ReplayTransport
-from agent_trace.replay.fixture import Fixture
 
 __all__ = ["ReplayEngine", "replay_context"]
 

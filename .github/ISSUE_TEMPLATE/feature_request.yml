@@ -1,0 +1,33 @@
+name: Feature Request
+description: Suggest a new feature or improvement
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the pain point. Link to a GitHub Discussion if one exists.
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What would the API look like? Code example preferred.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: integration
+    attributes:
+      label: Related integration (if any)
+      options:
+        - Not integration-specific
+        - LangGraph
+        - OpenAI Agents SDK
+        - CrewAI
+        - AutoGen
+        - Other
+    validations:
+      required: false

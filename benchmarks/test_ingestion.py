@@ -18,8 +18,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from agent_trace._replay.fixture import Fixture
 from agent_trace.core.span import Span
-from agent_trace.replay.fixture import Fixture
 
 # ---------------------------------------------------------------------------
 # Helpers

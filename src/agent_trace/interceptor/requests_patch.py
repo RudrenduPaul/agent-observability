@@ -23,7 +23,9 @@ from requests import PreparedRequest, Response
 from requests.adapters import HTTPAdapter
 
 if TYPE_CHECKING:
-    from agent_trace.replay.fixture import Fixture
+    from agent_trace._replay.fixture import Fixture
+
+from agent_trace.core.exceptions import NetworkGuardError
 
 __all__ = [
     "NetworkGuardError",
@@ -32,15 +34,6 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
-
-
-class NetworkGuardError(RuntimeError):
-    """Raised when a live network call is made during guarded replay.
-
-    Mirrors the httpx_hook version.  Both share the same environment variable
-    (AGENT_TRACE_NETWORK_GUARD) so a single ``export`` enables the guard for
-    all HTTP clients simultaneously.
-    """
 
 
 def _guard_active() -> bool:

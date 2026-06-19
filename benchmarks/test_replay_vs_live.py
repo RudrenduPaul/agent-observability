@@ -23,8 +23,8 @@ from typing import Any
 
 import httpx
 
+from agent_trace._replay.fixture import Fixture
 from agent_trace.interceptor.httpx_hook import ReplayTransport
-from agent_trace.replay.fixture import Fixture
 
 # ---------------------------------------------------------------------------
 # Realistic LLM latency constants (p50 values from public benchmarks)

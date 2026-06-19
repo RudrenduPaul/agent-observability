@@ -11,35 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_trace import SpanStatus, Trace, Tracer, tracer
-
-
-def replay(run_id_or_path, trace_dir=None):  # type: ignore[misc]
-    """Local wrapper for agent_trace.replay().
-
-    Python's import system overwrites the ``agent_trace.replay`` name with the
-    ``agent_trace.replay`` subpackage the first time the subpackage is imported
-    (which happens when Tracer.start_trace(record=True) first runs).  This
-    local function implements the same logic so tests remain callable regardless
-    of import order.
-    """
-    import pathlib
-
-    from agent_trace import ReplayContext
-
-    p = pathlib.Path(run_id_or_path)
-    if not p.is_absolute():
-        base = trace_dir or (pathlib.Path.home() / ".agent-trace" / "runs")
-        p = base / p
-    fixture_path = p / "fixture.db"
-    if not fixture_path.exists():
-        raise FileNotFoundError(
-            f"No fixture.db found at {fixture_path}. "
-            "Did you record this run with record=True?"
-        )
-    return ReplayContext(fixture_path)
-
-
+from agent_trace import SpanStatus, Trace, Tracer, replay, tracer
 from agent_trace.core.clock import FixtureClock, WallClock
 
 # ---------------------------------------------------------------------------
@@ -292,7 +264,7 @@ class TestReplayFactory:
             replay("nonexistent-run-id", trace_dir=tmp_path)
 
     def test_replay_context_manager_works(self, tmp_path: Path) -> None:
-        from agent_trace.replay.fixture import Fixture
+        from agent_trace._replay.fixture import Fixture
 
         # Build a fixture manually
         run_id = "test-run-001"
@@ -307,7 +279,7 @@ class TestReplayFactory:
             assert active_ctx is ctx
 
     def test_replay_context_get_metadata(self, tmp_path: Path) -> None:
-        from agent_trace.replay.fixture import Fixture
+        from agent_trace._replay.fixture import Fixture
 
         run_id = "meta-run-001"
         run_dir = tmp_path / run_id
@@ -320,7 +292,7 @@ class TestReplayFactory:
             assert ctx.get_metadata("agent_version") == "v2"
 
     def test_replay_context_exit_restores_clock(self, tmp_path: Path) -> None:
-        from agent_trace.replay.fixture import Fixture
+        from agent_trace._replay.fixture import Fixture
 
         run_id = "clock-run-001"
         run_dir = tmp_path / run_id
@@ -341,7 +313,7 @@ class TestReplayFactory:
     def test_replay_context_fixture_raises_when_not_entered(
         self, tmp_path: Path
     ) -> None:
-        from agent_trace.replay.fixture import Fixture
+        from agent_trace._replay.fixture import Fixture
 
         run_id = "no-enter-run"
         run_dir = tmp_path / run_id

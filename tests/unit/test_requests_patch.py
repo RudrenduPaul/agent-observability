@@ -14,12 +14,12 @@ import pytest
 from requests import PreparedRequest, Response
 from requests.adapters import HTTPAdapter
 
+from agent_trace._replay.fixture import Fixture
 from agent_trace.interceptor.requests_patch import (
     NetworkGuardError,
     RecordingAdapter,
     ReplayAdapter,
 )
-from agent_trace.replay.fixture import Fixture
 
 # ---------------------------------------------------------------------------
 # Helpers

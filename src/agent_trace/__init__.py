@@ -22,23 +22,25 @@ from __future__ import annotations
 
 import functools
 import json
-import threading
 import uuid
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
+from contextvars import ContextVar, Token
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
 # Re-export canonical model types from their authoritative modules
+from agent_trace.core.exceptions import NetworkGuardError
 from agent_trace.core.span import Span, SpanStatus
 from agent_trace.core.trace import Trace
 
 if TYPE_CHECKING:
-    from agent_trace.replay.fixture import Fixture
+    from agent_trace._replay.fixture import Fixture
 
 __version__ = "0.1.0"
 
 __all__ = [
+    "NetworkGuardError",
     "ReplayContext",
     "Span",
     "SpanStatus",
@@ -60,13 +62,18 @@ class Tracer:
     """Central orchestrator for trace collection.
 
     Create one global instance (``tracer = Tracer()``) and use it across your
-    application.  All methods are thread-safe.
+    application.  All methods are thread-safe and async-safe: each coroutine
+    or thread has its own active trace via ContextVar.
     """
 
     def __init__(self, trace_dir: Path | None = None) -> None:
         self._trace_dir: Path = trace_dir or (Path.home() / ".agent-trace" / "runs")
-        self._active_trace: Trace | None = None
-        self._lock: threading.Lock = threading.Lock()
+        # ContextVar gives each async task / thread its own active trace.
+        # This replaces the previous threading.Lock + single attribute approach
+        # which was not safe for concurrent asyncio agents.
+        self._active_trace_var: ContextVar[Trace | None] = ContextVar(
+            "agent_trace_active_trace", default=None
+        )
 
     # ------------------------------------------------------------------
     # Trace lifecycle
@@ -82,7 +89,7 @@ class Tracer:
         """Start a trace, yield it, then save trace.json on exit.
 
         Nested calls are supported — the inner trace saves/restores the outer
-        one in ``_active_trace``.  If *record* is True, all outbound HTTP
+        one in ``_active_trace_var``.  If *record* is True, all outbound HTTP
         calls during the context are captured into a SQLite fixture at
         ``run_dir/fixture.db``.
         """
@@ -95,15 +102,13 @@ class Tracer:
 
         fixture: Any = None
         if record:
-            from agent_trace.replay.fixture import Fixture as _Fixture
+            from agent_trace._replay.fixture import Fixture as _Fixture
 
             fixture = _Fixture(run_dir / "fixture.db", trace_id=effective_run_id)
             self._install_recording_transport(fixture)
 
-        # Save/restore nesting
-        with self._lock:
-            previous_trace = self._active_trace
-            self._active_trace = trace
+        # ContextVar.set() returns a Token that restores the previous value on reset().
+        token: Token[Trace | None] = self._active_trace_var.set(trace)
 
         try:
             yield trace
@@ -129,8 +134,7 @@ class Tracer:
             except OSError:
                 pass
 
-            with self._lock:
-                self._active_trace = previous_trace
+            self._active_trace_var.reset(token)
 
     # ------------------------------------------------------------------
     # Decorator
@@ -201,8 +205,7 @@ class Tracer:
         If there is no active trace this is a no-op that returns a detached
         span (it will not appear in any serialised output).
         """
-        with self._lock:
-            active = self._active_trace
+        active = self._active_trace_var.get()
 
         span_id = uuid.uuid4().hex[:16]
         trace_id = active.trace_id if active is not None else uuid.uuid4().hex
@@ -226,8 +229,7 @@ class Tracer:
     @property
     def active_trace(self) -> Trace | None:
         """The currently active :class:`Trace`, or None outside a trace context."""
-        with self._lock:
-            return self._active_trace
+        return self._active_trace_var.get()
 
     # ------------------------------------------------------------------
     # Recording transport patching
@@ -304,7 +306,7 @@ tracer: Tracer = Tracer()
 class ReplayContext:
     """Context manager returned by :func:`replay`.
 
-    Delegates to :func:`agent_trace.replay.engine.replay_context` so that the
+    Delegates to :func:`agent_trace._replay.engine.replay_context` so that the
     :class:`~agent_trace.core.clock.FixtureClock` is installed and network
     calls are served from the fixture without touching real endpoints.
     """
@@ -315,7 +317,7 @@ class ReplayContext:
         self._ctx_manager: Any = None
 
     def __enter__(self) -> ReplayContext:
-        from agent_trace.replay.engine import replay_context
+        from agent_trace._replay.engine import replay_context
 
         # replay_context yields the Fixture; we capture it via a one-shot
         # generator wrapper so we can expose it as self._fixture.
@@ -337,7 +339,7 @@ class ReplayContext:
 
     @property
     def fixture(self) -> Fixture:
-        """The underlying :class:`~agent_trace.replay.fixture.Fixture`."""
+        """The underlying :class:`~agent_trace._replay.fixture.Fixture`."""
         if self._fixture is None:
             raise RuntimeError("ReplayContext must be used as a context manager.")
         return self._fixture
