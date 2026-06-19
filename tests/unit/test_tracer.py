@@ -337,6 +337,30 @@ class TestReplayFactory:
         with pytest.raises(RuntimeError, match="context manager"):
             _ = ctx.fixture
 
+    def test_replay_accepts_direct_fixture_file_path(self, tmp_path: Path) -> None:
+        """replay() must accept a path pointing directly to fixture.db, not just dirs."""
+        from agent_trace._replay.fixture import Fixture
+
+        fixture_path = tmp_path / "fixture.db"
+        with Fixture(fixture_path) as f:
+            f.set_metadata("source", "direct-file")
+
+        with replay(fixture_path) as ctx:
+            assert ctx.get_metadata("source") == "direct-file"
+
+    def test_replay_accepts_direct_fixture_file_path_string(
+        self, tmp_path: Path
+    ) -> None:
+        """replay() must accept a str path pointing directly to fixture.db."""
+        from agent_trace._replay.fixture import Fixture
+
+        fixture_path = tmp_path / "fixture.db"
+        with Fixture(fixture_path):
+            pass
+
+        with replay(str(fixture_path)) as ctx:
+            assert ctx is not None
+
 
 # ---------------------------------------------------------------------------
 # Path traversal rejection

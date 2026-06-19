@@ -25,6 +25,5 @@ repos:
         args: [--strict]
         additional_dependencies:
           - httpx>=0.27
-          - pydantic>=2.7
           - rich>=13.0
           - types-requests>=2.31

@@ -403,6 +403,7 @@ def replay(
 
     *run_id_or_path* may be either:
 
+    - A path to a ``fixture.db`` file directly (e.g. ``Path("fixtures/fixture.db")``).
     - A run directory path (absolute or relative) containing ``fixture.db``.
     - A run-ID string like ``run_abc123`` that is resolved relative to
       *trace_dir* (default: ``~/.agent-trace/runs``).
@@ -411,6 +412,9 @@ def replay(
 
         with replay("run_abc123") as ctx:
             value = ctx.get_metadata("input")
+
+        with replay(Path("fixtures/fixture.db")) as ctx:
+            result = my_agent()
     """
     p = Path(run_id_or_path)
     if not p.is_absolute():
@@ -425,7 +429,7 @@ def replay(
     else:
         p = p.resolve()
 
-    fixture_path = p / "fixture.db"
+    fixture_path = p if p.suffix == ".db" else p / "fixture.db"
     if not fixture_path.exists():
         raise FileNotFoundError(
             f"No fixture.db found at {fixture_path}. "
