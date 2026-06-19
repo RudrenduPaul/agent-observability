@@ -239,7 +239,7 @@ def cmd_replay(args: argparse.Namespace) -> None:
     # Enter replay mode
     from agent_trace import replay as _replay
 
-    with _replay(run_id) as ctx:
+    with _replay(run_id, trace_dir=_trace_dir()) as ctx:
         print(f"Replay active — {ctx.fixture.exchange_count()} exchange(s) available")
         print("(No HTTP requests were made — fixture is ready for agent code)")
         print()
