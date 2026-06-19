@@ -232,7 +232,7 @@ def cmd_replay(run_id: str) -> None:
     # Load the original question from the fixture metadata if available,
     # otherwise use a placeholder — the HTTP responses are what matter.
     try:
-        from agent_trace.replay.fixture import Fixture
+        from agent_trace import Fixture
         fix_path = Path.home() / ".agent-trace" / "runs" / run_id / "fixture.db"
         with Fixture(fix_path) as f:
             question = f.get_metadata("question") or "What is agent-trace?"

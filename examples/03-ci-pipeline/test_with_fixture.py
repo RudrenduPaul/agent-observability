@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from agent_trace import replay
-from agent_trace.replay.fixture import Fixture
+from agent_trace import Fixture
 
 # Ensure the example module in this directory is importable as `example`.
 sys.path.insert(0, str(Path(__file__).parent))

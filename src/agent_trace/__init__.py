@@ -28,19 +28,18 @@ from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import Any, TypeVar
 
 # Re-export canonical model types from their authoritative modules
+from agent_trace._replay.fixture import Fixture
 from agent_trace.core.exceptions import NetworkGuardError
 from agent_trace.core.span import Span, SpanStatus
 from agent_trace.core.trace import Trace
 
-if TYPE_CHECKING:
-    from agent_trace._replay.fixture import Fixture
-
 __version__ = "0.1.0"
 
 __all__ = [
+    "Fixture",
     "NetworkGuardError",
     "ReplayContext",
     "Span",
@@ -109,16 +108,15 @@ class Tracer:
         trace.metadata["name"] = name
 
         fixture: Any = None
-        if record:
-            from agent_trace._replay.fixture import Fixture as _Fixture
-
-            fixture = _Fixture(run_dir / "fixture.db", trace_id=effective_run_id)
-            self._install_recording_transport(fixture)
-
-        # ContextVar.set() returns a Token that restores the previous value on reset().
+        # Set the active trace before entering the try block so the ContextVar
+        # token is always available for cleanup in the finally clause.
         token: Token[Trace | None] = self._active_trace_var.set(trace)
 
         try:
+            if record:
+                fixture = Fixture(run_dir / "fixture.db", trace_id=effective_run_id)
+                self._install_recording_transport(fixture)
+
             yield trace
         except Exception as exc:
             # Mark any open spans as ERROR

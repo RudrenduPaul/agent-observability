@@ -78,6 +78,7 @@ uv run pytest benchmarks/ \
 uv run pytest benchmarks/ --benchmark-only --benchmark-compare
 ```
 
+The baseline values used in the main README live in [`benchmarks/results/baseline.json`](results/baseline.json).
 The three key numbers from `baseline.json`:
 | Metric | Baseline value | How to rerun |
 |--------|---------------|--------------|
