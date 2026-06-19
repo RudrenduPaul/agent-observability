@@ -135,3 +135,23 @@ release.
 Anti-sycophancy check: Flagged in engineering audit. The original ci.yml template in
 the planning doc also used @master — the error was in the source spec, not just the
 implementation.
+
+---
+
+## 2026-06-19 — trace_id and run_id must be independent UUIDs
+
+Pattern: Tracer.start_trace() set both trace_id and run_id to the same value
+("run_abc123def456"). Since "run_..." is not valid hex, the OTLP exporter fell
+through to hash(span.trace_id) & ((1<<128)-1), producing a 64-bit value where
+OTLP expects 128 bits of randomness. All OTLP trace IDs had the upper 64 bits
+zeroed, making correlated traces appear non-random in Jaeger/Grafana Tempo.
+
+Rule: trace_id = uuid.uuid4().hex (32 hex chars = 128 bits, OTLP-valid). run_id
+is the human-readable directory label ("run_abc123"). Always generate them
+independently in start_trace(). Never conflate trace identity with run identity.
+The Trace dataclass already had separate fields; the bug was in the instantiation.
+
+Anti-sycophancy check: Not caught in passes 1 or 2. Found in pass 3 by auditing
+the OTLP exporter's _is_hex() fallback path and tracing back to where trace_id
+is set. A regression test (test_start_trace_trace_id_is_hex_and_differs_from_run_id)
+now enforces this invariant.
