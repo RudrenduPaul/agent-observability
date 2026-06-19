@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# uv
+.uv/
+
+# Testing and coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.sarif
+
+# Benchmarks output
+.benchmarks/
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets and local config
+.env
+.env.*
+*.pem
+*.key
+
+# agent-trace runtime data
+~/.agent-trace/
+
+# Docs build
+docs/_build/
+docs/site/
+
+# Pre-commit
+.pre-commit-config.yaml.bak

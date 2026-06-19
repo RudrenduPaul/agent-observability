@@ -1,0 +1,277 @@
+"""
+Unit tests for agent_trace.interceptor.httpx_hook.
+
+RecordingTransport / ReplayTransport / NetworkGuardError.
+
+AGENT_TRACE_NETWORK_GUARD=1 is set by pytest env (pyproject.toml), so
+ReplayTransport will raise NetworkGuardError on any unmatched request.
+"""
+
+from __future__ import annotations
+
+import json
+
+import httpx
+import pytest
+import respx
+
+from agent_trace.interceptor.httpx_hook import (
+    NetworkGuardError,
+    RecordingTransport,
+    ReplayTransport,
+)
+from agent_trace.replay.fixture import Fixture
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_fixture(tmp_path, **kwargs) -> Fixture:
+    return Fixture(tmp_path / "test.db", trace_id="test-trace")
+
+
+def _record_one(
+    fixture: Fixture, url: str, method: str, body: str, status: int = 200
+) -> None:
+    fixture.record_exchange(
+        url=url,
+        method=method,
+        request_headers={"content-type": "application/json"},
+        request_body="{}",
+        response_status=status,
+        response_headers={"content-type": "application/json"},
+        response_body=body,
+    )
+
+
+# ---------------------------------------------------------------------------
+# NetworkGuardError
+# ---------------------------------------------------------------------------
+
+
+class TestNetworkGuardError:
+    def test_is_subclass_of_runtime_error(self) -> None:
+        assert issubclass(NetworkGuardError, RuntimeError)
+
+    def test_can_be_raised_and_caught(self) -> None:
+        with pytest.raises(NetworkGuardError):
+            raise NetworkGuardError("guard triggered")
+
+    def test_can_be_caught_as_runtime_error(self) -> None:
+        with pytest.raises(RuntimeError):
+            raise NetworkGuardError("also a RuntimeError")
+
+
+# ---------------------------------------------------------------------------
+# RecordingTransport
+# ---------------------------------------------------------------------------
+
+
+class TestRecordingTransport:
+    @respx.mock
+    def test_records_get_request(self, tmp_path) -> None:
+        url = "https://api.example.com/get-test"
+        respx.get(url).mock(return_value=httpx.Response(200, json={"status": "ok"}))
+
+        fixture = _make_fixture(tmp_path)
+        inner = httpx.HTTPTransport()
+        transport = RecordingTransport(
+            fixture, inner=httpx.MockTransport(respx.mock.handler)
+        )
+
+        client = httpx.Client(
+            transport=RecordingTransport(
+                fixture,
+                inner=httpx.MockTransport(respx.mock.handler),
+            )
+        )
+        with client:
+            response = client.get(url)
+
+        assert fixture.exchange_count() == 1
+        exchanges = fixture.all_exchanges()
+        assert exchanges[0]["url"] == url
+        assert exchanges[0]["method"] == "GET"
+        fixture.close()
+
+    @respx.mock
+    def test_records_post_request_with_json_body(self, tmp_path) -> None:
+        url = "https://api.openai.com/v1/chat/completions"
+        resp_json = {"choices": [{"message": {"content": "hello"}}]}
+        respx.post(url).mock(return_value=httpx.Response(200, json=resp_json))
+
+        fixture = _make_fixture(tmp_path)
+        client = httpx.Client(
+            transport=RecordingTransport(
+                fixture,
+                inner=httpx.MockTransport(respx.mock.handler),
+            )
+        )
+        with client:
+            client.post(url, json={"model": "gpt-4o", "messages": []})
+
+        exchanges = fixture.all_exchanges()
+        assert len(exchanges) == 1
+        assert exchanges[0]["method"] == "POST"
+        assert "gpt-4o" in exchanges[0]["request_body"]
+        fixture.close()
+
+    @respx.mock
+    def test_preserves_response_status_code(self, tmp_path) -> None:
+        url = "https://api.example.com/not-found"
+        respx.get(url).mock(
+            return_value=httpx.Response(404, json={"error": "not found"})
+        )
+
+        fixture = _make_fixture(tmp_path)
+        client = httpx.Client(
+            transport=RecordingTransport(
+                fixture,
+                inner=httpx.MockTransport(respx.mock.handler),
+            )
+        )
+        with client:
+            response = client.get(url)
+
+        assert fixture.all_exchanges()[0]["response_status"] == 404
+        assert response.status_code == 404
+        fixture.close()
+
+    @respx.mock
+    def test_preserves_response_body(self, tmp_path) -> None:
+        url = "https://api.example.com/body-test"
+        resp_body = {"result": "important-data", "count": 42}
+        respx.get(url).mock(return_value=httpx.Response(200, json=resp_body))
+
+        fixture = _make_fixture(tmp_path)
+        client = httpx.Client(
+            transport=RecordingTransport(
+                fixture,
+                inner=httpx.MockTransport(respx.mock.handler),
+            )
+        )
+        with client:
+            response = client.get(url)
+
+        recorded_body = fixture.all_exchanges()[0]["response_body"]
+        recorded_data = json.loads(recorded_body)
+        assert recorded_data["result"] == "important-data"
+        assert recorded_data["count"] == 42
+        fixture.close()
+
+    @respx.mock
+    def test_caller_receives_full_response(self, tmp_path) -> None:
+        url = "https://api.example.com/resp-test"
+        respx.get(url).mock(return_value=httpx.Response(201, json={"created": True}))
+
+        fixture = _make_fixture(tmp_path)
+        client = httpx.Client(
+            transport=RecordingTransport(
+                fixture,
+                inner=httpx.MockTransport(respx.mock.handler),
+            )
+        )
+        with client:
+            response = client.get(url)
+
+        assert response.status_code == 201
+        assert response.json()["created"] is True
+        fixture.close()
+
+
+# ---------------------------------------------------------------------------
+# ReplayTransport
+# ---------------------------------------------------------------------------
+
+
+class TestReplayTransport:
+    def test_serves_recorded_exchange(self, tmp_path) -> None:
+        fixture = _make_fixture(tmp_path)
+        _record_one(
+            fixture, "https://api.example.com/replay", "GET", '{"replayed": true}'
+        )
+
+        transport = ReplayTransport(fixture)
+        request = httpx.Request("GET", "https://api.example.com/replay")
+        response = transport.handle_request(request)
+
+        assert response.status_code == 200
+        assert response.json() == {"replayed": True}
+        fixture.close()
+
+    def test_serves_correct_status_code(self, tmp_path) -> None:
+        fixture = _make_fixture(tmp_path)
+        _record_one(
+            fixture, "https://api.example.com/created", "POST", '{"id": 1}', status=201
+        )
+
+        transport = ReplayTransport(fixture)
+        request = httpx.Request("POST", "https://api.example.com/created")
+        response = transport.handle_request(request)
+
+        assert response.status_code == 201
+        fixture.close()
+
+    def test_raises_network_guard_error_when_exchange_not_found(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """ReplayTransport raises NetworkGuardError when AGENT_TRACE_NETWORK_GUARD=1."""
+        monkeypatch.setenv("AGENT_TRACE_NETWORK_GUARD", "1")
+
+        fixture = _make_fixture(tmp_path)
+        transport = ReplayTransport(fixture)
+        request = httpx.Request("GET", "https://never-recorded.example.com/")
+
+        with pytest.raises(NetworkGuardError):
+            transport.handle_request(request)
+
+        fixture.close()
+
+    def test_close_is_noop(self, tmp_path) -> None:
+        fixture = _make_fixture(tmp_path)
+        transport = ReplayTransport(fixture)
+        # Should not raise
+        transport.close()
+        fixture.close()
+
+    def test_serves_exchanges_in_order_for_same_url(self, tmp_path) -> None:
+        url = "https://api.example.com/seq"
+        fixture = _make_fixture(tmp_path)
+        for i in range(3):
+            _record_one(fixture, url, "POST", f'{{"step": {i}}}')
+
+        transport = ReplayTransport(fixture)
+        for i in range(3):
+            request = httpx.Request("POST", url)
+            response = transport.handle_request(request)
+            assert response.json()["step"] == i
+
+        fixture.close()
+
+    def test_guard_off_missing_exchange_falls_back(self, tmp_path, monkeypatch) -> None:
+        """With guard=0 and no fixture entry, ReplayTransport warns and falls back.
+
+        We use respx to intercept the real network call triggered by the fallback.
+        """
+        monkeypatch.setenv("AGENT_TRACE_NETWORK_GUARD", "0")
+
+        url = "https://api.example.com/fallback-test"
+        fixture = _make_fixture(tmp_path)
+        transport = ReplayTransport(fixture)
+
+        with respx.mock:
+            respx.get(url).mock(
+                return_value=httpx.Response(200, json={"fallback": True})
+            )
+            request = httpx.Request("GET", url)
+            import warnings
+
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                response = transport.handle_request(request)
+                # A warning should have been issued
+                assert len(w) >= 1
+
+        assert response.status_code == 200
+        fixture.close()
