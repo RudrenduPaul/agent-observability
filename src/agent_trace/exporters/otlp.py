@@ -13,6 +13,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from agent_trace.core.span import SpanStatus
+
 if TYPE_CHECKING:
     from agent_trace import Span, Trace
 
@@ -55,35 +57,41 @@ class OTLPExporter:
     def export(self, trace: Trace) -> None:
         """Send all spans in *trace* to the configured OTLP endpoint."""
         try:
+            from opentelemetry import context as otel_context
+            from opentelemetry import trace as otel_trace
             from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
                 OTLPSpanExporter,
             )
             from opentelemetry.sdk.resources import Resource
             from opentelemetry.sdk.trace import TracerProvider
             from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+            from opentelemetry.trace import (
+                NonRecordingSpan,
+                SpanContext,
+                StatusCode,
+                TraceFlags,
+            )
         except ImportError as exc:
             raise ImportError(_OTLP_INSTALL_HINT) from exc
+
+        # Build the status map once per export call rather than per span.
+        status_map: dict[SpanStatus, Any] = {
+            SpanStatus.OK: StatusCode.OK,
+            SpanStatus.ERROR: StatusCode.ERROR,
+            SpanStatus.UNSET: StatusCode.UNSET,
+        }
 
         service_name = str(trace.metadata.get("name", "agent-trace"))
         exporter = OTLPSpanExporter(endpoint=self.endpoint)
         resource = Resource.create({"service.name": service_name})
         provider = TracerProvider(resource=resource)
         provider.add_span_processor(SimpleSpanProcessor(exporter))
-
         otel_tracer = provider.get_tracer("agent-trace")
         failed = 0
 
         for span in trace.spans:
-            otlp_data = self._span_to_otlp(span)
+            otlp_data = self._span_to_otlp(span, status_map)
             try:
-                from opentelemetry import context as otel_context
-                from opentelemetry import trace as otel_trace
-                from opentelemetry.trace import (
-                    NonRecordingSpan,
-                    SpanContext,
-                    TraceFlags,
-                )
-
                 trace_id_int = (
                     int(span.trace_id, 16)
                     if _is_hex(span.trace_id)
@@ -143,7 +151,9 @@ class OTLPExporter:
 
         provider.shutdown()
 
-    def _span_to_otlp(self, span: Span) -> dict[str, Any]:
+    def _span_to_otlp(
+        self, span: Span, status_map: dict[SpanStatus, Any]
+    ) -> dict[str, Any]:
         """Convert a :class:`~agent_trace.Span` to an OTLP-compatible dict.
 
         The returned dict contains::
@@ -159,23 +169,9 @@ class OTLPExporter:
                 "attributes": list[KeyValue],
             }
         """
-        try:
-            from opentelemetry.trace import StatusCode
-        except ImportError as exc:
-            raise ImportError(_OTLP_INSTALL_HINT) from exc
-
-        from agent_trace import SpanStatus
-
-        _status_map = {
-            SpanStatus.OK: StatusCode.OK,
-            SpanStatus.ERROR: StatusCode.ERROR,
-            SpanStatus.UNSET: StatusCode.UNSET,
-        }
-
         end_ns: int | None = (
             int(span.end_time * _NS_PER_SEC) if span.end_time is not None else None
         )
-
         return {
             "name": span.name,
             "trace_id": span.trace_id,
@@ -183,7 +179,7 @@ class OTLPExporter:
             "parent_span_id": span.parent_id,
             "start_time_unix_nano": int(span.start_time * _NS_PER_SEC),
             "end_time_unix_nano": end_ns,
-            "status_code": _status_map.get(span.status, StatusCode.UNSET),
+            "status_code": status_map.get(span.status, status_map[SpanStatus.UNSET]),
             "attributes": [{"key": k, "value": v} for k, v in span.attributes.items()],
         }
 
