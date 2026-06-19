@@ -237,7 +237,13 @@ async def instrument_runner(
                     _enrich_step_span(step_span, step)
                     step_span.end(SpanStatus.OK)
                 except Exception:
-                    step_span.end(SpanStatus.OK)
+                    logger.debug(
+                        "agent-trace: failed to end step span %r",
+                        step_span.name,
+                        exc_info=True,
+                    )
+                    if step_span.end_time is None:
+                        step_span.end(SpanStatus.OK)
                 step_index += 1
                 # Track the last step as the result
                 result = step
