@@ -244,3 +244,21 @@ dependency lists that static import analysis cannot see.
 Anti-sycophancy check: Caught in bug audit pass 8 by reading .pre-commit-config.yaml
 for the first time. Removing a package from one config file and missing it in a sibling
 config file is the canonical "fix in one place, break in another" class of error.
+
+---
+
+## 2026-06-19 — uv.lock must be committed alongside pyproject.toml changes
+
+Pattern: When pydantic was removed from pyproject.toml in commit 1bf3ec0, uv.lock
+was updated locally (pydantic entries removed) but never staged or committed. The
+lockfile and manifest diverged silently in git. Anyone running `uv sync` from a
+fresh clone would install pydantic despite it not being a declared dependency.
+
+Rule: Any change to pyproject.toml that adds or removes a dependency must include
+a `uv lock` run and the resulting uv.lock in the same commit. Add `uv lock --check`
+to CI so that lockfile/manifest divergence is caught automatically on every PR.
+
+Anti-sycophancy check: Caught in bug audit pass 12 by inspecting `git diff --stat HEAD`.
+The divergence was invisible to import scanning and ruff/mypy — only a git diff check
+caught it. Six prior passes auditing pyproject.toml and .pre-commit-config.yaml both
+missed uv.lock because it was not read during those passes.
