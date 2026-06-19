@@ -31,7 +31,7 @@ jobs:
 
       - name: Generate SBOM
         run: |
-          pip install cyclonedx-bom
+          pip install cyclonedx-bom==5.1.1
           cyclonedx-py environment -o sbom.json --format json
 
       - name: Sign release artifacts

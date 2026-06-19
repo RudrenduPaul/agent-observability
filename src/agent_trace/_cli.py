@@ -36,7 +36,15 @@ def _trace_dir() -> Path:
 
 
 def _run_dir(run_id: str) -> Path:
-    return _trace_dir() / run_id
+    base = _trace_dir().resolve()
+    candidate = (base / run_id).resolve()
+    try:
+        candidate.relative_to(base)
+    except ValueError:
+        raise ValueError(
+            f"Invalid run_id {run_id!r}: path traversal detected"
+        ) from None
+    return candidate
 
 
 def _fixture_path(run_id: str) -> Path:

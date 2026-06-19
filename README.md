@@ -46,17 +46,17 @@ pip install agent-trace[openai-agents]
 
 ```python
 from agent_trace import tracer
+import httpx
 
 @tracer.instrument(record=True)
-def my_agent(query: str) -> str:
-    with tracer.span("llm-call") as span:
-        span.set_attribute("llm.model", "gpt-4o")
-        # ... your LLM call here ...
-        return "answer"
+def fetch_data(query: str) -> dict:
+    with tracer.span("http-call") as span:
+        resp = httpx.get("https://httpbin.org/get", params={"q": query})
+        span.set_attribute("http.status_code", resp.status_code)
+        return resp.json()
 
-result = my_agent("what is 2+2?")
-# Trace saved to ~/.agent-trace/runs/run_<id>/
-# Fixture saved to ~/.agent-trace/runs/run_<id>/fixture.db
+result = fetch_data("hello")
+# Trace and fixture saved to ~/.agent-trace/runs/run_<id>/
 ```
 
 Replay offline — no API calls, no tokens:
@@ -64,13 +64,16 @@ Replay offline — no API calls, no tokens:
 ```python
 from agent_trace import replay
 
-run_id = "run_abc123def456"
-
-with replay(run_id) as ctx:
-    result = my_agent(ctx.get_metadata("input"))
-    # Every httpx/requests call is served from fixture.db.
-    # Zero bytes leave your machine.
+with replay("run_<id>") as ctx:
+    result = fetch_data("hello")  # same call — served from fixture, zero network
+    print(result)  # identical to the original run
 ```
+
+> To store the input for later retrieval in replay, call `ctx.fixture.set_metadata('input', query)` inside the recording context.
+
+---
+
+> **Sync clients only (v0.1):** agent-trace currently intercepts `httpx.Client` and `requests.Session` (synchronous). `httpx.AsyncClient` — used by default in the OpenAI Python SDK v1.x and Anthropic SDK — is not yet intercepted. Async support is on the roadmap for v0.3. For now, use the synchronous `openai.OpenAI()` client (not `openai.AsyncOpenAI()`) when recording.
 
 ---
 

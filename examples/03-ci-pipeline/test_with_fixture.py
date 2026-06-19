@@ -10,6 +10,7 @@ Record it with:
 """
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 
@@ -17,6 +18,9 @@ import pytest
 
 from agent_trace import replay
 from agent_trace.replay.fixture import Fixture
+
+# Ensure the example module in this directory is importable as `example`.
+sys.path.insert(0, str(Path(__file__).parent))
 
 FIXTURE_PATH = Path(__file__).parent / "fixture.db"
 
@@ -30,7 +34,7 @@ def test_agent_responds_correctly() -> None:
     with replay(FIXTURE_PATH) as ctx:
         # Import here so the module is only loaded inside the replay context,
         # which ensures any httpx clients created at import time are patched.
-        from examples.ci_pipeline_agent import classify_document  # type: ignore[import]
+        from example import classify_document  # type: ignore[import]
 
         # Load the input doc from fixture metadata
         doc = ctx.fixture.get_metadata("input_doc") or (
@@ -60,7 +64,7 @@ def test_replay_is_fast() -> None:
     start = time.perf_counter()
 
     with replay(FIXTURE_PATH) as ctx:
-        from examples.ci_pipeline_agent import classify_document  # type: ignore[import]
+        from example import classify_document  # type: ignore[import]
 
         classify_document(doc)
 

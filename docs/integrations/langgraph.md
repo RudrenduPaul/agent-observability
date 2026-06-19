@@ -32,6 +32,7 @@ from langgraph.graph import StateGraph, END
 import httpx
 
 from agent_trace import tracer, replay
+from agent_trace.integrations.langgraph import LangGraphTracer
 from agent_trace.exporters.stdout import StdoutExporter
 from agent_trace.core.trace import Trace
 import json
@@ -100,7 +101,10 @@ graph = (
 
 # --- Record (requires OPENAI_API_KEY) ---
 with tracer.start_trace("langgraph-quickstart", record=True) as trace:
-    result = graph.invoke({"question": "What is LangGraph?"})
+    result = graph.invoke(
+        {"question": "What is LangGraph?"},
+        config={"callbacks": [LangGraphTracer(tracer=tracer, trace=trace)]},
+    )
     run_id = trace.run_id
 
 print(f"Recorded: {run_id}")
@@ -129,12 +133,13 @@ agent-trace traces the following during a LangGraph recording:
 |------|-----|
 | LLM API calls (OpenAI, Anthropic, etc.) | httpx/requests transport interception |
 | Tool API calls (any HTTP endpoint called inside a node) | same transport interception |
-| Span tree with node boundaries | `tracer.span("node-name")` inside each node |
+| Span tree with node boundaries | `LangGraphTracer` callback handler (automatic) |
+| ChatModel spans (ChatOpenAI, ChatAnthropic, etc.) | `LangGraphTracer.on_chat_model_start` callback |
 | Exception details | `span.record_exception(exc)` on any unhandled exception |
 
-LangGraph graph structure (edges, routing decisions) is **not** automatically
-traced in v0.1. You need to add `tracer.span(...)` blocks inside nodes manually.
-A LangGraph callback handler that does this automatically is planned for v0.2.
+Pass `LangGraphTracer` in `config["callbacks"]` to get automatic spans for every
+node, LLM call, and tool call — no manual `tracer.span(...)` instrumentation
+required inside node functions.
 
 ---
 

@@ -10,8 +10,6 @@ from __future__ import annotations
 import threading
 import time
 
-import pytest
-
 from agent_trace.core.clock import (
     FixtureClock,
     WallClock,
@@ -44,9 +42,22 @@ class TestWallClock:
 
 
 class TestFixtureClock:
-    def test_default_now_returns_zero(self) -> None:
+    def test_default_now_returns_sensible_timestamp(self) -> None:
+        import time
+
+        before = time.time()
         clock = FixtureClock()
+        after = time.time()
+        # Default initialises to approximately time.time(), not 0.0
+        assert before <= clock.now() <= after + 1.0
+
+    def test_custom_initial_is_honoured(self) -> None:
+        clock = FixtureClock(initial=0.0)
         assert clock.now() == 0.0
+
+    def test_custom_initial_arbitrary_value(self) -> None:
+        clock = FixtureClock(initial=1_700_000_000.0)
+        assert clock.now() == 1_700_000_000.0
 
     def test_advance_updates_now(self) -> None:
         clock = FixtureClock()
@@ -65,14 +76,14 @@ class TestFixtureClock:
         clock.advance(100.0)
         assert clock.now() == 100.0
 
-    def test_does_not_use_wall_time(self) -> None:
-        """FixtureClock must NOT call time.time() — its value only changes via advance()."""
+    def test_frozen_after_init(self) -> None:
+        """FixtureClock must NOT advance between now() calls — only advance() changes it."""
         clock = FixtureClock()
         t1 = clock.now()
         time.sleep(0.05)
         t2 = clock.now()
-        # Both reads should be identical (0.0) because we never called advance()
-        assert t1 == t2 == 0.0
+        # Both reads should be identical because we never called advance()
+        assert t1 == t2
 
     def test_advance_then_stable(self) -> None:
         clock = FixtureClock()
@@ -133,21 +144,19 @@ class TestGetTime:
         finally:
             restore_clock(token)
 
-    def test_get_time_after_set_fixture_clock_returns_zero_not_wall_time(self) -> None:
-        """Core invariant: after set_clock(FixtureClock()), get_time() returns 0.0."""
-        clock = FixtureClock()  # default _current = 0.0
+    def test_get_time_after_set_fixture_clock_frozen(self) -> None:
+        """Core invariant: after set_clock(FixtureClock(initial=0.0)), get_time()
+        returns 0.0 and does not advance without an explicit advance() call."""
+        clock = FixtureClock(initial=0.0)
         token = set_clock(clock)
         try:
             result = get_time()
             assert result == 0.0
-            # Confirm it is NOT wall time
-            wall = time.time()
-            assert result != pytest.approx(wall, abs=1.0)
         finally:
             restore_clock(token)
 
     def test_get_time_updates_after_advance(self) -> None:
-        clock = FixtureClock()
+        clock = FixtureClock(initial=0.0)
         token = set_clock(clock)
         try:
             assert get_time() == 0.0

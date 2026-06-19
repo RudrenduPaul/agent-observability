@@ -125,7 +125,9 @@ class TestStdoutExporter:
         exporter = StdoutExporter()
         trace = _make_trace(2)
 
-        with unittest.mock.patch.dict(sys.modules, {"rich": None, "rich.console": None, "rich.tree": None}):
+        with unittest.mock.patch.dict(
+            sys.modules, {"rich": None, "rich.console": None, "rich.tree": None}
+        ):
             exporter.export(trace)
 
         captured = capsys.readouterr()
@@ -138,7 +140,9 @@ class TestStdoutExporter:
         exporter = StdoutExporter()
         trace = _make_trace(2)
 
-        with unittest.mock.patch.dict(sys.modules, {"rich": None, "rich.console": None, "rich.tree": None}):
+        with unittest.mock.patch.dict(
+            sys.modules, {"rich": None, "rich.console": None, "rich.tree": None}
+        ):
             exporter.export(trace)
 
         captured = capsys.readouterr()

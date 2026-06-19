@@ -142,10 +142,15 @@ def test_fixture_bulk_write_10k(tmp_path: Path) -> None:
     p99 = statistics.quantiles(latencies, n=100)[98]  # index 98 = 99th percentile
 
     total_ms = sum(latencies)
+    p50_write_ms = p50
     print(f"\n10k write — P50: {p50:.3f}ms  P99: {p99:.3f}ms  total: {total_ms:.1f}ms")
 
     # Lenient assertion for CI (target is 12ms but CI SQLite can be slower)
     assert p99 < 100.0, f"P99 too high: {p99:.2f}ms (target < 12ms, CI limit 100ms)"
+
+    writes_per_sec = int(1000 / p50_write_ms) if p50_write_ms > 0 else 0
+    print(f"  Writes/sec (derived from P50): {writes_per_sec:,}")
+    assert writes_per_sec >= 3000, f"Write throughput too low: {writes_per_sec}/sec"
 
 
 # ---------------------------------------------------------------------------
@@ -183,3 +188,14 @@ def test_fixture_read_cursor_speed(benchmark: Any, tmp_path: Path) -> None:
 
     benchmark(_next)
     f.close()
+
+    stats = getattr(benchmark, "stats", None)
+    if stats is not None:
+        read_cursor_mean_us = stats.get("mean", 0.0) * 1_000_000  # convert s → µs
+        if read_cursor_mean_us > 0:
+            print(f"  Read cursor mean latency : {read_cursor_mean_us:.2f} µs")
+            reads_per_sec = int(1_000_000 / read_cursor_mean_us)
+            print(f"  Reads/sec (derived from mean): {reads_per_sec:,}")
+            assert reads_per_sec >= 20_000, (
+                f"Read throughput too low: {reads_per_sec}/sec"
+            )
