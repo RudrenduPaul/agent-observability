@@ -53,6 +53,20 @@ CREATE TABLE IF NOT EXISTS metadata (
 """
 
 
+def _row_to_exchange(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "url": row["url"],
+        "method": row["method"],
+        "request_headers": json.loads(row["request_headers"]),
+        "request_body": row["request_body"],
+        "response_status": row["response_status"],
+        "response_headers": json.loads(row["response_headers"]),
+        "response_body": row["response_body"],
+        "recorded_at": row["recorded_at"],
+        "sequence_num": row["sequence_num"],
+    }
+
+
 class Fixture:
     """Thread-safe SQLite-backed HTTP fixture.
 
@@ -71,6 +85,7 @@ class Fixture:
         self._trace_id = trace_id
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(str(path), check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
@@ -164,19 +179,8 @@ class Fixture:
             if row is None:
                 return None
 
-            self._read_cursor[key] = int(row[0])
-
-            return {
-                "url": row[1],
-                "method": row[2],
-                "request_headers": json.loads(row[3]),
-                "request_body": row[4],
-                "response_status": row[5],
-                "response_headers": json.loads(row[6]),
-                "response_body": row[7],
-                "recorded_at": row[8],
-                "sequence_num": row[9],
-            }
+            self._read_cursor[key] = int(row["id"])
+            return _row_to_exchange(row)
 
     # ------------------------------------------------------------------
     # Inspection helpers
@@ -196,22 +200,7 @@ class Fixture:
             )
             rows = cur.fetchall()
 
-        result: list[dict[str, Any]] = []
-        for row in rows:
-            result.append(
-                {
-                    "url": row[0],
-                    "method": row[1],
-                    "request_headers": json.loads(row[2]),
-                    "request_body": row[3],
-                    "response_status": row[4],
-                    "response_headers": json.loads(row[5]),
-                    "response_body": row[6],
-                    "recorded_at": row[7],
-                    "sequence_num": row[8],
-                }
-            )
-        return result
+        return [_row_to_exchange(row) for row in rows]
 
     def reset_read_cursor(self) -> None:
         """Reset all per-(method:url) read offsets to 0.
@@ -248,7 +237,7 @@ class Fixture:
         with self._lock:
             cur = self._conn.execute("SELECT value FROM metadata WHERE key = ?", (key,))
             row = cur.fetchone()
-            return str(row[0]) if row else None
+            return str(row["value"]) if row else None
 
     # ------------------------------------------------------------------
     # Lifecycle

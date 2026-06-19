@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import unittest.mock
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import Token
 from pathlib import Path
 from typing import Any
@@ -83,26 +83,24 @@ class ReplayEngine:
             kwargs.setdefault("transport", ReplayTransport(fixture))
             original_httpx_init(client_self, *args, **kwargs)
 
+        # --- requests patch (optional) -------------------------------------
+        # requests is an optional dependency.  When absent, use nullcontext so
+        # the with-statement below is a no-op without importing unittest.mock.
         try:
-            # requests is optional — only patch if installed
-            try:
-                import requests as _requests
+            import requests as _requests
 
-                from agent_trace.interceptor.requests_patch import ReplayAdapter
+            from agent_trace.interceptor.requests_patch import ReplayAdapter
 
-                def patched_get_adapter(
-                    session_self: Any, url: str, **kwargs: Any
-                ) -> Any:
-                    return ReplayAdapter(fixture)
+            def patched_get_adapter(session_self: Any, url: str, **kwargs: Any) -> Any:
+                return ReplayAdapter(fixture)
 
-                requests_patch: Any = unittest.mock.patch.object(
-                    _requests.Session, "get_adapter", patched_get_adapter
-                )
-            except ImportError:
-                requests_patch = unittest.mock.MagicMock()
-                requests_patch.__enter__ = lambda s: None
-                requests_patch.__exit__ = lambda s, *a: None
+            requests_patch: Any = unittest.mock.patch.object(
+                _requests.Session, "get_adapter", patched_get_adapter
+            )
+        except ImportError:
+            requests_patch = nullcontext()
 
+        try:
             with (
                 unittest.mock.patch.object(
                     httpx.Client, "__init__", patched_httpx_init
