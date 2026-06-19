@@ -63,59 +63,60 @@ class ReplayEngine:
                 # All get_time() calls return recorded timestamps.
                 result = my_agent.run(prompt)
         """
-        fixture = Fixture(self._fixture_path)
-        fixture.reset_read_cursor()
+        with Fixture(self._fixture_path) as fixture:
+            fixture.reset_read_cursor()
 
-        clock = FixtureClock()
-        token: Token[Any] = set_clock(clock)
+            clock = FixtureClock()
+            token: Token[Any] = set_clock(clock)
 
-        # --- httpx patch ---------------------------------------------------
-        # We patch httpx.Client.__init__ to inject our ReplayTransport as the
-        # default transport.  The original __init__ is called first so SSL,
-        # timeout, and other settings are preserved.
-        original_httpx_init = httpx.Client.__init__
+            # --- httpx patch -----------------------------------------------
+            # We patch httpx.Client.__init__ to inject our ReplayTransport as
+            # the default transport.  The original __init__ is called first so
+            # SSL, timeout, and other settings are preserved.
+            original_httpx_init = httpx.Client.__init__
 
-        def patched_httpx_init(
-            client_self: httpx.Client, *args: Any, **kwargs: Any
-        ) -> None:
-            # Inject our transport before the real __init__ can set the default
-            # so SDK-created clients pick it up without any other change.
-            kwargs.setdefault("transport", ReplayTransport(fixture))
-            original_httpx_init(client_self, *args, **kwargs)
+            def patched_httpx_init(
+                client_self: httpx.Client, *args: Any, **kwargs: Any
+            ) -> None:
+                # Inject our transport before the real __init__ can set the
+                # default so SDK-created clients pick it up without any change.
+                kwargs.setdefault("transport", ReplayTransport(fixture))
+                original_httpx_init(client_self, *args, **kwargs)
 
-        # --- requests patch (optional) -------------------------------------
-        # requests is an optional dependency.  When absent, use nullcontext so
-        # the with-statement below is a no-op without importing unittest.mock.
-        try:
-            import requests as _requests
+            # --- requests patch (optional) ---------------------------------
+            # requests is an optional dependency.  When absent, use nullcontext
+            # so the with-statement below is a no-op.
+            try:
+                import requests as _requests
 
-            from agent_trace.interceptor.requests_patch import ReplayAdapter
+                from agent_trace.interceptor.requests_patch import ReplayAdapter
 
-            def patched_get_adapter(session_self: Any, url: str, **kwargs: Any) -> Any:
-                return ReplayAdapter(fixture)
+                def patched_get_adapter(
+                    session_self: Any, url: str, **kwargs: Any
+                ) -> Any:
+                    return ReplayAdapter(fixture)
 
-            requests_patch: Any = unittest.mock.patch.object(
-                _requests.Session, "get_adapter", patched_get_adapter
-            )
-        except ImportError:
-            requests_patch = nullcontext()
-
-        try:
-            with (
-                unittest.mock.patch.object(
-                    httpx.Client, "__init__", patched_httpx_init
-                ),
-                requests_patch,
-            ):
-                logger.debug(
-                    "agent-trace replay active: fixture=%s exchanges=%d",
-                    self._fixture_path,
-                    fixture.exchange_count(),
+                requests_patch: Any = unittest.mock.patch.object(
+                    _requests.Session, "get_adapter", patched_get_adapter
                 )
-                yield fixture
-        finally:
-            restore_clock(token)
-            fixture.close()
+            except ImportError:
+                requests_patch = nullcontext()
+
+            try:
+                with (
+                    unittest.mock.patch.object(
+                        httpx.Client, "__init__", patched_httpx_init
+                    ),
+                    requests_patch,
+                ):
+                    logger.debug(
+                        "agent-trace replay active: fixture=%s exchanges=%d",
+                        self._fixture_path,
+                        fixture.exchange_count(),
+                    )
+                    yield fixture
+            finally:
+                restore_clock(token)
 
     def fixture_exchange_count(self) -> int:
         """Return the number of recorded exchanges in the fixture.
