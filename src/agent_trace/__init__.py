@@ -107,7 +107,9 @@ class Tracer:
             ) from None
         run_dir.mkdir(parents=True, exist_ok=True)
 
-        trace = Trace(trace_id=effective_run_id, run_id=effective_run_id)
+        # trace_id must be 128-bit hex for OTLP; run_id is the human-readable
+        # directory name ("run_abc123").  Always generate them independently.
+        trace = Trace(trace_id=uuid.uuid4().hex, run_id=effective_run_id)
         trace.metadata["name"] = name
 
         fixture: Any = None
