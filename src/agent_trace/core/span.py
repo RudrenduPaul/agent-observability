@@ -13,10 +13,7 @@ import traceback
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    pass
+from typing import Any
 
 from agent_trace.core.clock import get_time
 
@@ -62,7 +59,7 @@ class SpanEvent:
         return cls(
             name=str(data["name"]),
             timestamp=float(data["timestamp"]),
-            attributes={k: v for k, v in data.get("attributes", {}).items()},
+            attributes=dict(data.get("attributes", {})),
         )
 
 
@@ -181,6 +178,6 @@ class Span:
             if data.get("end_time") is not None
             else None,
             status=SpanStatus(data.get("status", SpanStatus.UNSET.value)),
-            attributes={k: v for k, v in data.get("attributes", {}).items()},
+            attributes=dict(data.get("attributes", {})),
             events=events,
         )
