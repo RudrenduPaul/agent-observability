@@ -17,6 +17,7 @@ Usage:
 
 from __future__ import annotations
 
+import logging
 import threading
 import uuid
 from typing import TYPE_CHECKING, Any
@@ -27,6 +28,8 @@ if TYPE_CHECKING:
     from agent_trace import Trace, Tracer
 
 __all__ = ["LangGraphTracer"]
+
+logger = logging.getLogger(__name__)
 
 _INSTALL_HINT = (
     "LangGraphTracer requires langchain-core and langgraph.\n"
@@ -263,8 +266,12 @@ def _get_tracer_class() -> type:
                                 "llm.usage.total_tokens",
                                 int(token_usage.get("total_tokens", 0)),
                             )
-                    except Exception:  # noqa: S110
-                        pass
+                    except Exception:
+                        logger.debug(
+                            "agent-trace: failed to record token usage for run %r",
+                            str(run_id),
+                            exc_info=True,
+                        )
                 self._close_span(run_id, SpanStatus.OK)
 
             def on_llm_error(
@@ -358,9 +365,13 @@ class LangGraphTracer:
     """
 
     def __new__(cls, tracer: Tracer, trace: Trace) -> LangGraphTracer:
+        # Construct the concrete impl directly so Python's normal type.__call__
+        # runs _LangGraphTracerImpl.__init__ automatically.  We cannot use
+        # impl_cls.__new__(impl_cls) + manual __init__ because the returned
+        # object would not be an instance of LangGraphTracer, causing Python
+        # to skip __init__ entirely — leaving _tracer/_trace/_spans unset.
         impl_cls = _get_tracer_class()
-        instance: LangGraphTracer = impl_cls.__new__(impl_cls)  # type: ignore[call-overload]
-        return instance
+        return impl_cls(tracer, trace)  # type: ignore[no-any-return]
 
     def __init__(self, tracer: Tracer, trace: Trace) -> None:
         # __init__ is called on the instance whose __class__ is already the
