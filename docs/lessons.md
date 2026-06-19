@@ -155,3 +155,37 @@ Anti-sycophancy check: Not caught in passes 1 or 2. Found in pass 3 by auditing
 the OTLP exporter's _is_hex() fallback path and tracing back to where trace_id
 is set. A regression test (test_start_trace_trace_id_is_hex_and_differs_from_run_id)
 now enforces this invariant.
+
+---
+
+## 2026-06-19 — cmd_replay ignores AGENT_TRACE_TRACE_DIR
+
+Pattern: _cli.cmd_replay called `replay(run_id)` without `trace_dir=_trace_dir()`.
+`_require_run_dir()` and `_fixture_path()` both honour `AGENT_TRACE_TRACE_DIR` via
+`_trace_dir()`, but the actual `replay()` call used the default `~/.agent-trace/runs`,
+causing a FileNotFoundError for any user with a custom trace dir.
+
+Rule: Every path resolution in _cli.py that is not an explicit absolute path must go
+through `_trace_dir()`. Cross-check all CLI commands when adding env-var-controlled
+directory overrides.
+
+Anti-sycophancy check: Caught in bug audit pass 4. Two sibling functions in the same
+file used `_trace_dir()` correctly; the inconsistency in cmd_replay was not caught in
+earlier passes.
+
+---
+
+## 2026-06-19 — Silent exception swallow in step span lifecycle
+
+Pattern: instrument_runner had `except Exception: step_span.end(SpanStatus.OK)` with
+no logging. Any exception reaching that branch (currently impossible since
+_enrich_step_span catches internally, but reachable if that changes) would be
+completely invisible. Also, calling `end()` unconditionally in the except block would
+double-set end_time if the try's `end()` had already set it.
+
+Rule: Exception branches in span lifecycle code must always log at debug level and guard
+`end()` with `if span.end_time is None`. Silent swallows make replay failures
+undiagnosable.
+
+Anti-sycophancy check: Caught in bug audit pass 4. The issue was masked by the internal
+try/except in _enrich_step_span, so earlier passes did not flag it.
