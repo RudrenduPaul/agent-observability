@@ -29,6 +29,7 @@ def _make_fake_langchain_core() -> dict[str, ModuleType]:
 
     class FakeBaseCallbackHandler:
         """Stub that carries the same interface agent_trace actually calls."""
+
         def __init__(self) -> None:
             pass
 
@@ -53,6 +54,7 @@ def patched_langchain(monkeypatch):
 
     # Force _get_tracer_class to rebuild (it caches the concrete class once).
     import agent_trace.integrations.langgraph as lg_module
+
     original = lg_module._LangGraphTracerClass
     lg_module._LangGraphTracerClass = None
 
@@ -77,6 +79,7 @@ def tracer_and_trace(tmp_path: Path, patched_langchain):
 
 def _make_handler(t, trace):
     from agent_trace.integrations.langgraph import LangGraphTracer
+
     return LangGraphTracer(tracer=t, trace=trace)
 
 
@@ -146,6 +149,7 @@ class TestLangGraphCallbacks:
 
     def test_chain_error_marks_span_error(self, tracer_and_trace):
         from agent_trace.core.span import SpanStatus
+
         t, trace = tracer_and_trace
         handler = _make_handler(t, trace)
         run_id = _run_id()
@@ -204,6 +208,7 @@ class TestLangGraphCallbacks:
 
     def test_tool_error_marks_span_error(self, tracer_and_trace):
         from agent_trace.core.span import SpanStatus
+
         t, trace = tracer_and_trace
         handler = _make_handler(t, trace)
         run_id = _run_id()
