@@ -118,7 +118,7 @@ Most observability tools for LLM agents are **observe-only** — they show you a
 
 ¹ LangSmith has `LANGSMITH_TEST_CACHE` / VCR cassettes (`langsmith[vcr]`) for Python + LangChain only. It captures HTTP to `api.openai.com` but not arbitrary HTTP clients, does not record full wire-level bytes, and requires a LangSmith account. See [LangSmith pytest docs](https://docs.langchain.com/langsmith/pytest).
 
-² Helicone was acquired by Mintlify in March 2026 and is no longer under active development.
+² Helicone's active maintenance status is uncertain as of mid-2026; verify at helicone.ai before taking a dependency.
 
 ### Overhead per LLM call (published benchmarks)
 
@@ -236,9 +236,8 @@ exporter.export(trace)
 Fixture files at `~/.agent-trace/runs/` contain full HTTP request and response bodies, including API keys, prompt contents, and user data. Add this to your `.gitignore`:
 
 ```
-~/.agent-trace/
 .agent-trace/
-*.fixture.db
+*.db
 ```
 
 Never commit a `fixture.db` generated against a production API key. Use a separate key for recording, or scrub the fixture before committing (see `docs/concepts.md` for the SQLite schema).
