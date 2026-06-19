@@ -21,6 +21,7 @@ Replay offline:
 from __future__ import annotations
 
 import functools
+import inspect
 import json
 import uuid
 from collections.abc import Callable, Generator
@@ -94,7 +95,14 @@ class Tracer:
         ``run_dir/fixture.db``.
         """
         effective_run_id = run_id or f"run_{uuid.uuid4().hex[:12]}"
-        run_dir = self._trace_dir / effective_run_id
+        base = self._trace_dir.resolve()
+        run_dir = (base / effective_run_id).resolve()
+        try:
+            run_dir.relative_to(base)
+        except ValueError:
+            raise ValueError(
+                f"Invalid run_id {effective_run_id!r}: path traversal detected"
+            ) from None
         run_dir.mkdir(parents=True, exist_ok=True)
 
         trace = Trace(trace_id=effective_run_id, run_id=effective_run_id)
@@ -147,15 +155,24 @@ class Tracer:
     ) -> Callable[[F], F]:
         """Decorator that wraps a function in :meth:`start_trace`.
 
-        Example::
+        Works for both sync and async functions::
 
             @tracer.instrument(record=True)
-            def my_agent(query: str) -> str:
+            async def my_agent(query: str) -> str:
                 ...
         """
 
         def decorator(fn: F) -> F:
             trace_name = name or fn.__name__
+
+            if inspect.iscoroutinefunction(fn):
+
+                @functools.wraps(fn)
+                async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+                    with self.start_trace(trace_name, record=record):
+                        return await fn(*args, **kwargs)
+
+                return async_wrapper  # type: ignore[return-value]
 
             @functools.wraps(fn)
             def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -236,7 +253,18 @@ class Tracer:
     # ------------------------------------------------------------------
 
     def _install_recording_transport(self, fixture: Any) -> None:
-        """Monkey-patch httpx and requests to record all HTTP traffic."""
+        """Monkey-patch httpx and requests to record all HTTP traffic.
+
+        Uses a nesting counter so that nested start_trace(record=True) calls
+        don't overwrite the saved original with an already-patched method.
+        Only the outermost call saves + installs; inner calls are no-ops.
+        """
+        depth = getattr(self, "_transport_depth", 0)
+        self._transport_depth: int = depth + 1
+        if depth > 0:
+            # Already patched by an outer trace — don't double-patch.
+            return
+
         try:
             import httpx
 
@@ -269,7 +297,15 @@ class Tracer:
             pass
 
     def _uninstall_recording_transport(self) -> None:
-        """Restore the original ``__init__`` / ``get_adapter`` methods."""
+        """Restore the original ``__init__`` / ``get_adapter`` methods.
+
+        Only the outermost trace uninstalls; inner traces decrement the counter.
+        """
+        depth = getattr(self, "_transport_depth", 1)
+        self._transport_depth = max(0, depth - 1)
+        if self._transport_depth > 0:
+            return  # Still nested — leave patch in place.
+
         orig_httpx = getattr(self, "_original_httpx_init", None)
         if orig_httpx is not None:
             try:
@@ -373,8 +409,16 @@ def replay(
     """
     p = Path(run_id_or_path)
     if not p.is_absolute():
-        base = trace_dir or (Path.home() / ".agent-trace" / "runs")
-        p = base / p
+        base = Path(trace_dir or (Path.home() / ".agent-trace" / "runs")).resolve()
+        p = (base / p).resolve()
+        try:
+            p.relative_to(base)
+        except ValueError:
+            raise ValueError(
+                f"Invalid run path {run_id_or_path!r}: path traversal detected"
+            ) from None
+    else:
+        p = p.resolve()
 
     fixture_path = p / "fixture.db"
     if not fixture_path.exists():

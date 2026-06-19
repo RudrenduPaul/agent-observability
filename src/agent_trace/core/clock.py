@@ -42,14 +42,13 @@ class WallClock(Clock):
 class FixtureClock(Clock):
     """Replay clock driven by pre-recorded timestamps.
 
-    Call advance() with each recorded timestamp before creating a span so
-    that start_time values match the original trace exactly.  Without this,
-    replay latency calculations would reflect wall-clock time rather than the
-    original agent execution time.
+    Initialises to ``time.time()`` so replay spans have meaningful timestamps
+    by default.  Call :meth:`advance` with each recorded timestamp to reproduce
+    original execution times exactly.
     """
 
-    def __init__(self) -> None:
-        self._current: float = 0.0
+    def __init__(self, initial: float | None = None) -> None:
+        self._current: float = initial if initial is not None else time.time()
 
     def advance(self, timestamp: float) -> None:
         """Set the clock to *timestamp* (seconds since epoch)."""

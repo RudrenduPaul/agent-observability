@@ -53,7 +53,7 @@ jobs:
           fail_ci_if_error: false
 
       - name: Security scan (Trivy)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.30.0
         with:
           scan-type: fs
           format: sarif

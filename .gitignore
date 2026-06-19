@@ -50,8 +50,10 @@ Thumbs.db
 *.pem
 *.key
 
-# agent-trace runtime data
-~/.agent-trace/
+# agent-trace runtime data — fixture files contain API keys and prompt content
+.agent-trace/
+*.db
+fixture.db
 
 # Docs build
 docs/_build/

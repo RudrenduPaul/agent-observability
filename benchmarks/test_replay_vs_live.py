@@ -278,3 +278,4 @@ def test_recording_overhead_per_exchange(tmp_path: Path) -> None:
 
     # Recording must add < 2ms per exchange (strict), < 5ms (CI lenient)
     assert p50_write < 5.0, f"P50 write overhead {p50_write:.2f}ms exceeds 5ms CI limit"
+    assert p99_write < 5.0, f"P99 write latency too high: {p99_write:.3f}ms"
