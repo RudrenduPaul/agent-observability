@@ -23,6 +23,7 @@ from __future__ import annotations
 import functools
 import inspect
 import json
+import logging
 import uuid
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
@@ -37,6 +38,8 @@ from agent_trace.core.span import Span, SpanStatus
 from agent_trace.core.trace import Trace
 
 __version__ = "0.1.0"
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "Fixture",
@@ -137,8 +140,12 @@ class Tracer:
                 trace_json_path.write_text(
                     json.dumps(trace.to_dict(), indent=2), encoding="utf-8"
                 )
-            except OSError:
-                pass
+            except OSError as _write_err:
+                logger.warning(
+                    "agent-trace: could not write trace.json to %s: %s",
+                    trace_json_path,
+                    _write_err,
+                )
 
             self._active_trace_var.reset(token)
 
