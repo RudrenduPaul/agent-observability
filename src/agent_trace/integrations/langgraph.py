@@ -132,6 +132,24 @@ def _get_tracer_class() -> type:
                     span.end(status)
                 return span
 
+            def _close_span_with_exception(
+                self,
+                run_id: uuid.UUID | str,
+                error: BaseException,
+            ) -> None:
+                """Pop the span, record the exception, and end it as ERROR.
+
+                Consolidates the three error callbacks into a single lock
+                acquisition + record + end sequence.
+                """
+                run_key = str(run_id)
+                with self._lock:
+                    span = self._spans.pop(run_key, None)
+                if span is not None:
+                    span.record_exception(error)
+                    if span.end_time is None:
+                        span.end(SpanStatus.ERROR)
+
             # ------------------------------------------------------------------
             # Chain (graph node) callbacks
             # ------------------------------------------------------------------
@@ -180,12 +198,7 @@ def _get_tracer_class() -> type:
                 **kwargs: Any,
             ) -> None:
                 """End the span with ERROR status when a graph node raises."""
-                run_key = str(run_id)
-                with self._lock:
-                    span = self._spans.get(run_key)
-                if span is not None:
-                    span.record_exception(error)
-                self._close_span(run_id, SpanStatus.ERROR)
+                self._close_span_with_exception(run_id, error)
 
             # ------------------------------------------------------------------
             # LLM callbacks
@@ -284,12 +297,7 @@ def _get_tracer_class() -> type:
                 **kwargs: Any,
             ) -> None:
                 """End the LLM span with ERROR status."""
-                run_key = str(run_id)
-                with self._lock:
-                    span = self._spans.get(run_key)
-                if span is not None:
-                    span.record_exception(error)
-                self._close_span(run_id, SpanStatus.ERROR)
+                self._close_span_with_exception(run_id, error)
 
             # ------------------------------------------------------------------
             # Tool callbacks
@@ -333,12 +341,7 @@ def _get_tracer_class() -> type:
                 **kwargs: Any,
             ) -> None:
                 """End the tool span with ERROR status."""
-                run_key = str(run_id)
-                with self._lock:
-                    span = self._spans.get(run_key)
-                if span is not None:
-                    span.record_exception(error)
-                self._close_span(run_id, SpanStatus.ERROR)
+                self._close_span_with_exception(run_id, error)
 
         _LangGraphTracerClass = _LangGraphTracerImpl
         return _LangGraphTracerClass
