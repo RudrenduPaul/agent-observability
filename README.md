@@ -205,13 +205,18 @@ Set `AGENT_TRACE_NETWORK_GUARD=1` in CI. Any HTTP call that is not in the fixtur
 
 ## Self-host traces
 
-agent-trace emits OTLP spans. Run Jaeger locally to browse trace trees:
+agent-trace emits OTLP spans. Run a local observability stack to browse trace trees:
 
 ```bash
 docker compose up -d
 ```
 
-The `docker-compose.yml` starts Jaeger with OTLP ingest on port 4317. Open [http://localhost:16686](http://localhost:16686) to browse traces.
+The `docker-compose.yml` starts three services (all optional, stop any you don't need):
+- **Jaeger** (port 16686): OTLP span ingestion and trace UI
+- **Grafana** (port 3000): dashboards and alerts
+- **Tempo** (port 3200): long-term trace storage backend
+
+Open [http://localhost:16686](http://localhost:16686) for Jaeger's trace browser.
 
 ```python
 from agent_trace.exporters.otlp import OTLPExporter
@@ -227,7 +232,6 @@ exporter.export(trace)
 - [GitHub Issues](https://github.com/RudrenduPaul/agent-trace/issues) — bug reports and feature requests
 - [GitHub Discussions](https://github.com/RudrenduPaul/agent-trace/discussions) — questions and ideas
 - [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup and PR guide
-- Discord — link coming soon
 
 ---
 

@@ -314,3 +314,24 @@ class TestOTLPExporter:
 
         exporter = OTLPExporter()
         assert exporter.endpoint == "http://localhost:4317"
+
+
+class TestFileExporterPathTraversal:
+    def test_file_exporter_rejects_traversal_in_run_id(self, tmp_path: Path) -> None:
+        from agent_trace.core.trace import Trace
+        from agent_trace.exporters.file import FileExporter
+
+        trace = Trace(trace_id="t", run_id="../../etc/passwd")
+        exporter = FileExporter(tmp_path)
+        with pytest.raises(ValueError, match="path traversal"):
+            exporter.export(trace)
+
+    def test_file_exporter_accepts_safe_run_id(self, tmp_path: Path) -> None:
+        from agent_trace.core.trace import Trace
+        from agent_trace.exporters.file import FileExporter
+
+        trace = Trace(trace_id="safe", run_id="safe-run-id")
+        exporter = FileExporter(tmp_path)
+        out = exporter.export(trace)
+        assert out.parent == tmp_path
+        assert out.name == "safe-run-id.json"

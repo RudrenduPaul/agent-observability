@@ -26,7 +26,7 @@ from pathlib import Path
 import httpx
 
 from agent_trace import replay, tracer
-from agent_trace.replay.fixture import Fixture
+from agent_trace import Fixture
 
 # The fixture is stored next to this script so it can be committed to the repo.
 # In a real project, put it in a dedicated fixtures/ directory.
