@@ -207,3 +207,40 @@ just those who opt in.
 Anti-sycophancy check: Caught in bug audit pass 7 by reading pyproject.toml for the
 first time. Six passes of source-file auditing never caught it because the bug was in
 the packaging config, not the Python code.
+
+---
+
+## 2026-06-19 — replay() does not accept direct fixture.db file paths
+
+Pattern: `replay()` always appended `/fixture.db` to its input path, so passing a
+path that already ends in `.db` (e.g. `Path("fixtures/fixture.db")`) would look for
+`fixture.db/fixture.db` and raise `FileNotFoundError`. The CI pipeline example
+(`examples/03-ci-pipeline/`) used this pattern directly in both `example.py` and
+`test_with_fixture.py`, making those examples fail silently without a recorded fixture
+to test against.
+
+Rule: When the resolved path has a `.db` suffix, treat it as the fixture file directly.
+When it has no suffix, append `/fixture.db`. Gate: `fixture_path = p if p.suffix == ".db" else p / "fixture.db"`.
+Test both forms (file path and directory path) in unit tests.
+
+Anti-sycophancy check: Caught in bug audit pass 8 by reading example files for the
+first time. Prior passes covered src/, tests/, benchmarks/ but not examples/. The fix
+required touching the public API (`__init__.py`) and adding two regression tests.
+
+---
+
+## 2026-06-19 — Pre-commit mypy additional_dependencies stale after pydantic removal
+
+Pattern: When pydantic was removed from `pyproject.toml` in pass 7, the matching
+`pydantic>=2.7` entry in `.pre-commit-config.yaml` under the mypy hook's
+`additional_dependencies` was missed. Anyone running `pre-commit run mypy` continued
+to install pydantic unnecessarily. Config-file dependencies are not caught by import
+scanning, so the fix in pyproject.toml did not propagate here.
+
+Rule: When removing a dependency from pyproject.toml, grep for its name in
+`.pre-commit-config.yaml` and `tox.ini` as well — those files carry parallel
+dependency lists that static import analysis cannot see.
+
+Anti-sycophancy check: Caught in bug audit pass 8 by reading .pre-commit-config.yaml
+for the first time. Removing a package from one config file and missing it in a sibling
+config file is the canonical "fix in one place, break in another" class of error.
