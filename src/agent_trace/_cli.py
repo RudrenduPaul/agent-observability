@@ -11,6 +11,7 @@ Commands:
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import sys
@@ -114,17 +115,14 @@ def cmd_list(_args: argparse.Namespace) -> None:
 
 
 def _count_exchanges(run_dir: Path) -> str:
-    fixture = run_dir / "fixture.db"
-    if not fixture.exists():
+    fixture_db = run_dir / "fixture.db"
+    if not fixture_db.exists():
         return "-"
     try:
-        import sqlite3
+        from agent_trace._replay.fixture import Fixture
 
-        conn = sqlite3.connect(str(fixture), check_same_thread=False)
-        cur = conn.execute("SELECT COUNT(*) FROM http_exchanges")
-        row = cur.fetchone()
-        conn.close()
-        return str(row[0]) if row else "0"
+        with Fixture(fixture_db) as f:
+            return str(f.exchange_count())
     except Exception:
         return "?"
 
@@ -141,8 +139,6 @@ def _count_spans(run_dir: Path) -> str:
 
 
 def _format_mtime(ts: float) -> str:
-    import datetime
-
     dt = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc)
     return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
 
@@ -217,8 +213,7 @@ def cmd_replay(args: argparse.Namespace) -> None:
     print(f"Replaying run: {run_id}")
     print(f"Fixture:       {fixture}")
 
-    # Load the original trace to find span names and build a simple "agent"
-    # that mirrors the span structure.
+    # Load the original trace to find span names
     original_spans: list[dict[str, object]] = []
     if trace_json_path.exists():
         try:
@@ -229,15 +224,12 @@ def cmd_replay(args: argparse.Namespace) -> None:
 
     print(f"Original span count: {len(original_spans)}")
 
-    # Count exchanges
-    try:
-        import sqlite3
+    # Count exchanges via Fixture (honours WAL mode + schema)
+    from agent_trace._replay.fixture import Fixture
 
-        conn = sqlite3.connect(str(fixture), check_same_thread=False)
-        cur = conn.execute("SELECT COUNT(*) FROM http_exchanges")
-        row = cur.fetchone()
-        conn.close()
-        exchange_count = int(row[0]) if row else 0
+    try:
+        with Fixture(fixture) as f:
+            exchange_count = f.exchange_count()
     except Exception:
         exchange_count = 0
 
@@ -248,9 +240,6 @@ def cmd_replay(args: argparse.Namespace) -> None:
     from agent_trace import replay as _replay
 
     with _replay(run_id) as ctx:
-        # We replay using a new trace with the same structure.
-        # Because no agent code is re-run here, we simply open the replay
-        # context and export the original trace with a note.
         print(f"Replay active — {ctx.fixture.exchange_count()} exchange(s) available")
         print("(No HTTP requests were made — fixture is ready for agent code)")
         print()

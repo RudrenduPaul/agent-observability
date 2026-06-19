@@ -30,6 +30,18 @@ _STATUS_SYMBOL: dict[str, str] = {
 }
 
 
+def _trace_header_info(trace: Trace) -> tuple[str, str]:
+    """Return (duration_string, display_name) for trace header lines."""
+    ended = [s.end_time for s in trace.spans if s.end_time is not None]
+    started = [s.start_time for s in trace.spans]
+    dur_str = ""
+    if started and ended:
+        total_ms = (max(ended) - min(started)) * 1_000
+        dur_str = f" ({total_ms:.1f} ms total)"
+    display_name = str(trace.metadata.get("name", trace.run_id))
+    return dur_str, display_name
+
+
 class StdoutExporter:
     """Export a :class:`~agent_trace.Trace` as a human-readable span tree.
 
@@ -60,24 +72,17 @@ class StdoutExporter:
         from rich.tree import Tree
 
         console = Console()
+        dur_str, display_name = _trace_header_info(trace)
+        rich_dur = f"  [dim]({dur_str.strip()})[/dim]" if dur_str else ""
 
-        dur_str = ""
-        ended = [s.end_time for s in trace.spans if s.end_time is not None]
-        started = [s.start_time for s in trace.spans]
-        if started and ended:
-            total_ms = (max(ended) - min(started)) * 1_000
-            dur_str = f"  [dim]({total_ms:.1f} ms total)[/dim]"
-
-        display_name = str(trace.metadata.get("name", trace.run_id))
         root_label = (
             f"[bold cyan]Trace:[/bold cyan] {display_name}"
-            f"  [dim]{trace.run_id}[/dim]{dur_str}"
+            f"  [dim]{trace.run_id}[/dim]{rich_dur}"
         )
         tree = Tree(root_label)
 
         # Build a quick lookup: span_id -> rich Tree node
         id_to_node: dict[str, Any] = {}
-        # Spans with no parent go directly under the root
         for span in trace.spans:
             colour = _STATUS_COLOUR.get(span.status.value, "yellow")
             dur = (
@@ -91,14 +96,10 @@ class StdoutExporter:
                 f"{dur}"
             )
 
-            parent_node = (
-                id_to_node.get(span.parent_id or "", None) if span.parent_id else None
+            parent_node = id_to_node.get(span.parent_id) if span.parent_id else None
+            node = (
+                parent_node.add(label) if parent_node is not None else tree.add(label)
             )
-            if parent_node is not None:
-                node = parent_node.add(label)
-            else:
-                node = tree.add(label)
-
             id_to_node[span.span_id] = node
 
         console.print(tree)
@@ -108,14 +109,7 @@ class StdoutExporter:
     # ------------------------------------------------------------------
 
     def _export_plain(self, trace: Trace) -> None:
-        dur_str = ""
-        ended = [s.end_time for s in trace.spans if s.end_time is not None]
-        started = [s.start_time for s in trace.spans]
-        if started and ended:
-            total_ms = (max(ended) - min(started)) * 1_000
-            dur_str = f" ({total_ms:.1f} ms total)"
-
-        display_name = str(trace.metadata.get("name", trace.run_id))
+        dur_str, display_name = _trace_header_info(trace)
         print(f"Trace: {display_name}  [{trace.run_id}]{dur_str}")
 
         # Build parent->children mapping for tree printing
