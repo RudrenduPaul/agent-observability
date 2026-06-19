@@ -14,7 +14,8 @@ Usage:
 
 from __future__ import annotations
 
-import asyncio
+import inspect
+import logging
 import threading
 from typing import TYPE_CHECKING, Any
 
@@ -28,6 +29,8 @@ __all__ = [
     "instrument_runner",
 ]
 
+logger = logging.getLogger(__name__)
+
 _INSTALL_HINT = (
     "The OpenAI Agents integration requires the openai-agents package.\n"
     "Install it with:\n\n"
@@ -37,17 +40,15 @@ _INSTALL_HINT = (
 
 def _require_openai_agents() -> Any:
     """Lazy import guard — raises a clear error if openai-agents is absent."""
-    try:
-        import agents  # type: ignore[import-not-found]
-
-        return agents
-    except ImportError:
+    # Try the canonical package name first, then the legacy alias.
+    for module_name in ("agents", "openai_agents"):
         try:
-            import openai_agents
+            import importlib
 
-            return openai_agents
-        except ImportError as exc:
-            raise ImportError(_INSTALL_HINT) from exc
+            return importlib.import_module(module_name)
+        except ImportError:
+            continue
+    raise ImportError(_INSTALL_HINT)
 
 
 # ---------------------------------------------------------------------------
@@ -139,8 +140,12 @@ class AgentTraceHook:
                     "tool.result_length",
                     len(str(result)) if result is not None else 0,
                 )
-            except Exception:  # noqa: S110
-                pass
+            except Exception:
+                logger.debug(
+                    "agent-trace: failed to record tool result length for %r",
+                    tool_name,
+                    exc_info=True,
+                )
 
     def on_handoff(self, context: Any, from_agent: Any, to_agent: Any) -> None:
         """Called when control is handed off from one agent to another."""
@@ -236,7 +241,7 @@ async def instrument_runner(
                 step_index += 1
                 # Track the last step as the result
                 result = step
-        elif asyncio.iscoroutine(raw):
+        elif inspect.isawaitable(raw):
             result = await raw
         else:
             result = raw
@@ -272,5 +277,9 @@ def _enrich_step_span(span: Span, step: Any) -> None:
                 span.set_attribute("llm.usage.prompt_tokens", int(pt))
             if ct := getattr(usage, "output_tokens", None):
                 span.set_attribute("llm.usage.completion_tokens", int(ct))
-    except Exception:  # noqa: S110
-        pass
+    except Exception:
+        logger.debug(
+            "agent-trace: failed to enrich step span %r",
+            span.name,
+            exc_info=True,
+        )

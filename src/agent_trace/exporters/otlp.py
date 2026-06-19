@@ -10,6 +10,7 @@ or any OTLP-compatible backend.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -18,6 +19,8 @@ if TYPE_CHECKING:
 __all__ = [
     "OTLPExporter",
 ]
+
+logger = logging.getLogger(__name__)
 
 _OTLP_INSTALL_HINT = (
     "The OTLP exporter requires the OpenTelemetry gRPC package.\n"
@@ -68,11 +71,13 @@ class OTLPExporter:
         provider.add_span_processor(SimpleSpanProcessor(exporter))
 
         otel_tracer = provider.get_tracer("agent-trace")
+        failed = 0
 
         for span in trace.spans:
             otlp_data = self._span_to_otlp(span)
             try:
                 from opentelemetry import context as otel_context
+                from opentelemetry import trace as otel_trace
                 from opentelemetry.trace import (
                     NonRecordingSpan,
                     SpanContext,
@@ -97,9 +102,8 @@ class OTLPExporter:
                         is_remote=True,
                         trace_flags=TraceFlags(TraceFlags.SAMPLED),
                     )
-                    parent_ctx = otel_context.set_value(
-                        "opentelemetry-trace-span-key",
-                        NonRecordingSpan(parent_span_context),
+                    parent_ctx = otel_trace.set_span_in_context(
+                        NonRecordingSpan(parent_span_context)
                     )
 
                 with otel_tracer.start_as_current_span(
@@ -121,8 +125,21 @@ class OTLPExporter:
 
                     if span.end_time is not None:
                         otel_span.end(end_time=otlp_data["end_time_unix_nano"])
-            except Exception:  # noqa: S110
-                pass
+            except Exception:
+                failed += 1
+                logger.debug(
+                    "agent-trace: failed to export span %r to OTLP",
+                    span.span_id,
+                    exc_info=True,
+                )
+
+        if failed:
+            logger.warning(
+                "agent-trace: %d/%d span(s) failed to export to %s",
+                failed,
+                len(trace.spans),
+                self.endpoint,
+            )
 
         provider.shutdown()
 
