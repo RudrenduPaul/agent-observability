@@ -7,7 +7,9 @@ regardless of which HTTP client (httpx or requests) raised it.
 
 from __future__ import annotations
 
-__all__ = ["NetworkGuardError"]
+import os
+
+__all__ = ["NetworkGuardError", "guard_active"]
 
 
 class NetworkGuardError(RuntimeError):
@@ -21,3 +23,8 @@ class NetworkGuardError(RuntimeError):
     Both the httpx and requests interceptors raise this same class, so a
     single ``except NetworkGuardError`` catches either.
     """
+
+
+def guard_active() -> bool:
+    """Return True when AGENT_TRACE_NETWORK_GUARD=1 is set in the environment."""
+    return os.environ.get("AGENT_TRACE_NETWORK_GUARD", "0") == "1"

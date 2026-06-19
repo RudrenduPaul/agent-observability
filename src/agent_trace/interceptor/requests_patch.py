@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import io
 import logging
-import os
 import warnings
 from typing import TYPE_CHECKING, Any
 
@@ -25,7 +24,7 @@ from requests.adapters import HTTPAdapter
 if TYPE_CHECKING:
     from agent_trace._replay.fixture import Fixture
 
-from agent_trace.core.exceptions import NetworkGuardError
+from agent_trace.core.exceptions import NetworkGuardError, guard_active
 
 __all__ = [
     "NetworkGuardError",
@@ -34,10 +33,6 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
-
-
-def _guard_active() -> bool:
-    return os.environ.get("AGENT_TRACE_NETWORK_GUARD", "0") == "1"
 
 
 class RecordingAdapter(HTTPAdapter):
@@ -117,7 +112,7 @@ class ReplayAdapter(HTTPAdapter):
         exchange: dict[str, Any] | None = self._fixture.next_exchange(url, method)
 
         if exchange is None:
-            if _guard_active():
+            if guard_active():
                 raise NetworkGuardError(
                     f"No recorded exchange for {method} {url} and "
                     "AGENT_TRACE_NETWORK_GUARD=1 is set.  "
