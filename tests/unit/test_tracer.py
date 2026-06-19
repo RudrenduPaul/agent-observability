@@ -107,6 +107,18 @@ class TestStartTrace:
             pass
         assert (tmp_path / "my-custom-run").is_dir()
 
+    def test_start_trace_trace_id_is_hex_and_differs_from_run_id(
+        self, tmp_path: Path
+    ) -> None:
+        """trace_id must be 128-bit hex so OTLP can parse it; run_id is human-readable."""
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("hex-check") as trace:
+            # 32 hex chars = 128 bits
+            assert len(trace.trace_id) == 32
+            int(trace.trace_id, 16)  # raises ValueError if not valid hex
+            # trace_id and run_id must be independent
+            assert trace.trace_id != trace.run_id
+
 
 # ---------------------------------------------------------------------------
 # Tracer.span()
