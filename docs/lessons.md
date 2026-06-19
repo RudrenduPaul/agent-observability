@@ -189,3 +189,21 @@ undiagnosable.
 
 Anti-sycophancy check: Caught in bug audit pass 4. The issue was masked by the internal
 try/except in _enrich_step_span, so earlier passes did not flag it.
+
+---
+
+## 2026-06-19 — Spurious pydantic dependency in pyproject.toml
+
+Pattern: `pydantic>=2.7` was listed as a core dependency in `[project] dependencies`
+but was never imported anywhere in src/, tests/, benchmarks/, or examples/. Every
+`pip install agent-trace` user received a ~4MB Rust-compiled package they didn't need.
+
+Rule: After any dependency is added to pyproject.toml, grep for its import in the full
+codebase before merging. A dependency that appears only in pyproject.toml and nowhere in
+Python files is a strong signal it was added speculatively and never used. Audit core
+dependencies separately from optional extras — spurious core deps affect all users, not
+just those who opt in.
+
+Anti-sycophancy check: Caught in bug audit pass 7 by reading pyproject.toml for the
+first time. Six passes of source-file auditing never caught it because the bug was in
+the packaging config, not the Python code.
