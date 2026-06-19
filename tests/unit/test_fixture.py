@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_trace.replay.fixture import Fixture
+from agent_trace._replay.fixture import Fixture
 
 # ---------------------------------------------------------------------------
 # Helpers

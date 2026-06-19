@@ -43,6 +43,7 @@ dev = [
     "pytest-benchmark[histogram]>=4.0",
     "pytest-cov>=5.0",
     "pytest-asyncio>=0.23",
+    "pytest-env>=1.0",
     "mypy>=1.10",
     "ruff>=0.5",
     "pre-commit>=3.7",
@@ -114,8 +115,8 @@ env = [
 [tool.coverage.run]
 source = ["src/agent_trace"]
 omit = [
-    "*/integrations/*",   # covered by integration tests
-    "*/_cli.py",          # CLI entry point, tested separately via subprocess
+    "*/integrations/*",      # covered by integration tests
+    "*/_cli.py",             # CLI entry point, tested separately via subprocess
     "*/exporters/otlp.py",  # requires optional opentelemetry package
 ]
 

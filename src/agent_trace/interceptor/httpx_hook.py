@@ -22,7 +22,9 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 if TYPE_CHECKING:
-    from agent_trace.replay.fixture import Fixture
+    from agent_trace._replay.fixture import Fixture
+
+from agent_trace.core.exceptions import NetworkGuardError
 
 __all__ = [
     "NetworkGuardError",
@@ -31,16 +33,6 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
-
-
-class NetworkGuardError(RuntimeError):
-    """Raised when a live network call is attempted during guarded replay.
-
-    Set the environment variable ``AGENT_TRACE_NETWORK_GUARD=1`` to activate
-    the guard.  The guard exists so that test suites that rely on fixtures
-    blow up loudly rather than silently hitting real endpoints (which causes
-    non-deterministic results and unexpected costs in LLM-based agents).
-    """
 
 
 def _guard_active() -> bool:

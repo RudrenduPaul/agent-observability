@@ -15,12 +15,12 @@ import httpx
 import pytest
 import respx
 
+from agent_trace._replay.fixture import Fixture
 from agent_trace.interceptor.httpx_hook import (
     NetworkGuardError,
     RecordingTransport,
     ReplayTransport,
 )
-from agent_trace.replay.fixture import Fixture
 
 # ---------------------------------------------------------------------------
 # Helpers

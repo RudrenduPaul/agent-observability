@@ -17,9 +17,9 @@ from typing import Any
 
 import httpx
 
+from agent_trace._replay.engine import ReplayEngine
+from agent_trace._replay.fixture import Fixture
 from agent_trace.interceptor.httpx_hook import ReplayTransport
-from agent_trace.replay.engine import ReplayEngine
-from agent_trace.replay.fixture import Fixture
 
 # ---------------------------------------------------------------------------
 # Fixture construction

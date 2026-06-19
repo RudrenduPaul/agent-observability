@@ -102,6 +102,85 @@ class TestStdoutExporter:
         captured = capsys.readouterr()
         assert "[ERR]" in captured.out or "ERROR" in captured.out
 
+    def test_export_span_unset_shows_symbol(self, capsys) -> None:
+        exporter = StdoutExporter()
+        span = Span(name="unset-span")
+        exporter.export_span(span, depth=0)
+        captured = capsys.readouterr()
+        assert "[---]" in captured.out or "UNSET" in captured.out
+
+    def test_export_span_shows_duration_when_ended(self, capsys) -> None:
+        exporter = StdoutExporter()
+        span = Span(name="timed-span")
+        span.end()
+        exporter.export_span(span, depth=0)
+        captured = capsys.readouterr()
+        assert "ms" in captured.out
+
+    def test_plain_text_fallback_when_rich_unavailable(self, capsys) -> None:
+        """With rich import blocked, export() must fall back to plain text."""
+        import sys
+        import unittest.mock
+
+        exporter = StdoutExporter()
+        trace = _make_trace(2)
+
+        with unittest.mock.patch.dict(sys.modules, {"rich": None, "rich.console": None, "rich.tree": None}):
+            exporter.export(trace)
+
+        captured = capsys.readouterr()
+        assert "Trace:" in captured.out
+
+    def test_plain_text_output_contains_span_names(self, capsys) -> None:
+        import sys
+        import unittest.mock
+
+        exporter = StdoutExporter()
+        trace = _make_trace(2)
+
+        with unittest.mock.patch.dict(sys.modules, {"rich": None, "rich.console": None, "rich.tree": None}):
+            exporter.export(trace)
+
+        captured = capsys.readouterr()
+        assert "span-0" in captured.out
+
+    def test_rich_export_parent_child_nesting(self, capsys) -> None:
+        """Parent span and child span in the same trace — child must be nested."""
+        exporter = StdoutExporter()
+
+        trace = Trace(trace_id="t-nest", run_id="run-nest")
+        trace.metadata["name"] = "nested"
+
+        parent = Span(name="parent", span_id="p001", trace_id="t-nest")
+        parent.end()
+        child = Span(name="child", span_id="c001", trace_id="t-nest", parent_id="p001")
+        child.end()
+
+        trace.add_span(parent)
+        trace.add_span(child)
+
+        exporter.export(trace)
+        captured = capsys.readouterr()
+        assert "parent" in captured.out
+        assert "child" in captured.out
+
+    def test_rich_export_includes_duration_when_spans_have_times(self, capsys) -> None:
+        """When spans have start/end times, the trace header shows total duration."""
+        exporter = StdoutExporter()
+        trace = _make_trace(2)
+        exporter.export(trace)
+        captured = capsys.readouterr()
+        assert "ms" in captured.out or "total" in captured.out
+
+    def test_export_error_span_does_not_raise(self, capsys) -> None:
+        exporter = StdoutExporter()
+        trace = Trace(trace_id="t-err", run_id="run-err")
+        trace.metadata["name"] = "error-trace"
+        span = Span(name="broken", span_id="e001", trace_id="t-err")
+        span.end(SpanStatus.ERROR)
+        trace.add_span(span)
+        exporter.export(trace)
+
 
 # ---------------------------------------------------------------------------
 # FileExporter

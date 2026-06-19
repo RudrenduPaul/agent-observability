@@ -12,10 +12,10 @@ from pathlib import Path
 
 import pytest
 
+from agent_trace._replay.fixture import Fixture
 from agent_trace.core.clock import FixtureClock
 from agent_trace.core.span import Span
 from agent_trace.core.trace import Trace
-from agent_trace.replay.fixture import Fixture
 
 
 @pytest.fixture

@@ -16,10 +16,10 @@ from pathlib import Path
 import httpx
 import pytest
 
+from agent_trace._replay.engine import ReplayEngine, replay_context
+from agent_trace._replay.fixture import Fixture
 from agent_trace.core.clock import FixtureClock, WallClock, get_clock
 from agent_trace.interceptor.httpx_hook import NetworkGuardError
-from agent_trace.replay.engine import ReplayEngine, replay_context
-from agent_trace.replay.fixture import Fixture
 
 # ---------------------------------------------------------------------------
 # Helpers
