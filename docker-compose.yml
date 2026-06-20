@@ -25,21 +25,30 @@ services:
       - ./docker/tempo.yaml:/etc/tempo.yaml
       - tempo-data:/tmp/tempo
     ports:
-      - "3200:3200"     # Tempo query
+      - "3200:3200"     # Tempo query API
       - "9095:9095"     # Tempo gRPC
+      - "4319:4317"     # OTLP gRPC → Tempo (use 4319 to avoid conflict with Jaeger's 4317)
+      - "4320:4318"     # OTLP HTTP → Tempo
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3200/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     restart: unless-stopped
 
   grafana:
     image: grafana/grafana:11.0.0
     ports:
-      - "3000:3000"     # Grafana UI
+      - "3000:3000"     # Grafana UI (primary browser UI)
     environment:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
       - GF_AUTH_DISABLE_LOGIN_FORM=true
     volumes:
       - ./docker/grafana/datasources:/etc/grafana/provisioning/datasources
-    depends_on: [tempo]
+    depends_on:
+      tempo:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
