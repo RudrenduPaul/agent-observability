@@ -103,10 +103,18 @@ class ReplayTransport(httpx.BaseTransport):
     ----------
     fixture:
         Open Fixture instance to serve recorded exchanges from.
+    clock:
+        Optional FixtureClock to advance with each exchange's recorded_at
+        timestamp, reproducing original execution timing during replay.
     """
 
-    def __init__(self, fixture: Fixture) -> None:
+    def __init__(
+        self,
+        fixture: Fixture,
+        clock: Any | None = None,
+    ) -> None:
         self._fixture = fixture
+        self._clock = clock
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         """Return the next recorded response for *(method, url)*."""
@@ -134,6 +142,11 @@ class ReplayTransport(httpx.BaseTransport):
                 return fallback.handle_request(request)
             finally:
                 fallback.close()
+
+        # Advance the replay clock to the recorded wall time so that spans
+        # created during replay carry meaningful relative timestamps.
+        if self._clock is not None:
+            self._clock.advance(float(exchange["recorded_at"]))
 
         return httpx.Response(
             status_code=int(exchange["response_status"]),
