@@ -19,7 +19,7 @@ import warnings
 from typing import TYPE_CHECKING, Any
 
 from requests import PreparedRequest, Response
-from requests.adapters import HTTPAdapter
+from requests.adapters import BaseAdapter, HTTPAdapter
 
 if TYPE_CHECKING:
     from agent_trace._replay.fixture import Fixture
@@ -42,11 +42,20 @@ class RecordingAdapter(HTTPAdapter):
 
         session = requests.Session()
         session.mount("https://", RecordingAdapter(fixture))
+
+    Pass *inner* to wrap an existing adapter (preserves connection pooling
+    and custom adapters) instead of creating a fresh HTTPAdapter pool.
     """
 
-    def __init__(self, fixture: Fixture, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        fixture: Fixture,
+        inner: BaseAdapter | None = None,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(**kwargs)
         self._fixture = fixture
+        self._inner = inner
 
     def send(
         self,
@@ -55,7 +64,10 @@ class RecordingAdapter(HTTPAdapter):
         **kwargs: Any,
     ) -> Response:
         """Send the request, record the exchange, return the response."""
-        response: Response = super().send(request, *args, **kwargs)
+        if self._inner is not None:
+            response: Response = self._inner.send(request, *args, **kwargs)
+        else:
+            response = super().send(request, *args, **kwargs)
 
         url = str(request.url or "")
         method = str(request.method or "GET").upper()
