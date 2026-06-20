@@ -10,8 +10,8 @@ jobs:
     name: Build and publish to PyPI
     runs-on: ubuntu-latest
     permissions:
-      id-token: write
-      contents: write
+      id-token: write   # required for OIDC signing (sigstore + PyPI trusted publishing)
+      contents: write   # required to create GitHub releases and upload assets
 
     steps:
       - uses: actions/checkout@v4
@@ -29,21 +29,30 @@ jobs:
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
 
-      - name: Generate SBOM
+      # SBOM — CycloneDX JSON (machine-readable) + XML (toolchain-compatible)
+      # cyclonedx-py 4.x CLI: `cyclonedx-py environment` generates from the
+      # active Python environment; outputs CycloneDX 1.6 by default.
+      - name: Generate SBOM (JSON + XML)
         run: |
-          pip install cyclonedx-bom==5.1.1
-          cyclonedx-py environment -o sbom.json --format json
+          pip install cyclonedx-bom==4.5.0
+          cyclonedx-py environment --format JSON --output-file sbom.json
+          cyclonedx-py environment --format XML  --output-file sbom.xml
 
-      - name: Sign release artifacts
+      # SLSA Level 2 — sign dist artifacts with Sigstore via GitHub OIDC.
+      # Produces *.sigstore bundles alongside each dist file.
+      - name: Sign release artifacts (sigstore / SLSA Level 2)
         uses: sigstore/gh-action-sigstore-python@v3
         with:
           inputs: dist/*.whl dist/*.tar.gz
 
+      # Upload to GitHub release: dist files + sigstore bundles + both SBOM formats
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            sbom.json
             dist/*.whl
             dist/*.tar.gz
+            dist/*.sigstore
+            sbom.json
+            sbom.xml
           generate_release_notes: true
