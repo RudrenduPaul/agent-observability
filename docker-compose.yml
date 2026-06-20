@@ -1,12 +1,18 @@
 version: "3.9"
 
+# After `docker compose up -d`:
+#   Jaeger UI      → http://localhost:16686
+#   Grafana UI     → http://localhost:3000  (anonymous auth, Tempo pre-wired)
+#   OTLP gRPC      → localhost:4317   (send traces here, not a browser UI)
+#   OTLP HTTP      → localhost:4318
+
 services:
   jaeger:
     image: jaegertracing/all-in-one:1.58
     ports:
-      - "16686:16686"   # UI
-      - "4317:4317"     # OTLP gRPC
-      - "4318:4318"     # OTLP HTTP
+      - "16686:16686"   # Jaeger UI
+      - "4317:4317"     # OTLP gRPC receiver
+      - "4318:4318"     # OTLP HTTP receiver
     environment:
       - COLLECTOR_OTLP_ENABLED=true
     restart: unless-stopped

@@ -4,12 +4,22 @@ OpenAI Agents SDK integration.
 Wraps openai-agents Runner to emit spans for each agent turn, tool call,
 and handoff.
 
-Usage:
-    from agent_trace.integrations.openai_agents import instrument_runner
-    from agent_trace import tracer
+Usage (hook-based — recommended)::
 
-    with tracer.start_trace("my_agent_run", record=True) as trace:
-        result = await instrument_runner(runner, input="hello", trace=trace)
+    from agents import Agent, Runner
+    from agent_trace import Tracer
+    from agent_trace.integrations.openai_agents import AgentTraceHook
+
+    t = Tracer()
+    with t.start_trace("my_agent_run", record=True) as trace:
+        hook = AgentTraceHook(tracer=t, trace=trace)
+        result = await Runner.run(agent, "hello", hooks=hook)
+
+Usage (convenience wrapper)::
+
+    from agent_trace.integrations.openai_agents import instrument_runner
+
+    result = await instrument_runner(agent, "hello", tracer=t, trace=trace)
 """
 
 from __future__ import annotations
@@ -165,6 +175,38 @@ class AgentTraceHook:
                 },
             )
 
+    def on_llm_start(
+        self, context: Any, agent: Any, system_prompt: Any, input_items: Any
+    ) -> None:
+        """Called before each LLM request — record the model being called."""
+        agent_name: str = getattr(agent, "name", None) or "agent"
+        model: str = getattr(agent, "model", None) or "unknown"
+        key = f"llm:{id(context)}:{agent_name}"
+        parent_key = f"agent:{id(context)}:{agent_name}"
+        span = self._open_span(key, f"llm:{model}", parent_key=parent_key)
+        span.set_attribute("llm.model", model)
+
+    def on_llm_end(self, context: Any, agent: Any, response: Any) -> None:
+        """Called after each LLM response — record token usage if available."""
+        agent_name: str = getattr(agent, "name", None) or "agent"
+        key = f"llm:{id(context)}:{agent_name}"
+        with self._lock:
+            span = self._spans.get(key)
+        if span is not None:
+            try:
+                usage = getattr(response, "usage", None)
+                if usage is not None:
+                    if pt := getattr(usage, "input_tokens", None):
+                        span.set_attribute("llm.usage.prompt_tokens", int(pt))
+                    if ct := getattr(usage, "output_tokens", None):
+                        span.set_attribute("llm.usage.completion_tokens", int(ct))
+            except Exception:
+                logger.debug(
+                    "agent-trace: failed to record token usage",
+                    exc_info=True,
+                )
+        self._close_span(key, SpanStatus.OK)
+
 
 # ---------------------------------------------------------------------------
 # instrument_runner — high-level async wrapper
@@ -172,82 +214,54 @@ class AgentTraceHook:
 
 
 async def instrument_runner(
-    runner: Any,
-    *,
+    agent: Any,
     input: Any,
+    *,
     tracer: Tracer,
     trace: Trace,
     **kwargs: Any,
 ) -> Any:
-    """Wrap a ``Runner.run()`` call with agent-trace spans.
+    """Run an openai-agents ``Agent`` through ``Runner.run`` with span instrumentation.
 
-    Creates a root span named ``"agent_run"`` and, where the SDK exposes a
-    streaming interface, creates child spans for each step.
+    This is a convenience wrapper that combines ``AgentTraceHook`` with
+    ``Runner.run``.  Pass an ``Agent`` and the input text; agent-trace handles
+    hooking in the span collection automatically.
 
     Parameters
     ----------
-    runner:
-        An openai-agents ``Runner`` (or compatible object with a ``run``
-        method).
+    agent:
+        An openai-agents ``Agent`` instance.
     input:
-        The input to pass to ``runner.run()``.
+        The input string (or message list) to pass to ``Runner.run``.
     tracer:
         The active :class:`~agent_trace.Tracer`.
     trace:
         The current :class:`~agent_trace.Trace`.
     **kwargs:
-        Additional keyword arguments forwarded to ``runner.run()``.
+        Additional keyword arguments forwarded to ``Runner.run``
+        (e.g. ``max_turns``, ``context``).
 
     Returns
     -------
     Any
-        The final result from the runner.
+        The ``RunResult`` from ``Runner.run``.
     """
-    _require_openai_agents()
+    sdk = _require_openai_agents()
 
+    runner_cls = getattr(sdk, "Runner", None)
+    if runner_cls is None:
+        import importlib
+
+        runner_mod = importlib.import_module("agents.run")
+        runner_cls = runner_mod.Runner
+
+    hook = AgentTraceHook(tracer=tracer, trace=trace)
     root_span = tracer.start_span("agent_run")
     result: Any = None
 
     try:
-        # Attempt to use the streaming interface if available so we can
-        # create per-step child spans.
-        run_method = getattr(runner, "run_streamed", None) or getattr(
-            runner, "run", None
-        )
-        if run_method is None:
-            raise AttributeError(
-                f"{type(runner).__name__!r} has no 'run' or 'run_streamed' method."
-            )
-
-        step_index = 0
-        raw = run_method(input, **kwargs)
-
-        # If the result is an async iterable, iterate and create step spans
-        if hasattr(raw, "__aiter__"):
-            async for step in raw:
-                step_span_name = (
-                    getattr(step, "type", None)
-                    or getattr(step, "event", None)
-                    or f"step_{step_index}"
-                )
-                step_span = tracer.start_span(
-                    str(step_span_name), parent_id=root_span.span_id
-                )
-                try:
-                    _enrich_step_span(step_span, step)
-                    step_span.end(SpanStatus.OK)
-                except Exception:
-                    logger.debug(
-                        "agent-trace: failed to end step span %r",
-                        step_span.name,
-                        exc_info=True,
-                    )
-                    if step_span.end_time is None:
-                        step_span.end(SpanStatus.OK)
-                step_index += 1
-                # Track the last step as the result
-                result = step
-        elif inspect.isawaitable(raw):
+        raw = runner_cls.run(agent, input, hooks=hook, **kwargs)
+        if inspect.isawaitable(raw):
             result = await raw
         else:
             result = raw
