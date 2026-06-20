@@ -166,9 +166,12 @@ def _get_tracer_class() -> type:
                 **kwargs: Any,
             ) -> None:
                 """Start a span when a graph node (chain) begins execution."""
+                # LangGraph 1.x passes serialized=None; node name is in kwargs['name'].
+                ser = serialized or {}
                 node_name: str = (
-                    serialized.get("name")
-                    or serialized.get("id", [None])[-1]
+                    kwargs.get("name")
+                    or ser.get("name")
+                    or (ser.get("id") or [None])[-1]
                     or "chain"
                 )
                 span = self._open_span(run_id, f"node:{node_name}", parent_run_id)
@@ -216,10 +219,12 @@ def _get_tracer_class() -> type:
                 **kwargs: Any,
             ) -> None:
                 """Start a span for a legacy LLM call, recording the model name."""
+                ser = serialized or {}
                 model_name: str = (
-                    (serialized.get("kwargs") or {}).get("model_name")
-                    or (serialized.get("kwargs") or {}).get("model")
-                    or serialized.get("name")
+                    kwargs.get("name")
+                    or (ser.get("kwargs") or {}).get("model_name")
+                    or (ser.get("kwargs") or {}).get("model")
+                    or ser.get("name")
                     or "llm"
                 )
                 span = self._open_span(run_id, f"llm:{model_name}", parent_run_id)
@@ -243,7 +248,8 @@ def _get_tracer_class() -> type:
                 of ``on_llm_start``.  Without this handler those spans are silently
                 dropped.
                 """
-                model_name: str = serialized.get("name") or "unknown"
+                ser = serialized or {}
+                model_name: str = kwargs.get("name") or ser.get("name") or "unknown"
                 span = self._open_span(run_id, "llm", parent_run_id)
                 span.set_attribute("llm.model", model_name)
 
@@ -315,7 +321,8 @@ def _get_tracer_class() -> type:
                 **kwargs: Any,
             ) -> None:
                 """Start a span when a tool begins execution."""
-                tool_name: str = serialized.get("name") or "tool"
+                ser = serialized or {}
+                tool_name: str = kwargs.get("name") or ser.get("name") or "tool"
                 span = self._open_span(run_id, f"tool:{tool_name}", parent_run_id)
                 span.set_attribute("tool.name", tool_name)
 
