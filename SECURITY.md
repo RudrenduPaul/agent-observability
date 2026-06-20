@@ -11,7 +11,7 @@
 **Do NOT open a public GitHub issue for security vulnerabilities.**
 
 Email: agent.obs.oss.security@gmail.com
-Subject line: `[agent-trace SECURITY] <brief description>`
+Subject line: `[agent-observability SECURITY] <brief description>`
 
 We will acknowledge within 48 hours and provide a fix timeline within 7 days.
 Public disclosure follows 90 days after the report, or after the patch ships — whichever comes first.
