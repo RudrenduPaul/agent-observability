@@ -36,6 +36,7 @@ from agent_trace._replay.fixture import Fixture
 from agent_trace.core.exceptions import NetworkGuardError
 from agent_trace.core.span import Span, SpanStatus
 from agent_trace.core.trace import Trace
+from agent_trace.plugins.base import Plugin, PluginBase, SpanPlugin, TracePlugin
 
 __version__ = "0.1.0"
 
@@ -44,10 +45,14 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "Fixture",
     "NetworkGuardError",
+    "Plugin",
+    "PluginBase",
     "ReplayContext",
     "Span",
+    "SpanPlugin",
     "SpanStatus",
     "Trace",
+    "TracePlugin",
     "Tracer",
     "replay",
     "tracer",
@@ -84,6 +89,8 @@ class Tracer:
         # Stored as a (sync_init, async_init) tuple when patched; None otherwise.
         self._original_httpx_init: tuple[Any, Any] | None = None
         self._original_requests_get_adapter: Any = None
+        # Registered plugins — called on span and trace lifecycle events.
+        self._plugins: list[Plugin] = []
 
     # ------------------------------------------------------------------
     # Trace lifecycle
@@ -120,6 +127,8 @@ class Tracer:
         trace.metadata["name"] = name
         token: Token[Trace | None] = self._active_trace_var.set(trace)
 
+        self._call_plugin("on_trace_start", trace)
+
         # Use Fixture as a context manager when recording; nullcontext() when
         # not, so fixture lifecycle and transport patching are always balanced.
         fixture_ctx: Any = (
@@ -154,6 +163,7 @@ class Tracer:
                     trace_json_path,
                     _write_err,
                 )
+            self._call_plugin("on_trace_end", trace)
             self._active_trace_var.reset(token)
 
     # ------------------------------------------------------------------
@@ -231,6 +241,9 @@ class Tracer:
 
         If there is no active trace this is a no-op that returns a detached
         span (it will not appear in any serialised output).
+
+        Registered plugins receive ``on_span_start`` immediately and
+        ``on_span_end`` when ``span.end()`` is called.
         """
         active = self._active_trace_var.get()
         span_id = uuid.uuid4().hex[:16]
@@ -238,6 +251,16 @@ class Tracer:
         s = Span(name=name, span_id=span_id, trace_id=trace_id, parent_id=parent_id)
         if active is not None:
             active.add_span(s)
+        self._call_plugin("on_span_start", s)
+        if self._plugins:
+            tracer_ref = self
+            original_end = s.end
+
+            def _plugin_end(status: SpanStatus = SpanStatus.OK) -> None:
+                original_end(status)
+                tracer_ref._call_plugin("on_span_end", s)
+
+            s.end = _plugin_end  # type: ignore[method-assign]
         return s
 
     # ------------------------------------------------------------------
@@ -248,6 +271,52 @@ class Tracer:
     def active_trace(self) -> Trace | None:
         """The currently active :class:`Trace`, or None outside a trace context."""
         return self._active_trace_var.get()
+
+    # ------------------------------------------------------------------
+    # Plugin API
+    # ------------------------------------------------------------------
+
+    def add_plugin(self, plugin: Plugin) -> None:
+        """Register a plugin to receive span and trace lifecycle callbacks.
+
+        Plugins are called synchronously in registration order.  Exceptions
+        inside a plugin hook are caught and logged so a buggy plugin cannot
+        silently break the caller.
+
+        Example::
+
+            from agent_trace.plugins import PluginBase
+
+            class LogPlugin(PluginBase):
+                def on_span_end(self, span):
+                    print(span.name, span.duration_ms)
+
+            tracer.add_plugin(LogPlugin())
+        """
+        if plugin not in self._plugins:
+            self._plugins.append(plugin)
+
+    def remove_plugin(self, plugin: Plugin) -> None:
+        """Unregister a previously added plugin."""
+        try:
+            self._plugins.remove(plugin)
+        except ValueError:
+            pass
+
+    def _call_plugin(self, method: str, arg: Any) -> None:
+        """Call *method* on every registered plugin, swallowing exceptions."""
+        for plugin in self._plugins:
+            fn = getattr(plugin, method, None)
+            if fn is not None:
+                try:
+                    fn(arg)
+                except Exception:
+                    logger.warning(
+                        "agent-trace: plugin %r raised in %s — skipping",
+                        plugin,
+                        method,
+                        exc_info=True,
+                    )
 
     # ------------------------------------------------------------------
     # Recording transport patching
