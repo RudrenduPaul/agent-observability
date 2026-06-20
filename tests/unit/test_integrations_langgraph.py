@@ -251,3 +251,88 @@ class TestLangGraphCallbacks:
         phantom_id = _run_id()
         handler.on_chain_end({}, run_id=phantom_id)  # must not raise
         handler.on_tool_end("x", run_id=phantom_id)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# LangGraph 1.x compatibility — serialized=None, name in kwargs
+# ---------------------------------------------------------------------------
+
+
+class TestLangGraph1xSerializedNone:
+    """LangGraph 1.x passes serialized=None; name arrives in **kwargs.
+
+    These tests guard against the AttributeError crash introduced in that
+    API change and verify that node/tool names are resolved from kwargs.
+    """
+
+    def test_chain_start_serialized_none_does_not_crash(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        # LangGraph 1.x calling pattern: serialized=None, name="node_a" in kwargs
+        handler.on_chain_start(None, {}, run_id=run_id, name="node_a")  # type: ignore[arg-type]
+        assert str(run_id) in handler._spans
+
+    def test_chain_start_serialized_none_uses_kwargs_name(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chain_start(None, {}, run_id=run_id, name="node_a")  # type: ignore[arg-type]
+        span = handler._spans[str(run_id)]
+        assert span.name == "node:node_a"
+        assert span.attributes.get("langgraph.node") == "node_a"
+
+    def test_chain_start_serialized_none_fallback_to_chain(self, tracer_and_trace):
+        """No name anywhere → fall back to 'chain'."""
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chain_start(None, {}, run_id=run_id)  # type: ignore[arg-type]
+        span = handler._spans[str(run_id)]
+        assert span.name == "node:chain"
+
+    def test_llm_start_serialized_none_does_not_crash(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_llm_start(None, ["prompt"], run_id=run_id, name="gpt-4o")  # type: ignore[arg-type]
+        assert str(run_id) in handler._spans
+
+    def test_llm_start_serialized_none_uses_kwargs_name(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_llm_start(None, ["prompt"], run_id=run_id, name="gpt-4o")  # type: ignore[arg-type]
+        span = handler._spans[str(run_id)]
+        assert span.name == "llm:gpt-4o"
+
+    def test_chat_model_start_serialized_none_does_not_crash(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chat_model_start(None, [[]], run_id=run_id, name="ChatOpenAI")  # type: ignore[arg-type]
+        assert str(run_id) in handler._spans
+
+    def test_chat_model_start_serialized_none_uses_kwargs_name(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chat_model_start(None, [[]], run_id=run_id, name="ChatOpenAI")  # type: ignore[arg-type]
+        span = handler._spans[str(run_id)]
+        assert span.attributes.get("llm.model") == "ChatOpenAI"
+
+    def test_tool_start_serialized_none_does_not_crash(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_tool_start(None, "query", run_id=run_id, name="web_search")  # type: ignore[arg-type]
+        assert str(run_id) in handler._spans
+
+    def test_tool_start_serialized_none_uses_kwargs_name(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_tool_start(None, "query", run_id=run_id, name="web_search")  # type: ignore[arg-type]
+        span = handler._spans[str(run_id)]
+        assert span.name == "tool:web_search"
+        assert span.attributes.get("tool.name") == "web_search"
