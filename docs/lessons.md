@@ -1,4 +1,4 @@
-# Lessons — agent-trace
+# Lessons — agent-observability
 
 Append to this file after any correction or non-obvious architectural decision.
 Read this file at the start of every session before writing code.

@@ -1,4 +1,4 @@
-# Contributing to agent-trace
+# Contributing to agent-observability
 
 Thank you for your interest in contributing. This guide covers everything you need to get started, from setting up a local dev environment to getting your PR merged quickly.
 

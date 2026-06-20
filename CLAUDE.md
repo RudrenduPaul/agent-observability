@@ -1,4 +1,4 @@
-# CLAUDE.md — agent-trace
+# CLAUDE.md — agent-observability
 
 ## Git Workflow
 
