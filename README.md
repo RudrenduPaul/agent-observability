@@ -286,6 +286,36 @@ exporter.export(trace)
 
 ---
 
+## Changelog
+
+### 2026-06-19 — Engineering Audit: 11 Bugs Fixed
+
+**Critical / High**
+
+- **B1 — Dead code removed** (`integrations/openai_agents.py`): `_enrich_step_span` was a 27-line method that was never called. Removed entirely. Reduces maintenance surface and eliminates a source of divergence when the SDK updates its step schema.
+
+- **B2 — Missing `total_tokens` in LLM span** (`integrations/openai_agents.py`): `on_llm_end` recorded `prompt_tokens` and `completion_tokens` but silently dropped `total_tokens`. Fixed: explicit `total_tokens` from the SDK response is now recorded; when the SDK omits it, the sum `prompt + completion` is computed as a fallback.
+
+- **B3 — `httpx.AsyncClient` not patched in recording mode** (`__init__.py`): Only `httpx.Client.__init__` was monkey-patched during record mode. All async SDK clients (OpenAI, Anthropic) use `httpx.AsyncClient` and were hitting the live network instead of being captured. Fixed: both `Client.__init__` and `AsyncClient.__init__` are now patched and restored symmetrically.
+
+- **B4 — Duplicate `_AttrValue` type alias** (`core/trace.py`): `_AttrValue = str | int | float | bool` was defined independently in both `span.py` and `trace.py`. Removed from `trace.py`; `trace.py` now imports it from `span.py` as the single source of truth.
+
+- **B5 — Inconsistent LLM attribute name** (`integrations/langgraph.py`): `on_llm_start` set `llm.model_name`; all other callbacks used `llm.model`. Standardized to `llm.model` everywhere.
+
+- **B6 — `_patch_requests` replaced adapter wholesale** (`__init__.py`, `interceptor/requests_patch.py`): `get_adapter` was overridden to always return a brand-new `RecordingAdapter`, discarding any custom adapter the user had installed (e.g., `HTTPAdapter(max_retries=...)`). Fixed: the original adapter is fetched first and passed as `inner=` to `RecordingAdapter`, which delegates the actual send to it while recording the exchange.
+
+- **B7 — `httpx.AsyncClient` not patched in replay mode** (`_replay/engine.py`): The replay engine only patched `httpx.Client.__init__`, leaving async SDK HTTP calls to hit the live network during replay. Fixed: `httpx.AsyncClient.__init__` is now patched alongside `httpx.Client.__init__` with the same `ReplayTransport`.
+
+- **B8 — gRPC `TracerProvider` resource leak** (`exporters/otlp.py`): `provider.shutdown()` was called at the end of `export()` but not in a `try/finally` block. A `KeyboardInterrupt` or exception during span export leaked the gRPC channel indefinitely. Fixed: `provider.shutdown()` is now guaranteed via `try/finally`.
+
+- **B9 — Fixture stored with `run_id` instead of `trace_id`** (`__init__.py`): `Fixture(run_dir / "fixture.db", trace_id=effective_run_id)` passed the human-readable run directory name (e.g. `run_abc123`) as `trace_id`. The `Trace` object carries a separate 128-bit hex `trace_id` for OTLP. These were two different values, breaking any cross-correlation between the fixture and the trace. Fixed: `trace_id=trace.trace_id` now uses the actual trace identifier.
+
+- **B10 — `FixtureClock` created but never advanced** (`_replay/engine.py`, `interceptor/httpx_hook.py`): During replay, a `FixtureClock` was installed as the time source, but no code ever called `clock.advance(...)`. All replay spans received the same initial timestamp, making span ordering indeterminate in any tool that sorts by time. Fixed: `ReplayTransport` now accepts an optional `clock` parameter and calls `clock.advance(exchange["recorded_at"])` after each exchange is served, so replay spans carry the same relative timestamps as the original run.
+
+- **B11 — No error callbacks in `AgentTraceHook`** (`integrations/openai_agents.py`): When an agent turn or tool invocation raised an exception, neither `on_agent_error` nor `on_tool_error` was defined. The span for that agent or tool would remain open in `_spans` indefinitely, leaking memory for the lifetime of the hook object and leaving end_time as None. Fixed: both handlers now close the associated span with `SpanStatus.ERROR` and call `span.record_exception(error)`.
+
+---
+
 ## Security note
 
 Fixture files at `~/.agent-trace/runs/` contain full HTTP request and response bodies, including API keys, prompt contents, and user data. Add this to your `.gitignore`:

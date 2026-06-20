@@ -81,7 +81,8 @@ class Tracer:
         # here so their types are declared once and getattr-with-default is
         # never needed.
         self._transport_depth: int = 0
-        self._original_httpx_init: Any = None
+        # Stored as a (sync_init, async_init) tuple when patched; None otherwise.
+        self._original_httpx_init: tuple[Any, Any] | None = None
         self._original_requests_get_adapter: Any = None
 
     # ------------------------------------------------------------------
@@ -122,7 +123,7 @@ class Tracer:
         # Use Fixture as a context manager when recording; nullcontext() when
         # not, so fixture lifecycle and transport patching are always balanced.
         fixture_ctx: Any = (
-            Fixture(run_dir / "fixture.db", trace_id=effective_run_id)
+            Fixture(run_dir / "fixture.db", trace_id=trace.trace_id)
             if record
             else nullcontext()
         )
@@ -282,14 +283,20 @@ class Tracer:
 
             from agent_trace.interceptor.httpx_hook import RecordingTransport
 
-            orig = httpx.Client.__init__
+            orig_sync = httpx.Client.__init__
+            orig_async = httpx.AsyncClient.__init__
 
-            def _patched(client_self: Any, *args: Any, **kwargs: Any) -> None:
+            def _patched_sync(client_self: Any, *args: Any, **kwargs: Any) -> None:
                 kwargs.setdefault("transport", RecordingTransport(fixture))
-                orig(client_self, *args, **kwargs)
+                orig_sync(client_self, *args, **kwargs)
 
-            self._original_httpx_init = orig
-            setattr(httpx.Client, "__init__", _patched)
+            def _patched_async(client_self: Any, *args: Any, **kwargs: Any) -> None:
+                kwargs.setdefault("transport", RecordingTransport(fixture))
+                orig_async(client_self, *args, **kwargs)
+
+            self._original_httpx_init = (orig_sync, orig_async)
+            setattr(httpx.Client, "__init__", _patched_sync)
+            setattr(httpx.AsyncClient, "__init__", _patched_async)
         except ImportError:
             pass
 
@@ -302,7 +309,10 @@ class Tracer:
             orig = requests.Session.get_adapter
 
             def _patched(session_self: Any, url: str, **kwargs: Any) -> Any:
-                return RecordingAdapter(fixture)
+                # Call the original dispatch so custom adapters are respected,
+                # then wrap the returned adapter to record the exchange.
+                inner = orig(session_self, url, **kwargs)
+                return RecordingAdapter(fixture, inner=inner)
 
             self._original_requests_get_adapter = orig
             setattr(requests.Session, "get_adapter", _patched)
@@ -316,7 +326,9 @@ class Tracer:
         try:
             import httpx
 
-            setattr(httpx.Client, "__init__", orig)
+            orig_sync, orig_async = orig
+            setattr(httpx.Client, "__init__", orig_sync)
+            setattr(httpx.AsyncClient, "__init__", orig_async)
         except ImportError:
             pass
         self._original_httpx_init = None

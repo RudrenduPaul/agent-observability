@@ -70,18 +70,24 @@ class ReplayEngine:
             token: Token[Any] = set_clock(clock)
 
             # --- httpx patch -----------------------------------------------
-            # We patch httpx.Client.__init__ to inject our ReplayTransport as
-            # the default transport.  The original __init__ is called first so
-            # SSL, timeout, and other settings are preserved.
+            # Both httpx.Client and httpx.AsyncClient are patched so that
+            # SDK-created clients (sync and async) use ReplayTransport.
+            # The clock is threaded through so each served exchange advances
+            # the FixtureClock, reproducing recorded execution timing.
             original_httpx_init = httpx.Client.__init__
+            original_httpx_async_init = httpx.AsyncClient.__init__
 
             def patched_httpx_init(
                 client_self: httpx.Client, *args: Any, **kwargs: Any
             ) -> None:
-                # Inject our transport before the real __init__ can set the
-                # default so SDK-created clients pick it up without any change.
-                kwargs.setdefault("transport", ReplayTransport(fixture))
+                kwargs.setdefault("transport", ReplayTransport(fixture, clock=clock))
                 original_httpx_init(client_self, *args, **kwargs)
+
+            def patched_httpx_async_init(
+                client_self: httpx.AsyncClient, *args: Any, **kwargs: Any
+            ) -> None:
+                kwargs.setdefault("transport", ReplayTransport(fixture, clock=clock))
+                original_httpx_async_init(client_self, *args, **kwargs)
 
             # --- requests patch (optional) ---------------------------------
             # requests is an optional dependency.  When absent, use nullcontext
@@ -106,6 +112,9 @@ class ReplayEngine:
                 with (
                     unittest.mock.patch.object(
                         httpx.Client, "__init__", patched_httpx_init
+                    ),
+                    unittest.mock.patch.object(
+                        httpx.AsyncClient, "__init__", patched_httpx_async_init
                     ),
                     requests_patch,
                 ):

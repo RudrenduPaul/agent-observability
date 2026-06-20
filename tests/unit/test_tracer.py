@@ -477,3 +477,24 @@ class TestRecordingTransportNesting:
                 assert t._transport_depth == 2
             assert t._transport_depth == 1
         assert t._transport_depth == 0
+
+    def test_async_client_is_also_patched_during_recording(
+        self, tmp_path: Path
+    ) -> None:
+        """httpx.AsyncClient.__init__ must be patched alongside Client during record."""
+        import httpx
+
+        t = Tracer(trace_dir=tmp_path)
+        orig_async = httpx.AsyncClient.__init__
+        orig_sync = httpx.Client.__init__
+
+        with t.start_trace("async-patch-test", record=True, run_id="async-patch"):
+            assert httpx.Client.__init__ is not orig_sync
+            assert httpx.AsyncClient.__init__ is not orig_async, (
+                "AsyncClient.__init__ was not patched — async HTTP calls during "
+                "record mode would be silently unintercepted"
+            )
+
+        # Both restored on exit
+        assert httpx.Client.__init__ is orig_sync
+        assert httpx.AsyncClient.__init__ is orig_async

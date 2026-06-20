@@ -228,7 +228,7 @@ def _get_tracer_class() -> type:
                     or "llm"
                 )
                 span = self._open_span(run_id, f"llm:{model_name}", parent_run_id)
-                span.set_attribute("llm.model_name", model_name)
+                span.set_attribute("llm.model", model_name)
                 span.set_attribute("llm.prompt_count", len(prompts))
 
             def on_chat_model_start(

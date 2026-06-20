@@ -12,11 +12,9 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from agent_trace.core.span import Span
+from agent_trace.core.span import Span, _AttrValue
 
 __all__ = ["Trace"]
-
-_AttrValue = str | int | float | bool
 
 
 @dataclass
