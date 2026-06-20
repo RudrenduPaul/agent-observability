@@ -27,6 +27,7 @@ coverage.xml
 
 # Benchmarks output
 .benchmarks/
+benchmarks/results/latest.json
 
 # Type checking
 .mypy_cache/
