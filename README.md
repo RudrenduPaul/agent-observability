@@ -339,6 +339,21 @@ tracer.add_plugin(AuditPlugin())
 
 ---
 
+## [redacted] ([redacted])
+
+| Item | Status | Notes |
+|------|--------|-------|
+| Apache 2.0 in LICENSE + README header | ✅ | `LICENSE` at repo root; badge in README header |
+| 20 [redacted] with full context | ✅ | Issue #7 live; run `bash scripts/create-launch-issues.sh` to create the remaining 19 |
+| GitHub Discussions enabled + "Why we built this" pinned | ⏳ | Enable in Settings → Features → Discussions; paste `docs/launch/why-we-built-this.md` as pinned Announcement |
+| Repo made public | ⏳ | Settings → Danger Zone → Make public (confirm repo has no secrets in history first) |
+| [redacted]: Tuesday–Thursday 9–11am EST | ⏳ | Draft at `docs/launch/show-hn-draft.md` |
+| [redacted] in [redacted] #show-and-tell within 15 min | ⏳ | Human coordination required |
+| Respond to all HN comments within 2 hours | ⏳ | Human action required |
+| 50 stars in first 48 hours | ⏳ | Gate: if not reached, diagnose before Week 5 content |
+
+---
+
 ## Community
 
 - [GitHub Issues](https://github.com/RudrenduPaul/agent-trace/issues) — bug reports and feature requests
