@@ -2,7 +2,30 @@
 
 Replay any failed LangGraph or OpenAI Agents SDK run offline, in under 1 second, with zero LLM API calls.
 
-<!-- DEMO GIF: record a 12-step LangGraph run failing at step 7. Show replay executing against the local SQLite cache — no network activity. 6-8 seconds, terminal only. -->
+```
+# Record a 12-step LangGraph run that fails at step 7
+$ uv run --extra langgraph python demos/record_replay_demo.py
+
+=== RECORD MODE ===
+Running 12-step pipeline  (will fail at step 7)
+
+  ✓ step_01  completed
+  ...
+  ✓ step_06  completed
+  ✗ step_07  upstream dependency returned null — cannot continue
+
+Recorded: 8 spans captured  →  fixture.db
+
+=== REPLAY MODE ===
+(No network calls — all state served from local fixture)
+
+  ✓ step_01  completed
+  ...
+  ✓ step_06  completed
+  ✗ step_07  upstream dependency returned null — cannot continue
+
+Replay complete — same failure reproduced offline.
+```
 
 [![PyPI](https://img.shields.io/pypi/v/agent-trace)](https://pypi.org/project/agent-trace/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
