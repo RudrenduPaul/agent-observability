@@ -10,7 +10,7 @@
 
 **Do NOT open a public GitHub issue for security vulnerabilities.**
 
-Email: agent_trace_oss.security@gmail.com
+Email: agenttrace.oss.security@gmail.com
 Subject line: `[agent-trace SECURITY] <brief description>`
 
 We will acknowledge within 48 hours and provide a fix timeline within 7 days.
