@@ -293,9 +293,369 @@ class TestLangGraphIntegration:
             f"{[(s.name, s.parent_id) for s in trace.spans]}"
         )
 
-    def test_llm_span_has_token_attributes(self) -> None:
-        """Requires real LLM API keys — skip unless configured manually."""
-        pytest.skip(
-            "Requires real LLM API keys and langchain LLM integration — "
-            "run manually with valid API keys set in environment."
+    # ------------------------------------------------------------------
+    # Gap 1: parent-child wiring under real LangGraph (tree, not flat list)
+    # ------------------------------------------------------------------
+
+    def test_node_spans_parent_ids_point_to_langgraph_root(
+        self, tmp_path: Path
+    ) -> None:
+        """Node spans must be children of the LangGraph root chain span.
+
+        LangGraph 1.x fires on_chain_start for the graph ('LangGraph') with
+        no parent_run_id, then for each node with parent_run_id set to the
+        graph's run_id.  This test verifies the resulting span tree is a proper
+        tree (root → children), not a flat list where every span has parent_id=None.
+        """
+        from typing import TypedDict
+
+        from langgraph.graph import END, StateGraph
+
+        from agent_trace import Tracer
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        class S(TypedDict):
+            messages: list[str]
+
+        builder = StateGraph(S)
+        builder.add_node("node_a", lambda s: {"messages": s["messages"] + ["a"]})
+        builder.add_node("node_b", lambda s: {"messages": s["messages"] + ["b"]})
+        builder.set_entry_point("node_a")
+        builder.add_edge("node_a", "node_b")
+        builder.add_edge("node_b", END)
+        graph = builder.compile()
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("parent-child-tree") as trace:
+            cb = LangGraphTracer(tracer=t, trace=trace)
+            graph.invoke({"messages": []}, config={"callbacks": [cb]})
+
+        root_spans = [s for s in trace.spans if s.parent_id is None]
+        child_spans = [s for s in trace.spans if s.parent_id is not None]
+
+        assert root_spans, (
+            "Expected a root span (the LangGraph-level chain). "
+            f"All spans: {[(s.name, s.parent_id) for s in trace.spans]}"
+        )
+        assert child_spans, (
+            "Expected node_a / node_b to be children of the root span — "
+            "LangGraph may have stopped passing parent_run_id."
+        )
+
+        root_span_id = root_spans[0].span_id
+        valid_parent_ids = {s.span_id for s in trace.spans}
+
+        for child in child_spans:
+            assert child.parent_id in valid_parent_ids, (
+                f"Span '{child.name}' has parent_id={child.parent_id!r} "
+                f"which does not match any span in the trace."
+            )
+
+        # node_a and node_b both have the LangGraph root as their direct parent
+        node_spans = [
+            s for s in child_spans if "node_a" in s.name or "node_b" in s.name
+        ]
+        assert node_spans, "Expected node_a and node_b spans among the children."
+        for ns in node_spans:
+            assert ns.parent_id == root_span_id, (
+                f"Node span '{ns.name}' parent_id={ns.parent_id!r}, "
+                f"expected root span_id={root_span_id!r}"
+            )
+
+    # ------------------------------------------------------------------
+    # Gap 2 + 3: on_chat_model_start + token usage via FakeChatModel
+    # ------------------------------------------------------------------
+
+    def test_chat_model_callbacks_fire_through_langgraph(self, tmp_path: Path) -> None:
+        """on_chat_model_start must fire when a real BaseChatModel is invoked
+        inside a LangGraph node that passes RunnableConfig through.
+
+        Uses a FakeChatModel stub — no HTTP calls, no API key required.
+        """
+        pytest.importorskip("langchain_core", reason="langchain_core not installed")
+
+        from typing import Any, TypedDict
+
+        from langchain_core.callbacks import CallbackManagerForLLMRun
+        from langchain_core.language_models.chat_models import BaseChatModel
+        from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+        from langchain_core.outputs import ChatGeneration, ChatResult
+        from langchain_core.runnables import RunnableConfig
+        from langgraph.graph import END, StateGraph
+
+        from agent_trace import Tracer
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        class _FakeChatModel(BaseChatModel):
+            @property
+            def _llm_type(self) -> str:
+                return "fake-chat"
+
+            def _generate(
+                self,
+                messages: list[BaseMessage],
+                stop: list[str] | None = None,
+                run_manager: CallbackManagerForLLMRun | None = None,
+                **kwargs: Any,
+            ) -> ChatResult:
+                return ChatResult(
+                    generations=[ChatGeneration(message=AIMessage(content="fake"))],
+                    llm_output={
+                        "token_usage": {
+                            "prompt_tokens": 5,
+                            "completion_tokens": 10,
+                            "total_tokens": 15,
+                        }
+                    },
+                )
+
+        class S(TypedDict):
+            messages: list[str]
+
+        model = _FakeChatModel()
+
+        def llm_node(state: S, config: RunnableConfig) -> S:
+            result = model.invoke([HumanMessage(content="hello")], config=config)
+            return {"messages": state["messages"] + [str(result.content)]}
+
+        builder = StateGraph(S)
+        builder.add_node("llm_node", llm_node)
+        builder.set_entry_point("llm_node")
+        builder.add_edge("llm_node", END)
+        graph = builder.compile()
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("chat-model-test") as trace:
+            cb = LangGraphTracer(tracer=t, trace=trace)
+            graph.invoke({"messages": []}, config={"callbacks": [cb]})
+
+        llm_spans = [s for s in trace.spans if s.name.startswith("llm")]
+        assert llm_spans, (
+            f"on_chat_model_start did not produce an 'llm' span. "
+            f"Got: {[s.name for s in trace.spans]}"
+        )
+
+    def test_llm_span_has_token_attributes(self, tmp_path: Path) -> None:
+        """LLM span must carry prompt/completion/total token counts from llm_output.
+
+        Uses FakeChatModel so no API key is required.  The token counts come
+        from the ChatResult.llm_output dict that on_llm_end reads.
+        """
+        pytest.importorskip("langchain_core", reason="langchain_core not installed")
+
+        from typing import Any, TypedDict
+
+        from langchain_core.callbacks import CallbackManagerForLLMRun
+        from langchain_core.language_models.chat_models import BaseChatModel
+        from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+        from langchain_core.outputs import ChatGeneration, ChatResult
+        from langchain_core.runnables import RunnableConfig
+        from langgraph.graph import END, StateGraph
+
+        from agent_trace import Tracer
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        class _FakeChatModel(BaseChatModel):
+            @property
+            def _llm_type(self) -> str:
+                return "fake-chat"
+
+            def _generate(
+                self,
+                messages: list[BaseMessage],
+                stop: list[str] | None = None,
+                run_manager: CallbackManagerForLLMRun | None = None,
+                **kwargs: Any,
+            ) -> ChatResult:
+                return ChatResult(
+                    generations=[ChatGeneration(message=AIMessage(content="fake"))],
+                    llm_output={
+                        "token_usage": {
+                            "prompt_tokens": 5,
+                            "completion_tokens": 10,
+                            "total_tokens": 15,
+                        }
+                    },
+                )
+
+        class S(TypedDict):
+            messages: list[str]
+
+        model = _FakeChatModel()
+
+        def llm_node(state: S, config: RunnableConfig) -> S:
+            result = model.invoke([HumanMessage(content="hello")], config=config)
+            return {"messages": state["messages"] + [str(result.content)]}
+
+        builder = StateGraph(S)
+        builder.add_node("llm_node", llm_node)
+        builder.set_entry_point("llm_node")
+        builder.add_edge("llm_node", END)
+        graph = builder.compile()
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("token-attrs-test") as trace:
+            cb = LangGraphTracer(tracer=t, trace=trace)
+            graph.invoke({"messages": []}, config={"callbacks": [cb]})
+
+        llm_span = next((s for s in trace.spans if s.name.startswith("llm")), None)
+        assert llm_span is not None, (
+            f"No llm span found. Spans: {[s.name for s in trace.spans]}"
+        )
+        assert llm_span.attributes.get("llm.usage.prompt_tokens") == 5
+        assert llm_span.attributes.get("llm.usage.completion_tokens") == 10
+        assert llm_span.attributes.get("llm.usage.total_tokens") == 15
+
+    # ------------------------------------------------------------------
+    # Gap 4: concurrent graph invocations on one LangGraphTracer
+    # ------------------------------------------------------------------
+
+    def test_concurrent_invocations_no_cross_contamination(
+        self, tmp_path: Path
+    ) -> None:
+        """Two simultaneous graph.invoke() calls on the same LangGraphTracer
+        must not cross-contaminate spans or leak open spans.
+
+        The _lock in LangGraphTracer guards the _spans dict; this test verifies
+        the locking is sufficient under real concurrent load.
+
+        Python 3.14 does not inherit ContextVars in threads by default
+        (sys.flags.thread_inherit_context == 0), so we pass an explicit
+        contextvars.copy_context() to each thread to propagate the active trace.
+        """
+        import contextvars
+        import threading
+        from typing import TypedDict
+
+        from langgraph.graph import END, StateGraph
+
+        from agent_trace import Tracer
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        class S(TypedDict):
+            value: int
+
+        builder = StateGraph(S)
+        builder.add_node("step", lambda s: {"value": s["value"] + 1})
+        builder.set_entry_point("step")
+        builder.add_edge("step", END)
+        graph = builder.compile()
+
+        t = Tracer(trace_dir=tmp_path)
+        results: list[dict] = []
+        errors: list[Exception] = []
+        lock = threading.Lock()
+
+        with t.start_trace("concurrent-test") as trace:
+            cb = LangGraphTracer(tracer=t, trace=trace)
+
+            def invoke_graph(init_value: int) -> None:
+                try:
+                    result = graph.invoke(
+                        {"value": init_value}, config={"callbacks": [cb]}
+                    )
+                    with lock:
+                        results.append(result)
+                except Exception as exc:
+                    with lock:
+                        errors.append(exc)
+
+            # Each thread gets its own copy of the context so _active_trace_var
+            # is visible inside the thread (Python 3.14 doesn't inherit by default).
+            threads = [
+                threading.Thread(
+                    target=contextvars.copy_context().run,
+                    args=(invoke_graph, i),
+                )
+                for i in range(2)
+            ]
+            for th in threads:
+                th.start()
+            for th in threads:
+                th.join()
+
+        assert not errors, f"Concurrent invocations raised exceptions: {errors}"
+        assert len(results) == 2, f"Expected 2 results, got {len(results)}"
+        assert {r["value"] for r in results} == {1, 2}, (
+            f"Expected values {{1, 2}}, got {{{', '.join(str(r['value']) for r in results)}}}"
+        )
+        assert cb._spans == {}, (
+            f"Span registry leaked after concurrent run: {list(cb._spans.keys())}"
+        )
+        # Each single-node graph fires at least 2 callbacks (LangGraph root + node)
+        # so 2 concurrent runs must produce at least 4 spans total.
+        assert len(trace.spans) >= 4, (
+            f"Expected >= 4 spans from 2 concurrent runs, got {len(trace.spans)}"
+        )
+
+    # ------------------------------------------------------------------
+    # Gap 5: replay determinism — span tree comparison
+    # ------------------------------------------------------------------
+
+    def test_replay_span_tree_matches_record_span_tree(self, tmp_path: Path) -> None:
+        """Replayed span tree must match the recorded span tree name-for-name
+        and attribute-for-attribute in order.
+
+        This is stronger than the existing replay test, which only checks that
+        len(trace.spans) >= 1 and that result["messages"] is truthy.
+        """
+        from typing import TypedDict
+
+        from langgraph.graph import END, StateGraph
+
+        from agent_trace import Tracer, replay
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        class S(TypedDict):
+            x: int
+
+        builder = StateGraph(S)
+        builder.add_node("step_a", lambda s: {"x": s["x"] + 1})
+        builder.add_node("step_b", lambda s: {"x": s["x"] * 2})
+        builder.set_entry_point("step_a")
+        builder.add_edge("step_a", "step_b")
+        builder.add_edge("step_b", END)
+        graph = builder.compile()
+
+        run_id = "replay-determinism-test"
+        t_rec = Tracer(trace_dir=tmp_path)
+
+        # Record pass
+        with t_rec.start_trace("record", record=True, run_id=run_id) as record_trace:
+            cb_rec = LangGraphTracer(tracer=t_rec, trace=record_trace)
+            record_result = graph.invoke({"x": 1}, config={"callbacks": [cb_rec]})
+
+        record_span_names = [s.name for s in record_trace.spans]
+        record_lg_attrs = [
+            {k: v for k, v in s.attributes.items() if k.startswith("langgraph.")}
+            for s in record_trace.spans
+        ]
+        assert record_result == {"x": 4}, f"(1+1)*2 should be 4, got {record_result}"
+        assert len(record_span_names) >= 1
+
+        # Replay pass — wire up a fresh tracer so we can capture spans
+        t_rep = Tracer(trace_dir=tmp_path)
+        with t_rep.start_trace("replay") as replay_trace:
+            cb_rep = LangGraphTracer(tracer=t_rep, trace=replay_trace)
+            with replay(run_id, trace_dir=tmp_path):
+                replay_result = graph.invoke({"x": 1}, config={"callbacks": [cb_rep]})
+
+        replay_span_names = [s.name for s in replay_trace.spans]
+        replay_lg_attrs = [
+            {k: v for k, v in s.attributes.items() if k.startswith("langgraph.")}
+            for s in replay_trace.spans
+        ]
+
+        assert replay_result == record_result, (
+            f"Replay produced different output: record={record_result} replay={replay_result}"
+        )
+        assert record_span_names == replay_span_names, (
+            f"Span tree mismatch between record and replay.\n"
+            f"  Record: {record_span_names}\n"
+            f"  Replay: {replay_span_names}"
+        )
+        assert record_lg_attrs == replay_lg_attrs, (
+            f"LangGraph attribute mismatch between record and replay.\n"
+            f"  Record: {record_lg_attrs}\n"
+            f"  Replay: {replay_lg_attrs}"
         )

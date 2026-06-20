@@ -199,6 +199,34 @@ Most observability tools for LLM agents are **observe-only** — they show you a
 
 ---
 
+## Test coverage
+
+**LangGraph integration: 13 tests (0 skipped)**
+
+| Test | What it verifies |
+|------|-----------------|
+| `test_callback_handler_captures_node_spans` | Span emitted per node in a 2-node graph |
+| `test_callback_handler_sets_langgraph_node_attribute` | `langgraph.node` attribute on each span |
+| `test_callback_handler_error_span` | Failing node produces an ERROR-status span |
+| `test_replay_context_allows_pure_python_graph` | Record → replay with `NETWORK_GUARD=1` |
+| `test_all_spans_closed_after_clean_run` | No span has `end_time=None` after clean run |
+| `test_all_spans_ok_on_clean_run` | All spans carry `SpanStatus.OK` on clean run |
+| `test_span_registry_empty_after_graph_completes` | `handler._spans == {}` — no leaked open spans |
+| `test_parent_child_span_hierarchy` | At least one child span has a `parent_id` |
+| `test_node_spans_parent_ids_point_to_langgraph_root` | node spans are children of the LangGraph root chain span; every `parent_id` points to a real span |
+| `test_chat_model_callbacks_fire_through_langgraph` | `on_chat_model_start` fires when a `BaseChatModel` is invoked inside a node (no API key — uses `FakeChatModel`) |
+| `test_llm_span_has_token_attributes` | `llm.usage.prompt_tokens`, `.completion_tokens`, `.total_tokens` recorded from `llm_output` (no API key — uses `FakeChatModel`) |
+| `test_concurrent_invocations_no_cross_contamination` | Two simultaneous `graph.invoke()` calls on one `LangGraphTracer` — no cross-contamination, no leaked spans |
+| `test_replay_span_tree_matches_record_span_tree` | Replayed span names, order, and `langgraph.*` attributes match the recorded span tree exactly |
+
+Run them:
+
+```bash
+uv run --extra langgraph pytest tests/integration/test_langgraph.py -m integration -v
+```
+
+---
+
 ## Use in CI
 
 Record once. Commit the fixture. Replay in every CI run at zero API cost:
