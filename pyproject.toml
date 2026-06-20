@@ -33,7 +33,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-langgraph = ["langgraph>=0.2,<1.0", "langchain-core>=0.3"]
+langgraph = ["langgraph>=1.0.10", "langchain-core>=0.3"]
 openai-agents = ["openai-agents>=0.0.3"]
 otlp = ["opentelemetry-exporter-otlp-proto-grpc>=1.25"]
 requests = ["requests>=2.31"]
