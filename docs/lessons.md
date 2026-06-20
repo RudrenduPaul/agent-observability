@@ -283,3 +283,23 @@ was swallowed by langchain_core's callback error handler. Zero spans is a silent
 Only caught when the integration was tested end-to-end with a real LangGraph invocation.
 The version bump (0.6→1.2.6) triggered a breaking API change that 18 passes of unit tests
 and mypy could not detect because the integration was not exercised under real conditions.
+
+---
+
+## 2026-06-20 — Python 3.14 threads do not inherit ContextVar by default
+
+Pattern: `sys.flags.thread_inherit_context` is `0` in Python 3.14 (and earlier). When a new
+`threading.Thread` is spawned, its ContextVar values are all set to their defaults — not
+copied from the parent thread. `Tracer._active_trace_var` is a ContextVar, so any span
+created inside a spawned thread lands in a detached (trace-less) span object instead of
+`trace.spans`. This is a silent failure — `start_span()` returns a valid Span, just not
+attached to any trace.
+
+Rule: Any code that spawns threads and expects `Tracer.start_span()` to record into the
+active trace must explicitly pass the context using `contextvars.copy_context().run(fn, ...)`.
+Do NOT rely on ContextVar inheritance in threads. Document this in any public API that
+calls `start_span()` from multiple threads (e.g. `LangGraphTracer` for concurrent graphs).
+
+Anti-sycophancy check: Not caught until the concurrent integration test was written.
+`LangGraphTracer` had a `threading.Lock` protecting `_spans` but no documentation or guard
+against the detached-span silent failure in spawned threads.
