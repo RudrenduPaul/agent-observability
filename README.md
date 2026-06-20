@@ -1,4 +1,4 @@
-# agent-trace
+# Agent Observability
 
 Replay any failed LangGraph or OpenAI Agents SDK run offline, in under 1 second, with zero LLM API calls.
 
@@ -39,7 +39,7 @@ Replay complete — same failure reproduced offline.
 
 A LangGraph run fails after step 8. Your trace in LangSmith or Langfuse shows *what* broke. But to reproduce it you have to re-run the entire agent — 8 more LLM calls, 30 more seconds, another $0.15 in API cost. If the failure was caused by a specific tool response or a transient model output, you can't reproduce it at all. You're debugging against a moving target.
 
-**agent-trace solves this at the HTTP transport layer.** It records every request and response verbatim to a local SQLite file. Replay serves those exact bytes back in sequence, in under 1ms per exchange — same code path, same span tree, same failure. No API calls.
+**Agent Observability solves this at the HTTP transport layer.** It records every request and response verbatim to a local SQLite file. Replay serves those exact bytes back in sequence, in under 1ms per exchange — same code path, same span tree, same failure. No API calls.
 
 ---
 
@@ -96,7 +96,7 @@ with replay("run_<id>") as ctx:
 
 ---
 
-> **Sync clients only (v0.1):** agent-trace currently intercepts `httpx.Client` and `requests.Session` (synchronous). `httpx.AsyncClient` — used by default in the OpenAI Python SDK v1.x and Anthropic SDK — is not yet intercepted. Async support is on the roadmap for v0.3. For now, use the synchronous `openai.OpenAI()` client (not `openai.AsyncOpenAI()`) when recording.
+> **Sync clients only (v0.1):** Agent Observability currently intercepts `httpx.Client` and `requests.Session` (synchronous). `httpx.AsyncClient` — used by default in the OpenAI Python SDK v1.x and Anthropic SDK — is not yet intercepted. Async support is on the roadmap for v0.3. For now, use the synchronous `openai.OpenAI()` client (not `openai.AsyncOpenAI()`) when recording.
 
 ---
 
@@ -123,13 +123,13 @@ reproduces these numbers in a Docker Compose environment.
 
 ---
 
-## How agent-trace compares
+## How Agent Observability compares
 
 Most observability tools for LLM agents are **observe-only** — they show you a trace of what happened, but reproducing a failure still requires re-running the full agent against live APIs. The table below is based on published benchmarks, official documentation, and GitHub issue threads.
 
 ### Capability matrix
 
-| | **agent-trace** | LangSmith | Langfuse | Helicone | OpenLLMetry |
+| | **Agent Observability** | LangSmith | Langfuse | Helicone | OpenLLMetry |
 |---|:---:|:---:|:---:|:---:|:---:|
 | **Offline replay from local fixture** | ✅ | Partial ¹ | ❌ | ❌ | ❌ |
 | **Works with any HTTP client** | ✅ | ❌ | ❌ | ❌ | ❌ |
@@ -150,7 +150,7 @@ Most observability tools for LLM agents are **observe-only** — they show you a
 
 | Tool | Per-call overhead | Mechanism | Source |
 |------|------------------|-----------|--------|
-| **agent-trace** | **0.15 ms P50** per exchange | In-process SQLite WAL write, measured 2026-06-19 | `benchmarks/test_ingestion.py` |
+| **Agent Observability** | **0.15 ms P50** per exchange | In-process SQLite WAL write, measured 2026-06-19 | `benchmarks/test_ingestion.py` |
 | Langfuse SDK | 0.10–0.15 ms (queue insert) | Async in-memory queue; network I/O in background | [Langfuse SDK Performance Test](https://langfuse.com/guides/cookbook/langfuse_sdk_performance_test) |
 | LangSmith | < 4 ms (async batch mode) | Background thread + PriorityQueue to cloud | [LangSmith production guide](https://docs.smith.langchain.com/) |
 | OpenLLMetry | ~1–5 ms | OTel SDK span creation + async OTLP export | Traceloop documentation |
@@ -160,7 +160,7 @@ Most observability tools for LLM agents are **observe-only** — they show you a
 
 ### Replay cost
 
-| Scenario | agent-trace | LangSmith VCR | Langfuse Playground | Phoenix Span Replay |
+| Scenario | Agent Observability | LangSmith VCR | Langfuse Playground | Phoenix Span Replay |
 |----------|-----------|-----------------|--------------------|---------------------|
 | Cost per CI replay iteration | **$0** | $0 after recording | 1 live LLM call | 1 live LLM call |
 | Reproduce intermittent failure | **Always** | Yes (if captured) | No | No |
@@ -176,13 +176,13 @@ Most observability tools for LLM agents are **observe-only** — they show you a
 
 **Choose OpenLLMetry** if your team already runs on OpenTelemetry and wants standard `gen_ai.*` spans from LLM calls without adding a new observability system.
 
-**agent-trace is not a replacement for dashboards and eval pipelines.** It solves the specific upstream problem: reproducing a specific failed run without any LLM API cost, for any agent built on any Python HTTP library.
+**Agent Observability is not a replacement for dashboards and eval pipelines.** It solves the specific upstream problem: reproducing a specific failed run without any LLM API cost, for any agent built on any Python HTTP library.
 
 ---
 
 ## How it works
 
-- **Transport interception, not API wrapping.** agent-trace patches `httpx.Client.__init__` and `requests.Session.get_adapter` at trace start. Every AI SDK — OpenAI, Anthropic, LangChain — creates its own HTTP client internally. Patching at the transport layer captures those calls with no SDK-specific glue.
+- **Transport interception, not API wrapping.** Agent Observability patches `httpx.Client.__init__` and `requests.Session.get_adapter` at trace start. Every AI SDK — OpenAI, Anthropic, LangChain — creates its own HTTP client internally. Patching at the transport layer captures those calls with no SDK-specific glue.
 - **SQLite fixture, not JSON files.** Each run writes to `~/.agent-trace/runs/<run_id>/fixture.db`. WAL mode lets multiple test workers open the same fixture concurrently. Large response bodies stay on disk until replayed — memory stays flat regardless of response size.
 - **Per-(method, URL) cursor.** If your agent calls `POST /v1/chat/completions` three times, the fixture stores all three responses in sequence. Replay serves them in the same order via a per-URL offset cursor. No URL collision, no response mixing.
 - **Clock abstraction.** All span timestamps come from `agent_trace.core.clock.get_time()`, not `time.time()`. During replay, `FixtureClock` replaces `WallClock`. Span durations in replayed traces reflect original execution times, not replay times.
@@ -259,7 +259,7 @@ Set `AGENT_TRACE_NETWORK_GUARD=1` in CI. Any HTTP call that is not in the fixtur
 
 ## Self-host traces
 
-agent-trace emits OTLP spans. Run a local observability stack to browse trace trees:
+Agent Observability emits OTLP spans. Run a local observability stack to browse trace trees:
 
 ```bash
 docker compose up -d
@@ -323,7 +323,7 @@ Status as of 2026-06-19 on `main`.
 
 ## Plugin SDK
 
-Extend agent-trace without modifying agent code. Implement `SpanPlugin`, `TracePlugin`, or both:
+Extend Agent Observability without modifying agent code. Implement `SpanPlugin`, `TracePlugin`, or both:
 
 ```python
 from agent_trace import tracer
