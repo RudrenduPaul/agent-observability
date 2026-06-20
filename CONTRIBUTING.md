@@ -13,8 +13,8 @@ Thank you for your interest in contributing. This guide covers everything you ne
 ### First-time setup
 
 ```bash
-git clone https://github.com/RudrenduPaul/agent-trace.git
-cd agent-trace
+git clone https://github.com/RudrenduPaul/agent-observability.git
+cd agent-observability
 uv sync --extra dev
 pre-commit install
 ```
@@ -138,9 +138,9 @@ AI tools (Copilot, Claude, GPT-4, etc.) are permitted and can speed up boilerpla
 
 Looking for somewhere to start? Filter the issue tracker by these labels:
 
-- [`good first issue`](https://github.com/RudrenduPaul/agent-trace/labels/good%20first%20issue) — small, well-scoped tasks with clear acceptance criteria
-- [`docs`](https://github.com/RudrenduPaul/agent-trace/labels/docs) — documentation improvements, typo fixes, example additions
-- [`help wanted`](https://github.com/RudrenduPaul/agent-trace/labels/help%20wanted) — medium-complexity issues where a contributor's perspective would be valuable
+- [`good first issue`](https://github.com/RudrenduPaul/agent-observability/labels/good%20first%20issue) — small, well-scoped tasks with clear acceptance criteria
+- [`docs`](https://github.com/RudrenduPaul/agent-observability/labels/docs) — documentation improvements, typo fixes, example additions
+- [`help wanted`](https://github.com/RudrenduPaul/agent-observability/labels/help%20wanted) — medium-complexity issues where a contributor's perspective would be valuable
 
 If you plan to work on an issue, leave a comment so we can assign it and avoid duplication.
 
