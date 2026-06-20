@@ -281,6 +281,64 @@ exporter.export(trace)
 
 ---
 
+## Quality gates
+
+Status as of 2026-06-19 on `main`.
+
+| Gate | Status | Notes |
+|------|--------|-------|
+| **OpenSSF Scorecard ≥ 7/10** | Tracked | [`scorecard.yml`](.github/workflows/scorecard.yml) runs weekly on `main`; badge in header shows live score |
+| **SBOM attached to release (cyclonedx-py)** | ✅ | [`release.yml`](.github/workflows/release.yml) generates `sbom.json` + `sbom.xml` (CycloneDX 1.6) and attaches both to every GitHub release |
+| **SLSA Level 2 signing (sigstore)** | ✅ | `release.yml` signs `dist/*.whl` and `dist/*.tar.gz` via `sigstore/gh-action-sigstore-python@v3`; `.sigstore` bundles attached to release |
+| **Test coverage: overall ≥ 80%, replay/ and interceptor/ each ≥ 90%** | ✅ | Current: **94.98%** overall · **90%** replay/ · **96%** interceptor/. Both gates enforced in [`ci.yml`](.github/workflows/ci.yml) |
+| **Plugin SDK shipped** | ✅ | `from agent_trace.plugins import PluginBase, SpanPlugin, TracePlugin`. Register via `tracer.add_plugin(plugin)`. See [Plugin SDK](#plugin-sdk) below. |
+| **5+ unique external contributors** | ⏳ | Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Good first issues are labelled [`good first issue`](https://github.com/RudrenduPaul/agent-trace/labels/good%20first%20issue). |
+
+---
+
+## Plugin SDK
+
+Extend agent-trace without modifying agent code. Implement `SpanPlugin`, `TracePlugin`, or both:
+
+```python
+from agent_trace import tracer
+from agent_trace.plugins import PluginBase
+
+class MetricsPlugin(PluginBase):
+    def on_span_end(self, span):
+        # called after every span.end() with timing already set
+        metrics.histogram("agent.span.duration_ms", span.duration_ms, tags={"name": span.name})
+
+    def on_trace_end(self, trace):
+        # called after trace.json is written; all spans are final
+        metrics.increment("agent.trace.completed", tags={"name": trace.metadata.get("name")})
+
+tracer.add_plugin(MetricsPlugin())
+```
+
+Hooks receive live `Span` / `Trace` objects — mutations are visible to subsequent code.
+Exceptions inside a hook are caught and logged at `WARNING`; a buggy plugin never silences the caller.
+
+```python
+# Only want to observe traces, not individual spans?
+from agent_trace.plugins import TracePlugin
+
+class AuditPlugin(TracePlugin):
+    def on_trace_end(self, trace):
+        audit_log.write(trace.to_dict())
+
+tracer.add_plugin(AuditPlugin())
+```
+
+| Hook | When called | State at call time |
+|------|-------------|-------------------|
+| `on_span_start(span)` | After `tracer.start_span()` | `start_time` set; `end_time` is None |
+| `on_span_end(span)` | After `span.end()` | `start_time`, `end_time`, and `status` all set |
+| `on_trace_start(trace)` | When `start_trace()` context is entered | No spans yet |
+| `on_trace_end(trace)` | After `trace.json` is written | All spans complete and immutable |
+
+---
+
 ## Community
 
 - [GitHub Issues](https://github.com/RudrenduPaul/agent-trace/issues) — bug reports and feature requests
