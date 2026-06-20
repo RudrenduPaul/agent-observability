@@ -1,7 +1,8 @@
 """
 Unit tests for agent_trace.interceptor.httpx_hook.
 
-RecordingTransport / ReplayTransport / NetworkGuardError.
+RecordingTransport / AsyncRecordingTransport / ReplayTransport / AsyncReplayTransport
+/ NetworkGuardError.
 
 AGENT_TRACE_NETWORK_GUARD=1 is set by pytest env (pyproject.toml), so
 ReplayTransport will raise NetworkGuardError on any unmatched request.
@@ -17,6 +18,8 @@ import respx
 
 from agent_trace._replay.fixture import Fixture
 from agent_trace.interceptor.httpx_hook import (
+    AsyncRecordingTransport,
+    AsyncReplayTransport,
     NetworkGuardError,
     RecordingTransport,
     ReplayTransport,
@@ -274,4 +277,153 @@ class TestReplayTransport:
                 assert len(w) >= 1
 
         assert response.status_code == 200
+        fixture.close()
+
+
+# ---------------------------------------------------------------------------
+# AsyncRecordingTransport
+# ---------------------------------------------------------------------------
+
+
+class TestAsyncRecordingTransport:
+    @respx.mock
+    async def test_records_get_request(self, tmp_path) -> None:
+        url = "https://api.example.com/async-get"
+        respx.get(url).mock(return_value=httpx.Response(200, json={"async": "ok"}))
+
+        fixture = _make_fixture(tmp_path)
+        async with httpx.AsyncClient(
+            transport=AsyncRecordingTransport(
+                fixture,
+                inner=httpx.MockTransport(respx.mock.handler),
+            )
+        ) as client:
+            response = await client.get(url)
+
+        assert fixture.exchange_count() == 1
+        exchanges = fixture.all_exchanges()
+        assert exchanges[0]["url"] == url
+        assert exchanges[0]["method"] == "GET"
+        assert response.status_code == 200
+        fixture.close()
+
+    @respx.mock
+    async def test_records_post_body_and_response(self, tmp_path) -> None:
+        url = "https://api.openai.com/v1/chat/completions"
+        resp_json = {"choices": [{"message": {"content": "async reply"}}]}
+        respx.post(url).mock(return_value=httpx.Response(200, json=resp_json))
+
+        fixture = _make_fixture(tmp_path)
+        async with httpx.AsyncClient(
+            transport=AsyncRecordingTransport(
+                fixture,
+                inner=httpx.MockTransport(respx.mock.handler),
+            )
+        ) as client:
+            await client.post(url, json={"model": "gpt-4o", "messages": []})
+
+        ex = fixture.all_exchanges()[0]
+        assert ex["method"] == "POST"
+        assert "gpt-4o" in ex["request_body"]
+        assert "async reply" in ex["response_body"]
+        fixture.close()
+
+    @respx.mock
+    async def test_caller_receives_correct_response(self, tmp_path) -> None:
+        url = "https://api.example.com/async-status"
+        respx.get(url).mock(return_value=httpx.Response(201, json={"created": True}))
+
+        fixture = _make_fixture(tmp_path)
+        async with httpx.AsyncClient(
+            transport=AsyncRecordingTransport(
+                fixture,
+                inner=httpx.MockTransport(respx.mock.handler),
+            )
+        ) as client:
+            response = await client.get(url)
+
+        assert response.status_code == 201
+        assert response.json()["created"] is True
+        fixture.close()
+
+
+# ---------------------------------------------------------------------------
+# AsyncReplayTransport
+# ---------------------------------------------------------------------------
+
+
+class TestAsyncReplayTransport:
+    async def test_serves_recorded_exchange(self, tmp_path) -> None:
+        fixture = _make_fixture(tmp_path)
+        _record_one(fixture, "https://api.example.com/async-replay", "GET", '{"async": true}')
+
+        transport = AsyncReplayTransport(fixture)
+        request = httpx.Request("GET", "https://api.example.com/async-replay")
+        response = await transport.handle_async_request(request)
+
+        assert response.status_code == 200
+        assert response.json() == {"async": True}
+        fixture.close()
+
+    async def test_serves_correct_status_code(self, tmp_path) -> None:
+        fixture = _make_fixture(tmp_path)
+        _record_one(fixture, "https://api.example.com/async-created", "POST", '{"id": 1}', status=201)
+
+        transport = AsyncReplayTransport(fixture)
+        request = httpx.Request("POST", "https://api.example.com/async-created")
+        response = await transport.handle_async_request(request)
+
+        assert response.status_code == 201
+        fixture.close()
+
+    async def test_raises_network_guard_error_when_exchange_not_found(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("AGENT_TRACE_NETWORK_GUARD", "1")
+
+        fixture = _make_fixture(tmp_path)
+        transport = AsyncReplayTransport(fixture)
+        request = httpx.Request("GET", "https://never-recorded-async.example.com/")
+
+        with pytest.raises(NetworkGuardError):
+            await transport.handle_async_request(request)
+
+        fixture.close()
+
+    async def test_aclose_is_noop(self, tmp_path) -> None:
+        fixture = _make_fixture(tmp_path)
+        transport = AsyncReplayTransport(fixture)
+        await transport.aclose()  # must not raise
+        fixture.close()
+
+    async def test_serves_exchanges_in_order_for_same_url(self, tmp_path) -> None:
+        url = "https://api.example.com/async-seq"
+        fixture = _make_fixture(tmp_path)
+        for i in range(3):
+            _record_one(fixture, url, "POST", f'{{"step": {i}}}')
+
+        transport = AsyncReplayTransport(fixture)
+        for i in range(3):
+            request = httpx.Request("POST", url)
+            response = await transport.handle_async_request(request)
+            assert response.json()["step"] == i
+
+        fixture.close()
+
+    async def test_async_client_uses_async_replay_transport(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """AsyncClient patched with AsyncReplayTransport must serve from fixture."""
+        monkeypatch.setenv("AGENT_TRACE_NETWORK_GUARD", "1")
+        url = "https://api.openai.com/v1/chat/completions"
+        body = '{"choices": [{"message": {"content": "from async fixture"}}]}'
+
+        fixture = _make_fixture(tmp_path)
+        _record_one(fixture, url, "POST", body)
+
+        async with httpx.AsyncClient(transport=AsyncReplayTransport(fixture)) as client:
+            response = await client.post(url, json={"model": "gpt-4o"})
+
+        assert response.status_code == 200
+        assert "from async fixture" in response.text
         fixture.close()
