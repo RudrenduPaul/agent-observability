@@ -89,57 +89,62 @@ class OTLPExporter:
         otel_tracer = provider.get_tracer("agent-trace")
         failed = 0
 
-        for span in trace.spans:
-            otlp_data = self._span_to_otlp(span, status_map)
-            try:
-                trace_id_int = (
-                    int(span.trace_id, 16)
-                    if _is_hex(span.trace_id)
-                    else hash(span.trace_id) & ((1 << 128) - 1)
-                )
-                parent_ctx = otel_context.get_current()
-                if span.parent_id is not None:
-                    parent_span_id_int = (
-                        int(span.parent_id, 16)
-                        if _is_hex(span.parent_id)
-                        else hash(span.parent_id) & ((1 << 64) - 1)
+        try:
+            for span in trace.spans:
+                otlp_data = self._span_to_otlp(span, status_map)
+                try:
+                    trace_id_int = (
+                        int(span.trace_id, 16)
+                        if _is_hex(span.trace_id)
+                        else hash(span.trace_id) & ((1 << 128) - 1)
                     )
-                    parent_span_context = SpanContext(
-                        trace_id=trace_id_int,
-                        span_id=parent_span_id_int,
-                        is_remote=True,
-                        trace_flags=TraceFlags(TraceFlags.SAMPLED),
-                    )
-                    parent_ctx = otel_trace.set_span_in_context(
-                        NonRecordingSpan(parent_span_context)
-                    )
-
-                with otel_tracer.start_as_current_span(
-                    span.name,
-                    context=parent_ctx,
-                    start_time=otlp_data["start_time_unix_nano"],
-                ) as otel_span:
-                    for k, v in span.attributes.items():
-                        otel_span.set_attribute(
-                            k,
-                            str(v) if not isinstance(v, (bool, int, float, str)) else v,
+                    parent_ctx = otel_context.get_current()
+                    if span.parent_id is not None:
+                        parent_span_id_int = (
+                            int(span.parent_id, 16)
+                            if _is_hex(span.parent_id)
+                            else hash(span.parent_id) & ((1 << 64) - 1)
                         )
-                    for event in span.events:
-                        otel_span.add_event(
-                            event.name,
-                            attributes={k: str(v) for k, v in event.attributes.items()},
+                        parent_span_context = SpanContext(
+                            trace_id=trace_id_int,
+                            span_id=parent_span_id_int,
+                            is_remote=True,
+                            trace_flags=TraceFlags(TraceFlags.SAMPLED),
                         )
-                    otel_span.set_status(otlp_data["status_code"])
+                        parent_ctx = otel_trace.set_span_in_context(
+                            NonRecordingSpan(parent_span_context)
+                        )
 
-                    if span.end_time is not None:
-                        otel_span.end(end_time=otlp_data["end_time_unix_nano"])
-            except Exception:
-                failed += 1
-                logger.debug(
-                    "agent-trace: failed to export span %r to OTLP",
-                    span.span_id,
-                    exc_info=True,
-                )
+                    with otel_tracer.start_as_current_span(
+                        span.name,
+                        context=parent_ctx,
+                        start_time=otlp_data["start_time_unix_nano"],
+                    ) as otel_span:
+                        for k, v in span.attributes.items():
+                            attr_v = (
+                                v if isinstance(v, (bool, int, float, str)) else str(v)
+                            )
+                            otel_span.set_attribute(k, attr_v)
+                        for event in span.events:
+                            otel_span.add_event(
+                                event.name,
+                                attributes={
+                                    k: str(v) for k, v in event.attributes.items()
+                                },
+                            )
+                        otel_span.set_status(otlp_data["status_code"])
+
+                        if span.end_time is not None:
+                            otel_span.end(end_time=otlp_data["end_time_unix_nano"])
+                except Exception:
+                    failed += 1
+                    logger.debug(
+                        "agent-trace: failed to export span %r to OTLP",
+                        span.span_id,
+                        exc_info=True,
+                    )
+        finally:
+            provider.shutdown()
 
         if failed:
             logger.warning(
@@ -148,8 +153,6 @@ class OTLPExporter:
                 len(trace.spans),
                 self.endpoint,
             )
-
-        provider.shutdown()
 
     def _span_to_otlp(
         self, span: Span, status_map: dict[SpanStatus, Any]

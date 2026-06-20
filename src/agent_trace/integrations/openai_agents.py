@@ -157,6 +157,24 @@ class AgentTraceHook:
                     exc_info=True,
                 )
 
+    def on_agent_error(self, context: Any, agent: Any, error: BaseException) -> None:
+        """Called when an agent turn raises — close the span with ERROR status."""
+        agent_name: str = getattr(agent, "name", None) or "agent"
+        key = f"agent:{id(context)}:{agent_name}"
+        span = self._close_span(key, SpanStatus.ERROR)
+        if span is not None:
+            span.record_exception(error)
+
+    def on_tool_error(
+        self, context: Any, agent: Any, tool: Any, error: BaseException
+    ) -> None:
+        """Called when a tool invocation raises — close the span with ERROR status."""
+        tool_name: str = getattr(tool, "name", None) or "tool"
+        key = f"tool:{id(context)}:{tool_name}"
+        span = self._close_span(key, SpanStatus.ERROR)
+        if span is not None:
+            span.record_exception(error)
+
     def on_handoff(self, context: Any, from_agent: Any, to_agent: Any) -> None:
         """Called when control is handed off from one agent to another."""
         from_name: str = getattr(from_agent, "name", None) or "unknown"
@@ -196,10 +214,18 @@ class AgentTraceHook:
             try:
                 usage = getattr(response, "usage", None)
                 if usage is not None:
-                    if pt := getattr(usage, "input_tokens", None):
+                    pt = getattr(usage, "input_tokens", None)
+                    ct = getattr(usage, "output_tokens", None)
+                    tt = getattr(usage, "total_tokens", None)
+                    if pt is not None:
                         span.set_attribute("llm.usage.prompt_tokens", int(pt))
-                    if ct := getattr(usage, "output_tokens", None):
+                    if ct is not None:
                         span.set_attribute("llm.usage.completion_tokens", int(ct))
+                    # total_tokens: prefer explicit field, fall back to sum
+                    if tt is not None:
+                        span.set_attribute("llm.usage.total_tokens", int(tt))
+                    elif pt is not None and ct is not None:
+                        span.set_attribute("llm.usage.total_tokens", int(pt) + int(ct))
             except Exception:
                 logger.debug(
                     "agent-trace: failed to record token usage",
@@ -274,32 +300,3 @@ async def instrument_runner(
         raise
 
     return result
-
-
-def _enrich_step_span(span: Span, step: Any) -> None:
-    """Attach available metadata from a runner step to *span*."""
-    try:
-        if agent := getattr(step, "agent", None):
-            span.set_attribute("agent.name", getattr(agent, "name", str(agent)))
-            if model := getattr(agent, "model", None):
-                span.set_attribute("agent.model", str(model))
-
-        if tool_calls := getattr(step, "tool_calls", None):
-            names = [
-                getattr(tc, "name", None)
-                or getattr(tc, "function", {}).get("name", "?")
-                for tc in tool_calls
-            ]
-            span.set_attribute("tool_calls", ",".join(str(n) for n in names))
-
-        if usage := getattr(step, "usage", None):
-            if pt := getattr(usage, "input_tokens", None):
-                span.set_attribute("llm.usage.prompt_tokens", int(pt))
-            if ct := getattr(usage, "output_tokens", None):
-                span.set_attribute("llm.usage.completion_tokens", int(ct))
-    except Exception:
-        logger.debug(
-            "agent-trace: failed to enrich step span %r",
-            span.name,
-            exc_info=True,
-        )

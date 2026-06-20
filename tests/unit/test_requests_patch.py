@@ -76,6 +76,46 @@ def _record_one(
 
 
 class TestRecordingAdapter:
+    def test_inner_adapter_is_used_when_provided(self, tmp_path) -> None:
+        """RecordingAdapter must delegate to the inner adapter, not super().send()."""
+        from unittest.mock import MagicMock
+
+        fixture = _make_fixture(tmp_path)
+        url = "https://api.example.com/inner-test"
+        req = _make_prepared_request(url, "POST")
+        mock_response = _make_mock_response(200, '{"from_inner": true}')
+
+        inner = MagicMock(spec=HTTPAdapter)
+        inner.send.return_value = mock_response
+
+        adapter = RecordingAdapter(fixture, inner=inner)
+        with patch.object(HTTPAdapter, "send") as base_send:
+            response = adapter.send(req)
+            # super().send() must NOT be called when inner is provided
+            base_send.assert_not_called()
+
+        # Inner adapter was used
+        inner.send.assert_called_once()
+        assert response is mock_response
+        # Exchange was still recorded
+        assert fixture.exchange_count() == 1
+        fixture.close()
+
+    def test_no_inner_uses_super_send(self, tmp_path) -> None:
+        """Without inner, RecordingAdapter falls back to super().send()."""
+        fixture = _make_fixture(tmp_path)
+        url = "https://api.example.com/no-inner"
+        req = _make_prepared_request(url, "GET")
+        mock_response = _make_mock_response(200, '{"ok": true}')
+
+        adapter = RecordingAdapter(fixture)  # no inner
+        with patch.object(HTTPAdapter, "send", return_value=mock_response):
+            response = adapter.send(req)
+
+        assert response is mock_response
+        assert fixture.exchange_count() == 1
+        fixture.close()
+
     def test_send_records_exchange(self, tmp_path) -> None:
         fixture = _make_fixture(tmp_path)
         url = "https://api.example.com/record-test"
