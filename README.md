@@ -102,21 +102,24 @@ with replay("run_<id>") as ctx:
 
 ## Performance benchmarks
 
-Measured on Apple M-series, Python 3.14, SQLite WAL mode, NVMe SSD.
-Full scripts in [`benchmarks/`](benchmarks/) — run with `uv run pytest benchmarks/ -v --benchmark-only`.
+All numbers below were measured on **Apple M-series, Python 3.14.3, SQLite WAL mode, NVMe SSD, 2026-06-19**.
+Run the benchmarks yourself with `uv run pytest benchmarks/ -v --benchmark-only`.
+The Docker harness in [`agent-observability-bench`](https://github.com/RudrenduPaul/agent-observability-bench)
+reproduces these numbers in a Docker Compose environment.
 
 | Metric | Measured value | Notes |
 |--------|---------------|-------|
-| Recording overhead per LLM exchange | **0.09 ms P50 · 0.12 ms P99** | SQLite WAL write. Verified by `benchmarks/test_replay_vs_live.py` |
-| Overhead as % of GPT-4o p50 (800 ms) | **0.011%** | Unmeasurable in any production workload |
-| Replay — 10-step agent run (20 exchanges) | **0.93 ms mean** | Served from SQLite, zero network I/O |
-| Replay speedup vs live GPT-4o run | **~15,000x** | 0.93 ms vs 8,500 ms simulated live |
-| Fixture write throughput | **7,700 writes/sec** | SQLite WAL, single writer |
-| Fixture read throughput (replay cursor) | **46,000 reads/sec** | Per-URL cursor, concurrent-reader safe |
-| Span serialization | **0.47 µs** | `Span.to_dict()`, pure CPU |
+| Recording overhead — 10-step workflow | **3.5%** (56.9 ms → 58.9 ms) | `benchmarks/test_overhead.py` vs baseline, mock LLM server |
+| SQLite write latency per exchange | **0.15 ms P50** | `benchmarks/test_ingestion.py::test_fixture_write_latency`, WAL mode |
+| Replay — 10-step agent run | **1.48 ms mean** | `benchmarks/test_replay_vs_live.py`, zero network I/O |
+| Replay speedup vs live mock (57 ms) | **38×** | Replay serves SQLite; no network, no API cost |
+| Replay speedup vs real GPT-4o (800 ms × 10 steps) | **~5,400×** | Projection: 8,000 ms live → 1.48 ms from fixture |
+| Replay exchange serve latency | **13.9 µs mean** | `benchmarks/test_ingestion.py::test_fixture_read_cursor_speed` |
+| Fixture read throughput | **~72,000 reads/sec** | Derived from 13.9 µs mean |
+| Span serialization | **774 ns** | `benchmarks/test_ingestion.py::test_span_serialization_speed`, pure CPU |
 | Replay fidelity | **100%** | Response bytes byte-for-byte identical to recorded |
 
-> **What 15,000x means in practice:** A 10-step GPT-4o agent run that takes 8–30 seconds live takes under 1 ms to replay from a fixture. In CI, every test run costs $0 in API fees and completes in milliseconds regardless of how many LLM calls the agent makes.
+> **What the numbers mean in practice:** A 10-step GPT-4o agent run that costs $0.15 and takes 8–30 seconds live replays from a local SQLite fixture in under 2 ms. In CI, every test run costs $0 in API fees. The 3.5% recording overhead comes from SQLite writes and httpx transport patching — it is well below the variability of any real LLM API call.
 
 ---
 
@@ -147,7 +150,7 @@ Most observability tools for LLM agents are **observe-only** — they show you a
 
 | Tool | Per-call overhead | Mechanism | Source |
 |------|------------------|-----------|--------|
-| **agent-trace** | **0.09 ms P50 · 0.12 ms P99** | In-process SQLite WAL write | `benchmarks/test_replay_vs_live.py` |
+| **agent-trace** | **0.15 ms P50** per exchange | In-process SQLite WAL write, measured 2026-06-19 | `benchmarks/test_ingestion.py` |
 | Langfuse SDK | 0.10–0.15 ms (queue insert) | Async in-memory queue; network I/O in background | [Langfuse SDK Performance Test](https://langfuse.com/guides/cookbook/langfuse_sdk_performance_test) |
 | LangSmith | < 4 ms (async batch mode) | Background thread + PriorityQueue to cloud | [LangSmith production guide](https://docs.smith.langchain.com/) |
 | OpenLLMetry | ~1–5 ms | OTel SDK span creation + async OTLP export | Traceloop documentation |
