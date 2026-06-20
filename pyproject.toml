@@ -96,7 +96,7 @@ no_implicit_optional = true
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
-module = ["langgraph.*", "langchain_core.*", "openai_agents.*", "agents.*", "opentelemetry.*"]
+module = ["langchain_core.*", "opentelemetry.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
