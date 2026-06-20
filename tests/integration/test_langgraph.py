@@ -174,6 +174,125 @@ class TestLangGraphIntegration:
 
         assert result["messages"]
 
+    def test_all_spans_closed_after_clean_run(self, tmp_path: Path) -> None:
+        """No span has end_time=None after graph.invoke() returns."""
+        from typing import TypedDict
+
+        from langgraph.graph import END, StateGraph
+
+        from agent_trace import Tracer
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        class S(TypedDict):
+            x: int
+
+        builder = StateGraph(S)
+        builder.add_node("step", lambda s: {"x": s["x"] + 1})
+        builder.set_entry_point("step")
+        builder.add_edge("step", END)
+        graph = builder.compile()
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("lg-close") as trace:
+            cb = LangGraphTracer(tracer=t, trace=trace)
+            graph.invoke({"x": 0}, config={"callbacks": [cb]})
+
+        unclosed = [s for s in trace.spans if s.end_time is None]
+        assert unclosed == [], f"Spans left open: {[s.name for s in unclosed]}"
+
+    def test_all_spans_ok_on_clean_run(self, tmp_path: Path) -> None:
+        """All spans carry OK status when no node raises."""
+        from typing import TypedDict
+
+        from langgraph.graph import END, StateGraph
+
+        from agent_trace import SpanStatus, Tracer
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        class S(TypedDict):
+            x: int
+
+        builder = StateGraph(S)
+        builder.add_node("step", lambda s: {"x": s["x"] + 1})
+        builder.set_entry_point("step")
+        builder.add_edge("step", END)
+        graph = builder.compile()
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("lg-ok-status") as trace:
+            cb = LangGraphTracer(tracer=t, trace=trace)
+            graph.invoke({"x": 0}, config={"callbacks": [cb]})
+
+        non_ok = [s for s in trace.spans if s.status != SpanStatus.OK]
+        assert non_ok == [], (
+            f"Non-OK spans on clean run: {[(s.name, s.status) for s in non_ok]}"
+        )
+
+    def test_span_registry_empty_after_graph_completes(self, tmp_path: Path) -> None:
+        """handler._spans must be empty after a clean run — no leaked open spans."""
+        from typing import TypedDict
+
+        from langgraph.graph import END, StateGraph
+
+        from agent_trace import Tracer
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        class S(TypedDict):
+            x: int
+
+        builder = StateGraph(S)
+        builder.add_node("step", lambda s: {"x": s["x"] + 1})
+        builder.set_entry_point("step")
+        builder.add_edge("step", END)
+        graph = builder.compile()
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("lg-registry") as trace:
+            cb = LangGraphTracer(tracer=t, trace=trace)
+            graph.invoke({"x": 0}, config={"callbacks": [cb]})
+
+        assert cb._spans == {}, (
+            f"Leaked entries in handler._spans: {list(cb._spans.keys())}"
+        )
+
+    def test_parent_child_span_hierarchy(self, tmp_path: Path) -> None:
+        """At least one span must have a parent_id — LangGraph fires nested callbacks."""
+        from typing import TypedDict
+
+        from langgraph.graph import END, StateGraph
+
+        from agent_trace import Tracer
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        class AgentState(TypedDict):
+            messages: list[str]
+
+        def node_a(state: AgentState) -> AgentState:
+            return {"messages": state["messages"] + ["a"]}
+
+        def node_b(state: AgentState) -> AgentState:
+            return {"messages": state["messages"] + ["b"]}
+
+        builder = StateGraph(AgentState)
+        builder.add_node("node_a", node_a)
+        builder.add_node("node_b", node_b)
+        builder.set_entry_point("node_a")
+        builder.add_edge("node_a", "node_b")
+        builder.add_edge("node_b", END)
+        graph = builder.compile()
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("lg-hierarchy") as trace:
+            cb = LangGraphTracer(tracer=t, trace=trace)
+            graph.invoke({"messages": []}, config={"callbacks": [cb]})
+
+        child_spans = [s for s in trace.spans if s.parent_id is not None]
+        assert child_spans, (
+            f"No span has a parent_id — LangGraph nested callbacks may not be wiring "
+            f"parent_run_id correctly. All spans: "
+            f"{[(s.name, s.parent_id) for s in trace.spans]}"
+        )
+
     def test_llm_span_has_token_attributes(self) -> None:
         """Requires real LLM API keys — skip unless configured manually."""
         pytest.skip(
