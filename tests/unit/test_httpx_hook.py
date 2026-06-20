@@ -78,11 +78,6 @@ class TestRecordingTransport:
         respx.get(url).mock(return_value=httpx.Response(200, json={"status": "ok"}))
 
         fixture = _make_fixture(tmp_path)
-        inner = httpx.HTTPTransport()
-        transport = RecordingTransport(
-            fixture, inner=httpx.MockTransport(respx.mock.handler)
-        )
-
         client = httpx.Client(
             transport=RecordingTransport(
                 fixture,
@@ -355,7 +350,9 @@ class TestAsyncRecordingTransport:
 class TestAsyncReplayTransport:
     async def test_serves_recorded_exchange(self, tmp_path) -> None:
         fixture = _make_fixture(tmp_path)
-        _record_one(fixture, "https://api.example.com/async-replay", "GET", '{"async": true}')
+        _record_one(
+            fixture, "https://api.example.com/async-replay", "GET", '{"async": true}'
+        )
 
         transport = AsyncReplayTransport(fixture)
         request = httpx.Request("GET", "https://api.example.com/async-replay")
@@ -367,7 +364,13 @@ class TestAsyncReplayTransport:
 
     async def test_serves_correct_status_code(self, tmp_path) -> None:
         fixture = _make_fixture(tmp_path)
-        _record_one(fixture, "https://api.example.com/async-created", "POST", '{"id": 1}', status=201)
+        _record_one(
+            fixture,
+            "https://api.example.com/async-created",
+            "POST",
+            '{"id": 1}',
+            status=201,
+        )
 
         transport = AsyncReplayTransport(fixture)
         request = httpx.Request("POST", "https://api.example.com/async-created")

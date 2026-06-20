@@ -52,11 +52,11 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/RudrenduPaul/agent-trace"
-Documentation = "https://github.com/RudrenduPaul/agent-trace/blob/main/docs/getting-started.md"
-Repository = "https://github.com/RudrenduPaul/agent-trace"
-"Bug Tracker" = "https://github.com/RudrenduPaul/agent-trace/issues"
-Changelog = "https://github.com/RudrenduPaul/agent-trace/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/RudrenduPaul/agent-observability"
+Documentation = "https://github.com/RudrenduPaul/agent-observability/blob/main/docs/getting-started.md"
+Repository = "https://github.com/RudrenduPaul/agent-observability"
+"Bug Tracker" = "https://github.com/RudrenduPaul/agent-observability/issues"
+Changelog = "https://github.com/RudrenduPaul/agent-observability/blob/main/CHANGELOG.md"
 
 [project.scripts]
 agent-trace = "agent_trace._cli:main"

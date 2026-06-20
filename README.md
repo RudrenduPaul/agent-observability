@@ -30,8 +30,8 @@ Replay complete — same failure reproduced offline.
 [![PyPI](https://img.shields.io/pypi/v/agent-trace)](https://pypi.org/project/agent-trace/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![CI](https://github.com/RudrenduPaul/agent-trace/actions/workflows/ci.yml/badge.svg)](https://github.com/RudrenduPaul/agent-trace/actions)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/RudrenduPaul/agent-trace/badge)](https://securityscorecards.dev/viewer/?uri=github.com/RudrenduPaul/agent-trace)
+[![CI](https://github.com/RudrenduPaul/agent-observability/actions/workflows/ci.yml/badge.svg)](https://github.com/RudrenduPaul/agent-observability/actions)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/RudrenduPaul/agent-observability/badge)](https://securityscorecards.dev/viewer/?uri=github.com/RudrenduPaul/agent-observability)
 
 ---
 
@@ -317,7 +317,7 @@ Status as of 2026-06-19 on `main`.
 | **SLSA Level 2 signing (sigstore)** | ✅ | `release.yml` signs `dist/*.whl` and `dist/*.tar.gz` via `sigstore/gh-action-sigstore-python@v3`; `.sigstore` bundles attached to release |
 | **Test coverage: overall ≥ 80%, replay/ and interceptor/ each ≥ 90%** | ✅ | Current: **94.98%** overall · **90%** replay/ · **96%** interceptor/. Both gates enforced in [`ci.yml`](.github/workflows/ci.yml) |
 | **Plugin SDK shipped** | ✅ | `from agent_trace.plugins import PluginBase, SpanPlugin, TracePlugin`. Register via `tracer.add_plugin(plugin)`. See [Plugin SDK](#plugin-sdk) below. |
-| **5+ unique external contributors** | ⏳ | Contributions welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Good first issues are labelled [`good first issue`](https://github.com/RudrenduPaul/agent-trace/labels/good%20first%20issue). |
+| **5+ unique external contributors** | ⏳ | Contributions welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Good first issues are labelled [`good first issue`](https://github.com/RudrenduPaul/agent-observability/labels/good%20first%20issue). |
 
 ---
 
@@ -381,8 +381,8 @@ tracer.add_plugin(AuditPlugin())
 
 ## Community
 
-- [GitHub Issues](https://github.com/RudrenduPaul/agent-trace/issues): bug reports and feature requests
-- [GitHub Discussions](https://github.com/RudrenduPaul/agent-trace/discussions): questions and ideas
+- [GitHub Issues](https://github.com/RudrenduPaul/agent-observability/issues): bug reports and feature requests
+- [GitHub Discussions](https://github.com/RudrenduPaul/agent-observability/discussions): questions and ideas
 - [CONTRIBUTING.md](CONTRIBUTING.md): dev setup and PR guide
 
 ---
