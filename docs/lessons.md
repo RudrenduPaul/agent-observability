@@ -262,3 +262,24 @@ Anti-sycophancy check: Caught in bug audit pass 12 by inspecting `git diff --sta
 The divergence was invisible to import scanning and ruff/mypy — only a git diff check
 caught it. Six prior passes auditing pyproject.toml and .pre-commit-config.yaml both
 missed uv.lock because it was not read during those passes.
+
+---
+
+## 2026-06-19 — LangGraph 1.x passes serialized=None to all callbacks
+
+Pattern: LangGraph 0.x passed a `dict[str, Any]` as `serialized` to every callback
+method (`on_chain_start`, `on_llm_start`, `on_chat_model_start`, `on_tool_start`).
+LangGraph 1.0+ passes `None` for `serialized` and moves the name into `**kwargs['name']`.
+Every `.get()` call on `None` crashed with `AttributeError: 'NoneType' object has no
+attribute 'get'`, causing 0 spans to be captured silently (langchain_core catches and
+logs callback errors without re-raising them by default).
+
+Rule: Always guard `serialized` with `ser = serialized or {}`. Check `kwargs.get("name")`
+FIRST when extracting names from callbacks — it is the authoritative source in LangGraph 1.x
+and is also populated in 0.x. Never call methods directly on a typed-but-nullable parameter.
+
+Anti-sycophancy check: Not caught in 18 passes of quality-gate runs because the crash
+was swallowed by langchain_core's callback error handler. Zero spans is a silent failure.
+Only caught when the integration was tested end-to-end with a real LangGraph invocation.
+The version bump (0.6→1.2.6) triggered a breaking API change that 18 passes of unit tests
+and mypy could not detect because the integration was not exercised under real conditions.
