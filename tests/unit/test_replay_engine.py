@@ -273,3 +273,38 @@ class TestNestedReplay:
 
         # After both exit: wall clock must be restored
         assert isinstance(get_clock(), WallClock)
+
+
+# ---------------------------------------------------------------------------
+# Async client patching — AsyncReplayTransport must be used for AsyncClient
+# ---------------------------------------------------------------------------
+
+
+class TestReplayEngineAsyncHttpxPatch:
+    async def test_async_client_serves_fixture_response(self, tmp_path: Path) -> None:
+        """AsyncClient created inside replay() must serve responses from fixture."""
+        url = "https://api.openai.com/v1/chat/completions"
+        body = json.dumps({"choices": [{"message": {"content": "async from fixture"}}]})
+        db = tmp_path / "f.db"
+        _build_fixture(db, [_default_exchange(url=url, method="POST", body=body)])
+
+        engine = ReplayEngine(db)
+        with engine.replay():
+            async with httpx.AsyncClient() as client:
+                response = await client.post(url, json={"model": "gpt-4o"})
+            assert response.status_code == 200
+            assert "async from fixture" in response.text
+
+    async def test_async_client_raises_network_guard_on_unrecorded_url(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("AGENT_TRACE_NETWORK_GUARD", "1")
+
+        db = tmp_path / "f.db"
+        _build_fixture(db, [])
+
+        engine = ReplayEngine(db)
+        with pytest.raises(NetworkGuardError):
+            with engine.replay():
+                async with httpx.AsyncClient() as client:
+                    await client.get("https://not-in-fixture-async.example.com/")

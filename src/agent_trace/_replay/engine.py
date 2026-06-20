@@ -29,7 +29,7 @@ import httpx
 
 from agent_trace._replay.fixture import Fixture
 from agent_trace.core.clock import FixtureClock, restore_clock, set_clock
-from agent_trace.interceptor.httpx_hook import ReplayTransport
+from agent_trace.interceptor.httpx_hook import AsyncReplayTransport, ReplayTransport
 
 __all__ = ["ReplayEngine", "replay_context"]
 
@@ -70,8 +70,10 @@ class ReplayEngine:
             token: Token[Any] = set_clock(clock)
 
             # --- httpx patch -----------------------------------------------
-            # Both httpx.Client and httpx.AsyncClient are patched so that
-            # SDK-created clients (sync and async) use ReplayTransport.
+            # httpx.Client (sync) uses ReplayTransport; httpx.AsyncClient uses
+            # AsyncReplayTransport.  Injecting a sync BaseTransport into an
+            # AsyncClient silently succeeds at init but raises AttributeError on
+            # the first request — hence the separate async variant.
             # The clock is threaded through so each served exchange advances
             # the FixtureClock, reproducing recorded execution timing.
             original_httpx_init = httpx.Client.__init__
@@ -86,7 +88,9 @@ class ReplayEngine:
             def patched_httpx_async_init(
                 client_self: httpx.AsyncClient, *args: Any, **kwargs: Any
             ) -> None:
-                kwargs.setdefault("transport", ReplayTransport(fixture, clock=clock))
+                kwargs.setdefault(
+                    "transport", AsyncReplayTransport(fixture, clock=clock)
+                )
                 original_httpx_async_init(client_self, *args, **kwargs)
 
             # --- requests patch (optional) ---------------------------------
