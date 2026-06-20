@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import respx
@@ -57,7 +57,7 @@ def _mock_llm_call(query: str) -> dict[str, Any]:
             json={"model": "gpt-4o", "messages": [{"role": "user", "content": query}]},
             headers={"Authorization": "Bearer sk-bench"},
         )
-    return response.json()
+    return cast(dict[str, Any], response.json())
 
 
 def _run_workflow(n_steps: int = 10) -> list[dict[str, Any]]:
