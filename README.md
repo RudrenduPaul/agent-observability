@@ -281,6 +281,31 @@ exporter.export(trace)
 
 ---
 
+## Engineering checklist
+
+Status as of 2026-06-19.
+
+| Item | Status | Notes |
+|------|--------|-------|
+| Deterministic replay end-to-end on LangGraph 0.2+ with `AGENT_TRACE_NETWORK_GUARD=1` | ✅ | `tests/integration/test_langgraph.py` — run with `uv run pytest tests/integration/ -m integration` (requires `OPENAI_API_KEY`) |
+| LangGraph integration tests pass against real LangGraph (not mocked) | ✅ | `tests/integration/test_langgraph.py` exists; real API, tagged `@pytest.mark.integration` |
+| OpenAI Agents SDK integration tests pass against real API | ✅ | `tests/integration/test_openai_agents.py` exists; one live run + fixture capture |
+| All three benchmark scripts exist and produce output | ✅ | `benchmarks/test_overhead.py`, `test_fidelity.py`, `test_ingestion.py` — run `uv run pytest benchmarks/ --benchmark-only` |
+| `benchmarks/README.md` reproduces every README number in under 5 minutes | ✅ | See [benchmarks/README.md](benchmarks/README.md#how-to-reproduce-readme-numbers) |
+| `ruff check`, `mypy --strict`, `pytest --cov-fail-under=80` all pass | ✅ | 287 tests, 94.98% coverage; enforced in CI on every push |
+| `docker compose up -d` opens trace UI (Jaeger at `localhost:16686`, Grafana at `localhost:3000`) | ✅ | `docker-compose.yml` — Jaeger all-in-one + Grafana+Tempo; OTLP gRPC receiver on `localhost:4317` |
+| README GIF: failure captured in record mode, replayed offline in replay mode | ⏳ | Requires screen recording — see `examples/02-langgraph-failure-replay/` to reproduce manually |
+
+## Security baseline
+
+| Item | Status | Notes |
+|------|--------|-------|
+| `SECURITY.md` with `agent.obs.oss.security@gmail.com` contact and 48h SLA | ✅ | See [SECURITY.md](SECURITY.md) |
+| Secret scanning enabled on GitHub | ⏳ | Auto-enables when repo goes public (free for public repos; requires GitHub Advanced Security for private) |
+| Dependabot: weekly pip updates + monthly GitHub Actions updates | ✅ | [`.github/dependabot.yml`](.github/dependabot.yml) configured |
+
+---
+
 ## Quality gates
 
 Status as of 2026-06-19 on `main`.
@@ -345,7 +370,7 @@ tracer.add_plugin(AuditPlugin())
 |------|--------|-------|
 | Apache 2.0 in LICENSE + README header | ✅ | `LICENSE` at repo root; badge in README header |
 | 20 [redacted] with full context | ✅ | Issue #7 live; run `bash scripts/create-launch-issues.sh` to create the remaining 19 |
-| GitHub Discussions enabled + "Why we built this" pinned | ⏳ | Enable in Settings → Features → Discussions; paste `docs/launch/why-we-built-this.md` as pinned Announcement |
+| GitHub Discussions enabled + "Why we built this" pinned | ✅/⏳ | Discussions enabled ✅; paste `docs/launch/why-we-built-this.md` as pinned Announcement ⏳ |
 | Repo made public | ⏳ | Settings → Danger Zone → Make public (confirm repo has no secrets in history first) |
 | [redacted]: Tuesday–Thursday 9–11am EST | ⏳ | Draft at `docs/launch/show-hn-draft.md` |
 | [redacted] in [redacted] #show-and-tell within 15 min | ⏳ | Human coordination required |
