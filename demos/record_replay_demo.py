@@ -107,7 +107,7 @@ def main() -> None:
     print(f"  {len(spans)} spans captured")
     print(f"  fixture → {fixture_db}")
     print(f"  {len([s for s in spans if 'step_0' in s.name or 'step_' in s.name])} node spans")
-    error_spans = [s for s in spans if s.status.value == "error"]
+    error_spans = [s for s in spans if s.status.value == "ERROR"]
     print(f"  {len(error_spans)} error span(s)")
 
     # -------------------------------------------------------------------
