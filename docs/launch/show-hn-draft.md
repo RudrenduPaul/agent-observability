@@ -26,7 +26,7 @@
 >
 > Apache 2.0. 287 tests, 95% coverage.
 >
-> GitHub: https://github.com/RudrenduPaul/agent-trace
+> GitHub: https://github.com/RudrenduPaul/agent-observability
 
 ---
 
