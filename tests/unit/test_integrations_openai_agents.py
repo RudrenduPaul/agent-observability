@@ -241,9 +241,7 @@ class TestToolSpanLifecycle:
             tool_span = next(s for s in trace.spans if "tool" in s.name)
             assert tool_span.status == SpanStatus.OK
             assert tool_span.end_time is not None
-            assert hook._spans == {} or all(
-                k for k in hook._spans if "tool:calc" not in k
-            )
+            assert not any("tool:" in k and ":calc" in k for k in hook._spans)
 
 
 # ---------------------------------------------------------------------------

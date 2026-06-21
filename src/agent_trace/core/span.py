@@ -91,6 +91,8 @@ class Span:
 
     def end(self, status: SpanStatus = SpanStatus.OK) -> None:
         """Close the span, recording end_time and setting status."""
+        if self.end_time is not None:
+            return
         self.end_time = get_time()
         self.status = status
 

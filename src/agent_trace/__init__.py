@@ -252,15 +252,14 @@ class Tracer:
         if active is not None:
             active.add_span(s)
         self._call_plugin("on_span_start", s)
-        if self._plugins:
-            tracer_ref = self
-            original_end = s.end
+        tracer_ref = self
+        original_end = s.end
 
-            def _plugin_end(status: SpanStatus = SpanStatus.OK) -> None:
-                original_end(status)
-                tracer_ref._call_plugin("on_span_end", s)
+        def _plugin_end(status: SpanStatus = SpanStatus.OK) -> None:
+            original_end(status)
+            tracer_ref._call_plugin("on_span_end", s)
 
-            s.end = _plugin_end  # type: ignore[method-assign]
+        s.end = _plugin_end  # type: ignore[method-assign]
         return s
 
     # ------------------------------------------------------------------

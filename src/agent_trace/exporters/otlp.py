@@ -144,7 +144,12 @@ class OTLPExporter:
                         exc_info=True,
                     )
         finally:
-            provider.shutdown()
+            try:
+                provider.shutdown()
+            except Exception:
+                logger.debug(
+                    "agent-trace: OTLP provider shutdown failed", exc_info=True
+                )
 
         if failed:
             logger.warning(
