@@ -249,8 +249,14 @@ def _get_tracer_class() -> type:
                 dropped.
                 """
                 ser = serialized or {}
-                model_name: str = kwargs.get("name") or ser.get("name") or "unknown"
-                span = self._open_span(run_id, "llm", parent_run_id)
+                model_name: str = (
+                    kwargs.get("name")
+                    or (ser.get("kwargs") or {}).get("model_name")
+                    or (ser.get("kwargs") or {}).get("model")
+                    or ser.get("name")
+                    or "unknown"
+                )
+                span = self._open_span(run_id, f"llm:{model_name}", parent_run_id)
                 span.set_attribute("llm.model", model_name)
 
             def on_llm_end(
