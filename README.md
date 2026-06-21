@@ -96,13 +96,11 @@ with replay("run_<id>") as ctx:
 
 ---
 
-> **Sync clients only (v0.1):** Agent Observability currently intercepts `httpx.Client` and `requests.Session` (synchronous). `httpx.AsyncClient` (used by default in the OpenAI Python SDK v1.x and Anthropic SDK) is not yet intercepted. Async support is on the roadmap for v0.3. For now, use the synchronous `openai.OpenAI()` client (not `openai.AsyncOpenAI()`) when recording.
-
 ---
 
 ## Performance benchmarks
 
-All numbers below were measured on **Apple M-series, Python 3.14.3, SQLite WAL mode, NVMe SSD, 2026-06-19**.
+All numbers below were measured on **Apple M-series, Python 3.14.3, SQLite WAL mode, NVMe SSD, 2026-06-20**.
 Run the benchmarks yourself with `uv run pytest benchmarks/ -v --benchmark-only`.
 The Docker harness in [`agent-observability-bench`](https://github.com/RudrenduPaul/agent-observability-bench)
 reproduces these numbers in a Docker Compose environment.
@@ -182,7 +180,7 @@ Most observability tools for LLM agents are **observe-only**: they show you a tr
 
 ## How it works
 
-- **Transport-layer HTTP interception.** Agent Observability patches `httpx.Client.__init__` and `requests.Session.get_adapter` at trace start. Every AI SDK (OpenAI, Anthropic, LangChain) creates its own HTTP client internally. Patching at the transport layer captures those calls with no SDK-specific glue.
+- **Transport-layer HTTP interception.** Agent Observability patches `httpx.Client.__init__`, `httpx.AsyncClient.__init__`, and `requests.Session.get_adapter` at trace start. Every AI SDK (OpenAI, Anthropic, LangChain) creates its own HTTP client internally — sync or async. Patching at the transport layer captures those calls with no SDK-specific glue.
 - **SQLite fixture storage.** Each run writes to `~/.agent-trace/runs/<run_id>/fixture.db`. WAL mode lets multiple test workers open the same fixture concurrently. Large response bodies stay on disk until replayed; memory stays flat regardless of response size.
 - **Per-(method, URL) cursor.** If your agent calls `POST /v1/chat/completions` three times, the fixture stores all three responses in sequence. Replay serves them in the same order via a per-URL offset cursor. No URL collision, no response mixing.
 - **Clock abstraction.** All span timestamps come from `agent_trace.core.clock.get_time()`, not `time.time()`. During replay, `FixtureClock` replaces `WallClock`. Span durations in replayed traces reflect original execution times, not replay times.
@@ -283,7 +281,7 @@ exporter.export(trace)
 
 ## Engineering checklist
 
-Status as of 2026-06-19.
+Status as of 2026-06-20.
 
 | Item | Status | Notes |
 |------|--------|-------|
@@ -292,7 +290,7 @@ Status as of 2026-06-19.
 | OpenAI Agents SDK integration tests pass against real API | ✅ | `tests/integration/test_openai_agents.py` exists; one live run + fixture capture |
 | All three benchmark scripts exist and produce output | ✅ | `benchmarks/test_overhead.py`, `test_fidelity.py`, `test_ingestion.py`; run `uv run pytest benchmarks/ --benchmark-only` |
 | `benchmarks/README.md` reproduces every README number in under 5 minutes | ✅ | See [benchmarks/README.md](benchmarks/README.md#how-to-reproduce-readme-numbers) |
-| `ruff check`, `mypy --strict`, `pytest --cov-fail-under=80` all pass | ✅ | 287 tests, 94.98% coverage; enforced in CI on every push |
+| `ruff check`, `mypy --strict`, `pytest --cov-fail-under=80` all pass | ✅ | 298 tests, 94.65% coverage; enforced in CI on every push |
 | `docker compose up -d` opens trace UI (Jaeger at `localhost:16686`, Grafana at `localhost:3000`) | ✅ | `docker-compose.yml`: Jaeger all-in-one + Grafana+Tempo; OTLP gRPC receiver on `localhost:4317` |
 | README GIF: failure captured in record mode, replayed offline in replay mode | ⏳ | Requires screen recording; see `examples/02-langgraph-failure-replay/` to reproduce manually |
 
@@ -308,7 +306,7 @@ Status as of 2026-06-19.
 
 ## Quality gates
 
-Status as of 2026-06-19 on `main`.
+Status as of 2026-06-20 on `main`.
 
 | Gate | Status | Notes |
 |------|--------|-------|
@@ -388,6 +386,34 @@ tracer.add_plugin(AuditPlugin())
 ---
 
 ## Changelog
+
+### 2026-06-20: Logic Bug Audit, 9 Bugs Fixed
+
+**Critical / High**
+
+- **`Span.end()` made idempotent** (`core/span.py`): A second call to `end()` silently overwrote `end_time` and `status`, corrupting span duration and final status in common error-handling patterns. Fixed: `end()` now returns immediately if `end_time` is already set.
+
+- **Exception event timestamp invariant** (`integrations/openai_agents.py`): `on_agent_error` and `on_tool_error` called `span.end()` first, then `span.record_exception()`. The exception event was timestamped *after* `end_time`, violating the invariant that all events fall within `[start_time, end_time]`. Fixed: `record_exception()` is now called before `span.end()` in both handlers.
+
+- **Plugin `on_span_end` hook asymmetry** (`__init__.py`): The `_plugin_end` wrapper that fires `on_span_end` was only installed when `self._plugins` was non-empty at span-creation time. Plugins added between `start_span` and `span.end()` received `on_span_start` but never `on_span_end`. Fixed: `_plugin_end` is always installed; `_call_plugin` is already a no-op when no plugins are registered.
+
+**Medium**
+
+- **Rich tree hierarchy** (`exporters/stdout.py`): When `trace.spans` was not in topological order (child appearing before its parent), the rich-tree renderer attached child spans to the tree root instead of their actual parent. Fixed: tree is now built via a `children_map`, which is order-independent.
+
+- **Replay ordering non-determinism** (`_replay/fixture.py`): `next_exchange()` ordered results by `sequence_num ASC`. Two concurrent `Fixture` instances on the same SQLite file could produce duplicate `sequence_num` values (the per-instance lock doesn't protect across processes), making replay order non-deterministic. Fixed: ordering changed to `id ASC` (AUTOINCREMENT primary key, always unique).
+
+- **`FixtureClock` seeded with wall-clock time** (`_replay/engine.py`, `_replay/fixture.py`): `FixtureClock()` was initialized to `time.time()` (today's wall clock). Spans created before the first HTTP exchange would carry today's timestamp while later spans carried historical `recorded_at` values — a broken timeline. Fixed: `FixtureClock` is now seeded from the fixture's earliest `recorded_at` via a new `Fixture.earliest_timestamp()` method.
+
+**Low**
+
+- **gRPC channel leak on shutdown failure** (`exporters/otlp.py`): `provider.shutdown()` was not protected against exceptions, leaving the underlying gRPC channel open. Fixed: wrapped in `try/except Exception`.
+
+- **Unused urllib3 pool in `ReplayAdapter`** (`interceptor/requests_patch.py`): `ReplayAdapter` inherited `HTTPAdapter`, which allocates a urllib3 connection pool on every instantiation even though the adapter never makes real network calls. Fixed: inherits from `BaseAdapter` instead; pool is never allocated.
+
+- **Vacuous test assertion** (`tests/unit/test_integrations_openai_agents.py`): The assertion verifying that `on_tool_end` removed a tool span from `_spans` was always `True` regardless of whether removal happened. Fixed: replaced with `assert not any("tool:" in k and ":calc" in k for k in hook._spans)`.
+
+---
 
 ### 2026-06-19: Engineering Audit, 11 Bugs Fixed
 
