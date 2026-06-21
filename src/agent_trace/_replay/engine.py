@@ -66,7 +66,7 @@ class ReplayEngine:
         with Fixture(self._fixture_path) as fixture:
             fixture.reset_read_cursor()
 
-            clock = FixtureClock()
+            clock = FixtureClock(initial=fixture.earliest_timestamp())
             token: Token[Any] = set_clock(clock)
 
             # --- httpx patch -----------------------------------------------

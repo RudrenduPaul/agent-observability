@@ -81,27 +81,31 @@ class StdoutExporter:
         )
         tree = Tree(root_label)
 
-        # Build a quick lookup: span_id -> rich Tree node
-        id_to_node: dict[str, Any] = {}
+        # Build parent->children map first so tree construction is order-independent.
+        children_map: dict[str | None, list[Any]] = {}
         for span in trace.spans:
-            colour = _STATUS_COLOUR.get(span.status.value, "yellow")
-            dur = (
-                f"  [dim]({span.duration_ms:.1f} ms)[/dim]"
-                if span.duration_ms is not None
-                else ""
-            )
-            label = (
-                f"[{colour}]{span.name}[/{colour}]"
-                f"  [{colour}]{span.status.value}[/{colour}]"
-                f"{dur}"
-            )
+            children_map.setdefault(span.parent_id, []).append(span)
 
-            parent_node = id_to_node.get(span.parent_id) if span.parent_id else None
-            node = (
-                parent_node.add(label) if parent_node is not None else tree.add(label)
-            )
-            id_to_node[span.span_id] = node
+        id_to_node: dict[str, Any] = {}
 
+        def _add_children(parent_node: Any, parent_id: str | None) -> None:
+            for span in children_map.get(parent_id, []):
+                colour = _STATUS_COLOUR.get(span.status.value, "yellow")
+                dur = (
+                    f"  [dim]({span.duration_ms:.1f} ms)[/dim]"
+                    if span.duration_ms is not None
+                    else ""
+                )
+                label = (
+                    f"[{colour}]{span.name}[/{colour}]"
+                    f"  [{colour}]{span.status.value}[/{colour}]"
+                    f"{dur}"
+                )
+                node = parent_node.add(label)
+                id_to_node[span.span_id] = node
+                _add_children(node, span.span_id)
+
+        _add_children(tree, None)
         console.print(tree)
 
     # ------------------------------------------------------------------

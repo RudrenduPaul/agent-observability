@@ -97,8 +97,8 @@ class RecordingAdapter(HTTPAdapter):
         return response
 
 
-class ReplayAdapter(HTTPAdapter):
-    """requests HTTPAdapter that serves responses from a Fixture.
+class ReplayAdapter(BaseAdapter):
+    """requests adapter that serves responses from a Fixture without network I/O.
 
     Mount this adapter on a requests.Session to intercept all outbound calls:
 
@@ -107,9 +107,12 @@ class ReplayAdapter(HTTPAdapter):
         session.mount("http://", ReplayAdapter(fixture))
     """
 
-    def __init__(self, fixture: Fixture, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
+    def __init__(self, fixture: Fixture) -> None:
+        super().__init__()
         self._fixture = fixture
+
+    def close(self) -> None:
+        pass
 
     def send(
         self,
