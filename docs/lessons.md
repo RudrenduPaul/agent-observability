@@ -303,3 +303,23 @@ calls `start_span()` from multiple threads (e.g. `LangGraphTracer` for concurren
 Anti-sycophancy check: Not caught until the concurrent integration test was written.
 `LangGraphTracer` had a `threading.Lock` protecting `_spans` but no documentation or guard
 against the detached-span silent failure in spawned threads.
+
+---
+
+## 2026-06-20 — ReplayAdapter.send() fallback raised NotImplementedError
+
+Pattern: `ReplayAdapter` inherits from `BaseAdapter` (requests). When no fixture entry
+matched the request and `AGENT_TRACE_NETWORK_GUARD=0` (the default), the fallback path
+called `super().send()` which resolves to `BaseAdapter.send()` — an abstract method that
+unconditionally raises `NotImplementedError`. Any live-network fallback during replay
+silently crashed instead of making a real request.
+
+Rule: Never call `super().send()` on `BaseAdapter` — it is abstract. The correct fallback
+is to instantiate a concrete `HTTPAdapter()`, call `.send()`, and `.close()` in a
+`try/finally`. Mirror how the httpx equivalent uses `httpx.HTTPTransport()` for its own
+fallback. Add a test that patches `HTTPAdapter.send` to verify the fallback path reaches
+it (rather than `BaseAdapter.send`).
+
+Anti-sycophancy check: Not caught in any prior pass because the guard=0 fallback path had
+no test. The guard=1 path (which raises NetworkGuardError before reaching the fallback) was
+tested, giving false coverage confidence for the else branch.

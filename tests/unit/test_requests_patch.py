@@ -241,6 +241,36 @@ class TestReplayAdapter:
 
         fixture.close()
 
+    def test_send_fallback_uses_http_adapter_when_guard_off(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """With guard=0 and no fixture entry, ReplayAdapter falls back to HTTPAdapter.
+
+        Previously the fallback called super().send() which is BaseAdapter.send(),
+        an abstract method that raises NotImplementedError unconditionally.
+        """
+        monkeypatch.delenv("AGENT_TRACE_NETWORK_GUARD", raising=False)
+
+        fixture = _make_fixture(tmp_path)
+        adapter = ReplayAdapter(fixture)
+        req = _make_prepared_request("https://not-recorded.example.com/fallback", "GET")
+
+        mock_response = _make_mock_response(200, '{"fallback": true}')
+        with patch(
+            "agent_trace.interceptor.requests_patch.HTTPAdapter.send",
+            return_value=mock_response,
+        ):
+            import warnings
+
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                response = adapter.send(req)
+            assert len(w) == 1
+            assert "no fixture entry" in str(w[0].message)
+
+        assert response.status_code == 200
+        fixture.close()
+
     def test_send_serves_multiple_exchanges_in_order(self, tmp_path) -> None:
         fixture = _make_fixture(tmp_path)
         url = "https://api.example.com/multi"
