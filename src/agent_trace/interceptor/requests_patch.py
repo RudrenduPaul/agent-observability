@@ -139,7 +139,11 @@ class ReplayAdapter(BaseAdapter):
                 "to make this an error.",
                 stacklevel=2,
             )
-            return super().send(request, *args, **kwargs)
+            fallback = HTTPAdapter()
+            try:
+                return fallback.send(request, *args, **kwargs)
+            finally:
+                fallback.close()
 
         response = Response()
         response.status_code = int(exchange["response_status"])
