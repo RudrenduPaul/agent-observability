@@ -121,7 +121,7 @@ class Fixture:
                 "SELECT COALESCE(MAX(sequence_num), -1) + 1 FROM http_exchanges"
             )
             row = cur.fetchone()
-            next_seq: int = int(row[0]) if row else 0
+            next_seq: int = int(row[0])
 
             self._conn.execute(
                 """\

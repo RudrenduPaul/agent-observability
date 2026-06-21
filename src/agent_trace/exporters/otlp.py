@@ -115,27 +115,21 @@ class OTLPExporter:
                             NonRecordingSpan(parent_span_context)
                         )
 
-                    with otel_tracer.start_as_current_span(
+                    otel_span = otel_tracer.start_span(
                         span.name,
                         context=parent_ctx,
                         start_time=otlp_data["start_time_unix_nano"],
-                    ) as otel_span:
-                        for k, v in span.attributes.items():
-                            attr_v = (
-                                v if isinstance(v, (bool, int, float, str)) else str(v)
-                            )
-                            otel_span.set_attribute(k, attr_v)
-                        for event in span.events:
-                            otel_span.add_event(
-                                event.name,
-                                attributes={
-                                    k: str(v) for k, v in event.attributes.items()
-                                },
-                            )
-                        otel_span.set_status(otlp_data["status_code"])
-
-                        if span.end_time is not None:
-                            otel_span.end(end_time=otlp_data["end_time_unix_nano"])
+                    )
+                    for k, v in span.attributes.items():
+                        attr_v = v if isinstance(v, (bool, int, float, str)) else str(v)
+                        otel_span.set_attribute(k, attr_v)
+                    for event in span.events:
+                        otel_span.add_event(
+                            event.name,
+                            attributes={k: str(v) for k, v in event.attributes.items()},
+                        )
+                    otel_span.set_status(otlp_data["status_code"])
+                    otel_span.end(end_time=otlp_data["end_time_unix_nano"])
                 except Exception:
                     failed += 1
                     logger.debug(
