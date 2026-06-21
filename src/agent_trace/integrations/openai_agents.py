@@ -161,9 +161,12 @@ class AgentTraceHook:
         """Called when an agent turn raises — close the span with ERROR status."""
         agent_name: str = getattr(agent, "name", None) or "agent"
         key = f"agent:{id(context)}:{agent_name}"
-        span = self._close_span(key, SpanStatus.ERROR)
+        with self._lock:
+            span = self._spans.pop(key, None)
         if span is not None:
             span.record_exception(error)
+            if span.end_time is None:
+                span.end(SpanStatus.ERROR)
 
     def on_tool_error(
         self, context: Any, agent: Any, tool: Any, error: BaseException
@@ -171,9 +174,12 @@ class AgentTraceHook:
         """Called when a tool invocation raises — close the span with ERROR status."""
         tool_name: str = getattr(tool, "name", None) or "tool"
         key = f"tool:{id(context)}:{tool_name}"
-        span = self._close_span(key, SpanStatus.ERROR)
+        with self._lock:
+            span = self._spans.pop(key, None)
         if span is not None:
             span.record_exception(error)
+            if span.end_time is None:
+                span.end(SpanStatus.ERROR)
 
     def on_handoff(self, context: Any, from_agent: Any, to_agent: Any) -> None:
         """Called when control is handed off from one agent to another."""

@@ -170,7 +170,7 @@ class Fixture:
                        recorded_at, sequence_num
                 FROM http_exchanges
                 WHERE method = ? AND url = ? AND id > ?
-                ORDER BY sequence_num ASC
+                ORDER BY id ASC
                 LIMIT 1
                 """,
                 (method.upper(), url, last_id),
@@ -217,6 +217,13 @@ class Fixture:
             cur = self._conn.execute("SELECT COUNT(*) FROM http_exchanges")
             row = cur.fetchone()
             return int(row[0]) if row else 0
+
+    def earliest_timestamp(self) -> float | None:
+        """Return the earliest recorded_at timestamp, or None if empty."""
+        with self._lock:
+            cur = self._conn.execute("SELECT MIN(recorded_at) FROM http_exchanges")
+            row = cur.fetchone()
+            return float(row[0]) if row and row[0] is not None else None
 
     # ------------------------------------------------------------------
     # Metadata helpers
