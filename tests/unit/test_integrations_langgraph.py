@@ -243,6 +243,20 @@ class TestLangGraphCallbacks:
         run_id = _run_id()
         handler.on_chat_model_start({"name": "ChatOpenAI"}, [[]], run_id=run_id)
         assert str(run_id) in handler._spans
+        span = handler._spans[str(run_id)]
+        assert span.name == "llm:ChatOpenAI"
+
+    def test_chat_model_start_kwargs_model_name_in_span_name(self, tracer_and_trace):
+        """Model name from serialized.kwargs.model_name appears in span name."""
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chat_model_start(
+            {"kwargs": {"model_name": "gpt-4o"}}, [[]], run_id=run_id
+        )
+        span = handler._spans[str(run_id)]
+        assert span.name == "llm:gpt-4o"
+        assert span.attributes.get("llm.model") == "gpt-4o"
 
     def test_unknown_run_id_in_end_is_noop(self, tracer_and_trace):
         """Closing a span that was never opened must not raise."""
@@ -319,6 +333,7 @@ class TestLangGraph1xSerializedNone:
         run_id = _run_id()
         handler.on_chat_model_start(None, [[]], run_id=run_id, name="ChatOpenAI")  # type: ignore[arg-type]
         span = handler._spans[str(run_id)]
+        assert span.name == "llm:ChatOpenAI"
         assert span.attributes.get("llm.model") == "ChatOpenAI"
 
     def test_tool_start_serialized_none_does_not_crash(self, tracer_and_trace):
