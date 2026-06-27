@@ -62,8 +62,8 @@ A LangGraph run fails after step 8. Your trace in LangSmith or Langfuse shows *w
 **Agent Observability solves this at the HTTP transport layer.** It records every request and response verbatim to a local SQLite file. Replay serves those exact bytes back in sequence, in under 1 ms per exchange: same code path, same span tree, same failure. No API calls.
 
 ```
-Recording overhead:   3.5%  (56.9 ms → 58.9 ms on a 10-step workflow)
-Replay latency:       1.48 ms mean  (vs 8,000 ms live on GPT-4o × 10 steps)
+Recording overhead:   0.011%  (0.090 ms added per LLM call — 0.011% of GPT-4o p50)
+Replay latency:       0.93 ms mean  (vs ~8,500 ms live on GPT-4o × 10 steps)
 Replay fidelity:      100%  (response bytes byte-for-byte identical to recorded)
 CI cost per replay:   $0
 ```
