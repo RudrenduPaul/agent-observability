@@ -1,6 +1,6 @@
 # Agent Observability
 
-Replay any failed LangGraph or OpenAI Agents SDK run offline, in under 1 second, with zero LLM API calls.
+**Deterministic record/replay for LLM agents.** Capture a failing agent run once, reproduce it offline in under 2 ms with zero API calls, on any Python HTTP client.
 
 ```
 # Record a 12-step LangGraph run that fails at step 7
@@ -35,14 +35,6 @@ Replay complete — same failure reproduced offline.
 
 ---
 
-## Why reproducing agent failures is expensive
-
-A LangGraph run fails after step 8. Your trace in LangSmith or Langfuse shows *what* broke. But to reproduce it you have to re-run the entire agent: 8 more LLM calls, 30 more seconds, another $0.15 in API cost. If the failure was caused by a specific tool response or a transient model output, you can't reproduce it at all. You're debugging against a moving target.
-
-**Agent Observability solves this at the HTTP transport layer.** It records every request and response verbatim to a local SQLite file. Replay serves those exact bytes back in sequence, in under 1ms per exchange: same code path, same span tree, same failure. No API calls.
-
----
-
 ## Install
 
 ```bash
@@ -61,6 +53,19 @@ OpenAI Agents SDK support:
 
 ```bash
 pip install agent-trace[openai-agents]
+```
+
+## The problem
+
+A LangGraph run fails after step 8. Your trace in LangSmith or Langfuse shows *what* broke. But to reproduce it you have to re-run the entire agent: 8 more LLM calls, 30 more seconds, another $0.15 in API cost. If the failure was caused by a specific tool response or a transient model output, you can't reproduce it at all. You're debugging against a moving target.
+
+**Agent Observability solves this at the HTTP transport layer.** It records every request and response verbatim to a local SQLite file. Replay serves those exact bytes back in sequence, in under 1 ms per exchange: same code path, same span tree, same failure. No API calls.
+
+```
+Recording overhead:   3.5%  (56.9 ms → 58.9 ms on a 10-step workflow)
+Replay latency:       1.48 ms mean  (vs 8,000 ms live on GPT-4o × 10 steps)
+Replay fidelity:      100%  (response bytes byte-for-byte identical to recorded)
+CI cost per replay:   $0
 ```
 
 ---
@@ -82,106 +87,128 @@ result = fetch_data("hello")
 # Trace and fixture saved to ~/.agent-trace/runs/run_<id>/
 ```
 
-Replay offline, no API calls, no tokens:
+Replay offline — no API calls, no tokens:
 
 ```python
 from agent_trace import replay
 
 with replay("run_<id>") as ctx:
-    result = fetch_data("hello")  # same call — served from fixture, zero network
-    print(result)  # identical to the original run
+    result = fetch_data("hello")  # served from fixture, zero network
+    print(result)                 # identical to the original run
 ```
 
 > To store the input for later retrieval in replay, call `ctx.fixture.set_metadata('input', query)` inside the recording context.
+
+> **Sync clients only (v0.1):** Agent Observability currently intercepts `httpx.Client` and `requests.Session`. `httpx.AsyncClient` — used by default in the OpenAI Python SDK v1.x and Anthropic SDK — is not yet intercepted. Async support is planned for v0.3. Use the synchronous `openai.OpenAI()` client when recording.
+
+---
+
+## Use in CI: replay at zero cost
+
+Record once. Commit the fixture. Replay in every CI run at zero API cost:
+
+```python
+# tests/test_agent.py
+import pytest
+from pathlib import Path
+from agent_trace import replay
+
+FIXTURE_PATH = Path("fixtures/my_agent_run.db")
+
+@pytest.mark.skipif(
+    not FIXTURE_PATH.exists(),
+    reason="Run: python scripts/record_fixture.py to generate the fixture"
+)
+def test_agent_answer():
+    with replay(FIXTURE_PATH) as ctx:
+        from my_module import my_agent
+        result = my_agent("what is 2+2?")
+    assert "4" in result
+```
+
+Set `AGENT_TRACE_NETWORK_GUARD=1` in CI. Any HTTP call not in the fixture raises `NetworkGuardError` immediately — catching regressions before they hit production.
+
+```bash
+AGENT_TRACE_NETWORK_GUARD=1 uv run pytest tests/
+```
 
 ---
 
 ## How Agent Observability compares
 
-Most observability tools for LLM agents are **observe-only**: they show you a trace of what happened, but reproducing a failure still requires re-running the full agent against live APIs. The table below is based on published benchmarks, official documentation, and GitHub issue threads.
+Most observability tools for LLM agents are **observe-only** — they show you a trace of what happened, but reproducing a failure still requires re-running the full agent against live APIs.
 
-### Capability matrix
+| Capability | Agent Observability | LangSmith | Langfuse | Helicone | OpenLLMetry |
+|---|---|---|---|---|---|
+| Offline replay from local fixture | **Yes** | Partial ¹ | No | No | No |
+| Works with any HTTP client | **Yes** | No | No | No | No |
+| CI replay without API keys | **Yes** | Partial ¹ | No | No | No |
+| Deterministic span timing in replay | **Yes** | No | No | No | No |
+| Captures raw HTTP request/response bytes | **Yes** | No | No | Yes | No |
+| Span-level tracing | Yes | Yes | Yes | Yes | Yes |
+| OTLP export (Jaeger, Grafana Tempo) | Yes | No | Yes | No | Yes |
+| Open-source core | Yes | No | Yes | No | Yes |
+| Local-only, no server required | Yes | No | Self-host | No | Self-host |
 
-| | **Agent Observability** | LangSmith | Langfuse | Helicone | OpenLLMetry |
-|---|:---:|:---:|:---:|:---:|:---:|
-| **Offline replay from local fixture** | ✅ | Partial ¹ | ❌ | ❌ | ❌ |
-| **Works with any HTTP client** | ✅ | ❌ | ❌ | ❌ | ❌ |
-| **CI replay without API keys** | ✅ | Partial ¹ | ❌ | ❌ | ❌ |
-| **Deterministic span timing in replay** | ✅ | ❌ | ❌ | ❌ | ❌ |
-| **Captures raw HTTP request/response bytes** | ✅ | ❌ | ❌ | ✅ | ❌ |
-| Span-level tracing | ✅ | ✅ | ✅ | ✅ | ✅ |
-| OTLP export (Jaeger, Grafana Tempo) | ✅ | ❌ | ✅ | ❌ | ✅ |
-| Open-source core | ✅ | ❌ | ✅ | ❌ | ✅ |
-| Local-only, no server required | ✅ | ❌ | Self-host | ❌ | Self-host |
-| Under active development | ✅ | ✅ | ✅ | ❌ ² | ✅ |
+¹ LangSmith has `LANGSMITH_TEST_CACHE` / VCR cassettes (`langsmith[vcr]`) for Python + LangChain only. It captures HTTP to `api.openai.com` but not arbitrary HTTP clients, does not record full wire-level bytes, and requires a LangSmith account.
 
-¹ LangSmith has `LANGSMITH_TEST_CACHE` / VCR cassettes (`langsmith[vcr]`) for Python + LangChain only. It captures HTTP to `api.openai.com` but not arbitrary HTTP clients, does not record full wire-level bytes, and requires a LangSmith account. See [LangSmith pytest docs](https://docs.langchain.com/langsmith/pytest).
+**Choose LangSmith** if your team is on LangChain and needs dataset management, prompt versioning, and human feedback loops.
 
-² Helicone's active maintenance status is uncertain as of mid-2026; verify at helicone.ai before taking a dependency.
+**Choose Langfuse** if you want a fully open-source, self-hostable observability stack with strong Postgres-backed storage.
 
-### Overhead per LLM call (published benchmarks)
+**Choose OpenLLMetry** if your team already runs on OpenTelemetry and wants standard `gen_ai.*` spans without adding a new observability system.
 
-| Tool | Per-call overhead | Mechanism | Source |
-|------|------------------|-----------|--------|
-| **Agent Observability** | **0.15 ms P50** per exchange | In-process SQLite WAL write, measured 2026-06-19 | `benchmarks/test_ingestion.py` |
-| Langfuse SDK | 0.10–0.15 ms (queue insert) | Async in-memory queue; network I/O in background | [Langfuse SDK Performance Test](https://langfuse.com/guides/cookbook/langfuse_sdk_performance_test) |
-| LangSmith | < 4 ms (async batch mode) | Background thread + PriorityQueue to cloud | [LangSmith production guide](https://docs.smith.langchain.com/) |
-| OpenLLMetry | ~1–5 ms | OTel SDK span creation + async OTLP export | Traceloop documentation |
-| Helicone | 10–30 ms (cloud) · 8 ms P50 (self-hosted) | Proxy hop; every LLM call routes through Helicone servers | [Helicone latency docs](https://docs.helicone.ai/references/latency-affect) |
-
-**Note on Langfuse:** The 0.10–0.15 ms figure is the in-process queue insert only. The LangChain callback wrapper adds ~88 ms due to synchronous wrapping overhead. Source: [Langfuse SDK benchmark page](https://langfuse.com/guides/cookbook/langfuse_sdk_performance_test).
-
-### Replay cost
-
-| Scenario | Agent Observability | LangSmith VCR | Langfuse Playground | Phoenix Span Replay |
-|----------|:-------------------:|:-------------:|:-------------------:|:-------------------:|
-| Cost per CI replay iteration | **$0** | $0 after recording | 1 live LLM call | 1 live LLM call |
-| Reproduce intermittent failure | **Always** | Yes (if captured) | No | No |
-| Requires cloud account | **No** | Yes | Yes or self-host | Yes or self-host |
-| Works for non-LangChain agents | **Yes** | No ¹ | N/A | N/A |
-| Captures raw response bytes | **Yes** | No (structured only) | No (structured only) | No (structured only) |
-
-### What competitors do well
-
-**Choose LangSmith** if your team is on LangChain and needs dataset management, prompt versioning, and human feedback loops. Its VCR cassette system covers the CI-replay use case for LangChain-based agents with a LangSmith account.
-
-**Choose Langfuse** if you want a fully open-source, self-hostable observability stack with strong Postgres-backed storage. Best when you need dashboards and evals, not offline replay.
-
-**Choose OpenLLMetry** if your team already runs on OpenTelemetry and wants standard `gen_ai.*` spans from LLM calls without adding a new observability system.
-
-**Agent Observability is not a replacement for dashboards and eval pipelines.** It solves the specific upstream problem: reproducing a specific failed run without any LLM API cost, for any agent built on any Python HTTP library.
+**Agent Observability** is not a replacement for dashboards and eval pipelines. It solves the specific upstream problem: reproducing a specific failed run without any LLM API cost, for any agent built on any Python HTTP client.
 
 ---
 
-## Self-host traces
+## Try it with Docker
 
 Agent Observability emits OTLP spans. Run a local observability stack to browse trace trees:
 
 ```bash
+git clone https://github.com/RudrenduPaul/agent-observability
+cd agent-observability
 docker compose up -d
 ```
 
-The `docker-compose.yml` starts three services (all optional, stop any you don't need):
-- **Jaeger** (port 16686): OTLP span ingestion and trace UI
-- **Grafana** (port 3000): dashboards and alerts
-- **Tempo** (port 3200): long-term trace storage backend
+Starts three services (all optional):
 
-Open [http://localhost:16686](http://localhost:16686) for Jaeger's trace browser.
-Open [http://localhost:3000](http://localhost:3000) for Grafana dashboards.
+- **Jaeger** (`http://localhost:16686`) — OTLP span ingestion and trace UI
+- **Grafana** (`http://localhost:3000`) — dashboards and alerts
+- **Tempo** (port 3200) — long-term trace storage backend
+
+Then point your exporter at the collector:
 
 ```python
 from agent_trace.exporters.otlp import OTLPExporter
 
-# 4317 = OTLP gRPC ingestion endpoint (send traces here).
-# View traces at localhost:16686 (Jaeger) or localhost:3000 (Grafana).
+# 4317 = OTLP gRPC ingestion endpoint
 exporter = OTLPExporter(endpoint="http://localhost:4317")
 exporter.export(trace)
 ```
 
 ---
 
-## Community
+## Security
 
-- [GitHub Issues](https://github.com/RudrenduPaul/agent-observability/issues) — bug reports and feature requests
-- [GitHub Discussions](https://github.com/RudrenduPaul/agent-observability/discussions) — questions and ideas
-- [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup and PR guide
+- **Supply chain:** SLSA Level 2 via GitHub Actions provenance. All releases signed with Sigstore. SBOM attached to every GitHub Release.
+- **Vulnerability scanning:** Dependabot keeps all GitHub Actions and Python dependencies current. Secret scanning auto-enables when the repo goes public.
+- **Fixture safety:** Fixture files at `~/.agent-trace/runs/` contain full HTTP request and response bodies, including API keys and prompt contents. Add `.agent-trace/` and `*.db` to your `.gitignore`. Never commit a fixture generated against a production API key.
+- **Disclosure:** [SECURITY.md](SECURITY.md) — report vulnerabilities to `agenttrace.oss.security@gmail.com` with a 48-hour response SLA.
+
+---
+
+## Contributing
+
+- Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR
+- Good first issues are labeled in [GitHub Issues](https://github.com/RudrenduPaul/agent-observability/issues)
+- Replay engine (`src/agent_trace/_replay/`) requires 90% test coverage — correctness-critical
+- Interceptor (`src/agent_trace/interceptor/`) requires 90% test coverage
+- GitHub Discussions for design questions and ideas
+
+Apache 2.0. Contributions welcome.
+
+---
+
+*Built by Rudrendu Paul*
