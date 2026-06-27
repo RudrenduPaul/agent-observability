@@ -12,9 +12,13 @@ Running 12-step pipeline  (will fail at step 7)
   ✓ step_01  completed
   ...
   ✓ step_06  completed
-  ✗ step_07  upstream dependency returned null — cannot continue
+  ✗ step_07  Step 7: upstream dependency returned null — cannot continue pipeline
 
-Recorded: 8 spans captured  →  fixture.db
+Recorded:
+  8 spans captured
+  fixture → /tmp/agent-trace-demo-.../pipeline-run-001/fixture.db
+  7 node spans
+  1 error span(s)
 
 === REPLAY MODE ===
 (No network calls — all state served from local fixture)
@@ -22,7 +26,7 @@ Recorded: 8 spans captured  →  fixture.db
   ✓ step_01  completed
   ...
   ✓ step_06  completed
-  ✗ step_07  upstream dependency returned null — cannot continue
+  ✗ step_07  Step 7: upstream dependency returned null — cannot continue pipeline
 
 Replay complete — same failure reproduced offline.
 ```
