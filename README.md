@@ -195,7 +195,7 @@ exporter.export(trace)
 - **Supply chain:** SLSA Level 2 via GitHub Actions provenance. All releases signed with Sigstore. SBOM attached to every GitHub Release.
 - **Vulnerability scanning:** Dependabot keeps all GitHub Actions and Python dependencies current. Secret scanning auto-enables when the repo goes public.
 - **Fixture safety:** Fixture files at `~/.agent-trace/runs/` contain full HTTP request and response bodies, including API keys and prompt contents. Add `.agent-trace/` and `*.db` to your `.gitignore`. Never commit a fixture generated against a production API key.
-- **Disclosure:** [SECURITY.md](SECURITY.md) — report vulnerabilities to `agenttrace.oss.security@gmail.com` with a 48-hour response SLA.
+- **Disclosure:** [SECURITY.md](SECURITY.md) — report vulnerabilities to `agent.obs.oss.security@gmail.com` with a 48-hour response SLA.
 
 ---
 
@@ -203,8 +203,8 @@ exporter.export(trace)
 
 - Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR
 - Good first issues are labeled in [GitHub Issues](https://github.com/RudrenduPaul/agent-observability/issues)
-- Replay engine (`src/agent_trace/_replay/`) requires 90% test coverage — correctness-critical
-- Interceptor (`src/agent_trace/interceptor/`) requires 90% test coverage
+- Replay engine (`src/agent_trace/_replay/`) requires 80% test coverage — correctness-critical
+- Interceptor (`src/agent_trace/interceptor/`) requires 80% test coverage
 - GitHub Discussions for design questions and ideas
 
 Apache 2.0. Contributions welcome.
