@@ -358,11 +358,21 @@ class Tracer:
             orig_async = httpx.AsyncClient.__init__
 
             def _patched_sync(client_self: Any, *args: Any, **kwargs: Any) -> None:
-                kwargs.setdefault("transport", RecordingTransport(fixture))
+                # Always wrap whatever transport the caller supplied (chaining
+                # it as `inner`) instead of `setdefault`.  Libraries such as
+                # langchain-openai construct their own httpx.Client with an
+                # explicit `transport=` (e.g. for TCP keepalive socket
+                # options) on every platform by default; `setdefault` would
+                # silently lose to that and record nothing, with no error.
+                kwargs["transport"] = RecordingTransport(
+                    fixture, inner=kwargs.get("transport")
+                )
                 orig_sync(client_self, *args, **kwargs)
 
             def _patched_async(client_self: Any, *args: Any, **kwargs: Any) -> None:
-                kwargs.setdefault("transport", AsyncRecordingTransport(fixture))
+                kwargs["transport"] = AsyncRecordingTransport(
+                    fixture, inner=kwargs.get("transport")
+                )
                 orig_async(client_self, *args, **kwargs)
 
             self._original_httpx_init = (orig_sync, orig_async)
