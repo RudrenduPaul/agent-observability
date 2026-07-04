@@ -498,3 +498,51 @@ class TestRecordingTransportNesting:
         # Both restored on exit
         assert httpx.Client.__init__ is orig_sync
         assert httpx.AsyncClient.__init__ is orig_async
+
+    def test_explicit_transport_is_wrapped_not_bypassed(self, tmp_path: Path) -> None:
+        """A caller-supplied transport must still be recorded, not silently
+        dropped.
+
+        Libraries such as langchain-openai construct their own httpx.Client
+        with an explicit `transport=` (e.g. for TCP keepalive socket
+        options) by default on every platform.  ``setdefault`` would lose to
+        that silently — the call would succeed over the real network with
+        nothing written to the fixture and no error raised.
+        """
+        import httpx
+
+        from agent_trace.interceptor.httpx_hook import RecordingTransport
+
+        t = Tracer(trace_dir=tmp_path)
+        custom_transport = httpx.HTTPTransport()
+
+        with t.start_trace("explicit-transport", record=True, run_id="explicit"):
+            client = httpx.Client(transport=custom_transport)
+            try:
+                installed = client._transport
+                assert isinstance(installed, RecordingTransport)
+                assert installed._inner is custom_transport
+            finally:
+                client.close()
+
+    async def test_explicit_async_transport_is_wrapped_not_bypassed(
+        self, tmp_path: Path
+    ) -> None:
+        """Async counterpart of the explicit-transport wrapping guarantee."""
+        import httpx
+
+        from agent_trace.interceptor.httpx_hook import AsyncRecordingTransport
+
+        t = Tracer(trace_dir=tmp_path)
+        custom_transport = httpx.AsyncHTTPTransport()
+
+        with t.start_trace(
+            "explicit-async-transport", record=True, run_id="explicit-a"
+        ):
+            client = httpx.AsyncClient(transport=custom_transport)
+            try:
+                installed = client._transport
+                assert isinstance(installed, AsyncRecordingTransport)
+                assert installed._inner is custom_transport
+            finally:
+                await client.aclose()
