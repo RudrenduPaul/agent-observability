@@ -449,26 +449,32 @@ class TestAsyncInstrument:
 
 
 class TestRecordingTransportNesting:
+    """Recording is now patched at request-dispatch time
+    (``httpx.Client._transport_for_url`` / ``AsyncClient._transport_for_url``),
+    not at ``Client.__init__`` time — see ``Tracer._patch_httpx``.  These tests
+    assert against ``_transport_for_url`` accordingly.
+    """
+
     def test_nested_record_true_does_not_double_patch(self, tmp_path: Path) -> None:
         """Two nested start_trace(record=True) must not double-patch httpx."""
         import httpx
 
         t = Tracer(trace_dir=tmp_path)
-        original_init = httpx.Client.__init__
+        original = httpx.Client._transport_for_url
 
         with t.start_trace("outer", record=True, run_id="outer"):
-            patched_init = httpx.Client.__init__
-            assert patched_init is not original_init
+            patched = httpx.Client._transport_for_url
+            assert patched is not original
 
             with t.start_trace("inner", record=True, run_id="inner"):
                 # The patch should NOT have changed (no double-wrap)
-                assert httpx.Client.__init__ is patched_init
+                assert httpx.Client._transport_for_url is patched
 
             # After inner exits, outer's patch should still be in place
-            assert httpx.Client.__init__ is patched_init
+            assert httpx.Client._transport_for_url is patched
 
         # After outer exits, original is restored
-        assert httpx.Client.__init__ is original_init
+        assert httpx.Client._transport_for_url is original
 
     def test_depth_returns_to_zero_after_nested_exit(self, tmp_path: Path) -> None:
         t = Tracer(trace_dir=tmp_path)
@@ -481,20 +487,330 @@ class TestRecordingTransportNesting:
     def test_async_client_is_also_patched_during_recording(
         self, tmp_path: Path
     ) -> None:
-        """httpx.AsyncClient.__init__ must be patched alongside Client during record."""
+        """AsyncClient._transport_for_url must be patched alongside Client."""
         import httpx
 
         t = Tracer(trace_dir=tmp_path)
-        orig_async = httpx.AsyncClient.__init__
-        orig_sync = httpx.Client.__init__
+        orig_async = httpx.AsyncClient._transport_for_url
+        orig_sync = httpx.Client._transport_for_url
 
         with t.start_trace("async-patch-test", record=True, run_id="async-patch"):
-            assert httpx.Client.__init__ is not orig_sync
-            assert httpx.AsyncClient.__init__ is not orig_async, (
-                "AsyncClient.__init__ was not patched — async HTTP calls during "
-                "record mode would be silently unintercepted"
+            assert httpx.Client._transport_for_url is not orig_sync
+            assert httpx.AsyncClient._transport_for_url is not orig_async, (
+                "AsyncClient._transport_for_url was not patched — async HTTP "
+                "calls during record mode would be silently unintercepted"
             )
 
         # Both restored on exit
-        assert httpx.Client.__init__ is orig_sync
-        assert httpx.AsyncClient.__init__ is orig_async
+        assert httpx.Client._transport_for_url is orig_sync
+        assert httpx.AsyncClient._transport_for_url is orig_async
+
+
+# ---------------------------------------------------------------------------
+# Pre-existing clients / caller-supplied transports are still captured
+# ---------------------------------------------------------------------------
+
+
+class TestPreExistingClientCapture:
+    """RecordingTransport must cover httpx.Client instances constructed
+    *before* recording activates — the patch works at request-dispatch time
+    (``_transport_for_url``), not at __init__ time, so it doesn't matter
+    when the client object itself was built.
+    """
+
+    def test_httpx_client_constructed_before_recording_is_captured(
+        self, tmp_path: Path
+    ) -> None:
+        import httpx
+
+        from agent_trace._replay.fixture import Fixture
+
+        t = Tracer(trace_dir=tmp_path)
+
+        # Built before any recording is active — mirrors an LLM client
+        # constructed once at module-import time (e.g. `langgraph dev`'s
+        # `make_graph()` entry point, imported once at server startup).
+        pre_existing_client = httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, json={"pre": "existing"})
+            )
+        )
+        try:
+            with t.start_trace("pre-existing", record=True, run_id="pre-existing"):
+                pre_existing_client.get("https://api.example.com/pre-existing")
+        finally:
+            pre_existing_client.close()
+
+        with Fixture(tmp_path / "pre-existing" / "fixture.db") as f:
+            exchanges = f.all_exchanges()
+
+        assert len(exchanges) == 1
+        assert exchanges[0]["url"] == "https://api.example.com/pre-existing"
+
+    async def test_httpx_async_client_constructed_before_recording_is_captured(
+        self, tmp_path: Path
+    ) -> None:
+        import httpx
+
+        from agent_trace._replay.fixture import Fixture
+
+        t = Tracer(trace_dir=tmp_path)
+
+        pre_existing_client = httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, json={"pre": "existing-async"})
+            )
+        )
+        try:
+            with t.start_trace(
+                "pre-existing-async", record=True, run_id="pre-existing-async"
+            ):
+                await pre_existing_client.get(
+                    "https://api.example.com/pre-existing-async"
+                )
+        finally:
+            await pre_existing_client.aclose()
+
+        with Fixture(tmp_path / "pre-existing-async" / "fixture.db") as f:
+            exchanges = f.all_exchanges()
+
+        assert len(exchanges) == 1
+        assert exchanges[0]["url"] == "https://api.example.com/pre-existing-async"
+
+    def test_requests_session_constructed_before_recording_is_captured(
+        self, tmp_path: Path
+    ) -> None:
+        """requests.Session.get_adapter() is already resolved per-request, so
+        this already worked — locked in here as a regression guard."""
+        from unittest.mock import patch as mock_patch
+
+        import requests
+        from requests.adapters import HTTPAdapter
+
+        from agent_trace._replay.fixture import Fixture
+
+        t = Tracer(trace_dir=tmp_path)
+        session = requests.Session()
+
+        mock_response = requests.Response()
+        mock_response.status_code = 200
+        mock_response._content = b'{"pre": "existing-requests"}'
+        mock_response.url = "https://api.example.com/pre-existing-requests"
+
+        with t.start_trace(
+            "pre-existing-requests", record=True, run_id="pre-existing-requests"
+        ):
+            with mock_patch.object(HTTPAdapter, "send", return_value=mock_response):
+                session.get("https://api.example.com/pre-existing-requests")
+
+        with Fixture(tmp_path / "pre-existing-requests" / "fixture.db") as f:
+            exchanges = f.all_exchanges()
+
+        assert len(exchanges) == 1
+        assert (
+            exchanges[0]["url"] == "https://api.example.com/pre-existing-requests"
+        )
+
+
+class TestCallerSuppliedTransportWrapped:
+    """A caller-supplied transport= (e.g. langchain-openai's TCP-keepalive
+    transport, or the Anthropic SDK's default transport) must still be
+    recorded, not silently bypassed the way `kwargs.setdefault(...)` would.
+    """
+
+    def test_explicit_httpx_transport_is_still_recorded(
+        self, tmp_path: Path
+    ) -> None:
+        import httpx
+
+        from agent_trace._replay.fixture import Fixture
+
+        t = Tracer(trace_dir=tmp_path)
+        custom_transport = httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"via": "custom-transport"})
+        )
+
+        with t.start_trace("explicit-transport", record=True, run_id="explicit"):
+            client = httpx.Client(transport=custom_transport)
+            try:
+                client.get("https://api.example.com/explicit")
+            finally:
+                client.close()
+
+        with Fixture(tmp_path / "explicit" / "fixture.db") as f:
+            exchanges = f.all_exchanges()
+
+        assert len(exchanges) == 1
+        assert exchanges[0]["url"] == "https://api.example.com/explicit"
+
+    async def test_explicit_async_httpx_transport_is_still_recorded(
+        self, tmp_path: Path
+    ) -> None:
+        import httpx
+
+        from agent_trace._replay.fixture import Fixture
+
+        t = Tracer(trace_dir=tmp_path)
+        custom_transport = httpx.MockTransport(
+            lambda request: httpx.Response(
+                200, json={"via": "custom-async-transport"}
+            )
+        )
+
+        with t.start_trace(
+            "explicit-async-transport", record=True, run_id="explicit-async"
+        ):
+            client = httpx.AsyncClient(transport=custom_transport)
+            try:
+                await client.get("https://api.example.com/explicit-async")
+            finally:
+                await client.aclose()
+
+        with Fixture(tmp_path / "explicit-async" / "fixture.db") as f:
+            exchanges = f.all_exchanges()
+
+        assert len(exchanges) == 1
+        assert exchanges[0]["url"] == "https://api.example.com/explicit-async"
+
+    def test_requests_mounted_custom_adapter_is_still_recorded(
+        self, tmp_path: Path
+    ) -> None:
+        from unittest.mock import MagicMock
+
+        import requests
+        from requests.adapters import HTTPAdapter
+
+        from agent_trace._replay.fixture import Fixture
+
+        t = Tracer(trace_dir=tmp_path)
+        session = requests.Session()
+
+        mock_response = requests.Response()
+        mock_response.status_code = 200
+        mock_response._content = b'{"via": "mounted-adapter"}'
+        mock_response.url = "https://api.example.com/mounted"
+
+        custom_adapter = MagicMock(spec=HTTPAdapter)
+        custom_adapter.send.return_value = mock_response
+        session.mount("https://", custom_adapter)
+
+        with t.start_trace("mounted-adapter", record=True, run_id="mounted-adapter"):
+            session.get("https://api.example.com/mounted")
+
+        custom_adapter.send.assert_called_once()
+        with Fixture(tmp_path / "mounted-adapter" / "fixture.db") as f:
+            exchanges = f.all_exchanges()
+
+        assert len(exchanges) == 1
+        assert exchanges[0]["url"] == "https://api.example.com/mounted"
+
+
+# ---------------------------------------------------------------------------
+# Concurrent-recording isolation
+# ---------------------------------------------------------------------------
+
+
+class TestConcurrentRecordingIsolation:
+    """Two overlapping start_trace(record=True) contexts must route HTTP
+    exchanges into their own fixture, never bleed into each other's — even
+    when their lifetimes genuinely overlap (e.g. two in-flight requests
+    being recorded concurrently inside a server process).
+    """
+
+    def test_nested_traces_route_to_correct_fixture(self, tmp_path: Path) -> None:
+        """Sequential nesting: inner trace's calls go to inner's fixture,
+        and the outer trace resumes recording to its own fixture afterwards."""
+        import httpx
+
+        from agent_trace._replay.fixture import Fixture
+
+        t = Tracer(trace_dir=tmp_path)
+
+        def _handler(tag: str):
+            return lambda request: httpx.Response(200, json={"tag": tag})
+
+        with t.start_trace("outer", record=True, run_id="outer-route"):
+            with httpx.Client(transport=httpx.MockTransport(_handler("outer"))) as c:
+                c.get("https://api.example.com/outer-1")
+
+            with t.start_trace("inner", record=True, run_id="inner-route"):
+                with httpx.Client(
+                    transport=httpx.MockTransport(_handler("inner"))
+                ) as c:
+                    c.get("https://api.example.com/inner-1")
+
+            with httpx.Client(transport=httpx.MockTransport(_handler("outer"))) as c:
+                c.get("https://api.example.com/outer-2")
+
+        with Fixture(tmp_path / "outer-route" / "fixture.db") as f:
+            outer_exchanges = f.all_exchanges()
+        with Fixture(tmp_path / "inner-route" / "fixture.db") as f:
+            inner_exchanges = f.all_exchanges()
+
+        assert [e["url"] for e in outer_exchanges] == [
+            "https://api.example.com/outer-1",
+            "https://api.example.com/outer-2",
+        ]
+        assert [e["url"] for e in inner_exchanges] == [
+            "https://api.example.com/inner-1",
+        ]
+
+    async def test_overlapping_async_traces_record_into_separate_fixtures(
+        self, tmp_path: Path
+    ) -> None:
+        """Two genuinely concurrent (not nested) recordings, synchronized so
+        both are simultaneously active when each makes its HTTP call, must
+        not cross-contaminate fixtures.
+
+        Regression test for the bug where `_install_recording_transport`
+        only patched on the *first* overlapping call (nesting-counter > 1
+        was a no-op) — every concurrent trace's traffic then silently landed
+        in whichever fixture happened to be outermost.
+        """
+        import asyncio
+
+        import httpx
+
+        from agent_trace._replay.fixture import Fixture
+
+        t = Tracer(trace_dir=tmp_path)
+        b_entered = asyncio.Event()
+        a_done = asyncio.Event()
+
+        def handler_a(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"trace": "a"})
+
+        def handler_b(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"trace": "b"})
+
+        async def run_a() -> None:
+            with t.start_trace("trace-a", record=True, run_id="trace-a"):
+                async with httpx.AsyncClient(
+                    transport=httpx.MockTransport(handler_a)
+                ) as client:
+                    # Don't make our call until B has also become active —
+                    # guarantees a genuine overlap window.
+                    await b_entered.wait()
+                    await client.get("https://api.example.com/a")
+            a_done.set()
+
+        async def run_b() -> None:
+            with t.start_trace("trace-b", record=True, run_id="trace-b"):
+                b_entered.set()
+                async with httpx.AsyncClient(
+                    transport=httpx.MockTransport(handler_b)
+                ) as client:
+                    await client.get("https://api.example.com/b")
+                # Stay active until A has also finished its call, so both
+                # traces are provably active at the same time.
+                await a_done.wait()
+
+        await asyncio.gather(run_a(), run_b())
+
+        with Fixture(tmp_path / "trace-a" / "fixture.db") as f:
+            exchanges_a = f.all_exchanges()
+        with Fixture(tmp_path / "trace-b" / "fixture.db") as f:
+            exchanges_b = f.all_exchanges()
+
+        assert [e["url"] for e in exchanges_a] == ["https://api.example.com/a"]
+        assert [e["url"] for e in exchanges_b] == ["https://api.example.com/b"]

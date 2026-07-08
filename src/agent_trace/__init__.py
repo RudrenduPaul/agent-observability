@@ -86,9 +86,21 @@ class Tracer:
         # here so their types are declared once and getattr-with-default is
         # never needed.
         self._transport_depth: int = 0
-        # Stored as a (sync_init, async_init) tuple when patched; None otherwise.
-        self._original_httpx_init: tuple[Any, Any] | None = None
+        # Stored as a (sync, async) tuple when patched; None otherwise.
+        self._original_httpx_transport_for_url: tuple[Any, Any] | None = None
         self._original_requests_get_adapter: Any = None
+        # The fixture that HTTP calls made *in the current context* should be
+        # recorded into.  ContextVar (not a plain attribute) so that each
+        # asyncio Task / thread gets its own independent value: two
+        # concurrently active start_trace(record=True) contexts (e.g. two
+        # in-flight requests in a server process) each see only their own
+        # fixture here, never each other's.  The class-level httpx/requests
+        # patches installed by _patch_httpx/_patch_requests read this at
+        # request-dispatch time rather than closing over a single fixture
+        # captured whenever the patch happened to first be installed.
+        self._active_fixture_var: ContextVar[Fixture | None] = ContextVar(
+            "agent_trace_active_fixture", default=None
+        )
         # Registered plugins — called on span and trace lifecycle events.
         self._plugins: list[Plugin] = []
 
@@ -138,8 +150,15 @@ class Tracer:
         )
         try:
             with fixture_ctx as fixture:
+                fixture_token: Token[Fixture | None] | None = None
                 if fixture is not None:
-                    self._install_recording_transport(fixture)
+                    # Set the ContextVar *before* installing the patch so
+                    # that any HTTP call made anywhere in this context (or a
+                    # nested one) during the patch's lifetime resolves back
+                    # to this trace's fixture, even under overlapping
+                    # concurrent recordings.
+                    fixture_token = self._active_fixture_var.set(fixture)
+                    self._install_recording_transport()
                 try:
                     yield trace
                 except Exception as exc:
@@ -151,6 +170,8 @@ class Tracer:
                 finally:
                     if fixture is not None:
                         self._uninstall_recording_transport()
+                    if fixture_token is not None:
+                        self._active_fixture_var.reset(fixture_token)
         finally:
             trace_json_path = run_dir / "trace.json"
             try:
@@ -321,21 +342,28 @@ class Tracer:
     # Recording transport patching
     # ------------------------------------------------------------------
 
-    def _install_recording_transport(self, fixture: Any) -> None:
-        """Monkey-patch httpx and requests to record all HTTP traffic.
+    def _install_recording_transport(self) -> None:
+        """Monkey-patch httpx and requests to record HTTP traffic.
 
-        Uses a nesting counter so that nested start_trace(record=True) calls
-        don't overwrite the saved original with an already-patched method.
-        Only the outermost call saves + installs; inner calls are no-ops.
+        Uses a nesting counter so that overlapping/nested
+        start_trace(record=True) calls install the class-level patch exactly
+        once and only remove it once the *last* active recording exits.
+        Only the outermost call installs; inner/overlapping calls are no-ops
+        on the patch itself.
+
+        The installed patches do not close over a single fixture — each one
+        resolves ``self._active_fixture_var.get()`` fresh at request-dispatch
+        time, so this is safe even when two recordings are simultaneously
+        active (see the ContextVar comment on ``_active_fixture_var``).
         """
         self._transport_depth += 1
         if self._transport_depth > 1:
             return
-        self._patch_httpx(fixture)
-        self._patch_requests(fixture)
+        self._patch_httpx()
+        self._patch_requests()
 
     def _uninstall_recording_transport(self) -> None:
-        """Restore the original ``__init__`` / ``get_adapter`` methods.
+        """Restore the original patched methods.
 
         Only the outermost trace uninstalls; inner traces decrement the counter.
         """
@@ -345,7 +373,7 @@ class Tracer:
         self._unpatch_httpx()
         self._unpatch_requests()
 
-    def _patch_httpx(self, fixture: Any) -> None:
+    def _patch_httpx(self) -> None:
         try:
             import httpx
 
@@ -354,35 +382,77 @@ class Tracer:
                 RecordingTransport,
             )
 
-            orig_sync = httpx.Client.__init__
-            orig_async = httpx.AsyncClient.__init__
+            # Patch at request-dispatch time (`_transport_for_url`, called by
+            # httpx internally on every single request/redirect hop) rather
+            # than at Client.__init__ time.  This fixes two problems with the
+            # old __init__-time patch:
+            #
+            # 1. A client constructed *before* recording activates (e.g. an
+            #    LLM client built once at module-import time, as
+            #    `langgraph dev`/`make_graph()` entry points typically do)
+            #    permanently kept its original transport under the old
+            #    design, so recording could never see its traffic no matter
+            #    when `start_trace(record=True)` was later entered.
+            #    `_transport_for_url` is looked up fresh on every send(), so
+            #    pre-existing clients are captured too.
+            # 2. A client constructed with an explicit `transport=` (e.g.
+            #    langchain-openai's TCP-keepalive transport, or any SDK that
+            #    pre-populates the `transport` kwarg) defeated the old
+            #    `kwargs.setdefault("transport", ...)` silently — setdefault
+            #    never fires when the key is already present.  Here we always
+            #    wrap whatever transport httpx would have used (default or
+            #    caller-supplied, including per-URL `mounts=` transports)
+            #    as `inner`, so nothing bypasses recording.
+            active_fixture_var = self._active_fixture_var
+            orig_sync = httpx.Client._transport_for_url
+            orig_async = httpx.AsyncClient._transport_for_url
 
-            def _patched_sync(client_self: Any, *args: Any, **kwargs: Any) -> None:
-                kwargs.setdefault("transport", RecordingTransport(fixture))
-                orig_sync(client_self, *args, **kwargs)
+            def _patched_sync(client_self: Any, url: Any) -> Any:
+                base_transport = orig_sync(client_self, url)
+                fixture = active_fixture_var.get()
+                if fixture is None or isinstance(base_transport, RecordingTransport):
+                    return base_transport
+                return RecordingTransport(fixture, inner=base_transport)
 
-            def _patched_async(client_self: Any, *args: Any, **kwargs: Any) -> None:
-                kwargs.setdefault("transport", AsyncRecordingTransport(fixture))
-                orig_async(client_self, *args, **kwargs)
+            def _patched_async(client_self: Any, url: Any) -> Any:
+                base_transport = orig_async(client_self, url)
+                fixture = active_fixture_var.get()
+                if fixture is None or isinstance(
+                    base_transport, AsyncRecordingTransport
+                ):
+                    return base_transport
+                return AsyncRecordingTransport(fixture, inner=base_transport)
 
-            self._original_httpx_init = (orig_sync, orig_async)
-            setattr(httpx.Client, "__init__", _patched_sync)
-            setattr(httpx.AsyncClient, "__init__", _patched_async)
+            self._original_httpx_transport_for_url = (orig_sync, orig_async)
+            setattr(httpx.Client, "_transport_for_url", _patched_sync)
+            setattr(httpx.AsyncClient, "_transport_for_url", _patched_async)
         except ImportError:
             pass
 
-    def _patch_requests(self, fixture: Any) -> None:
+    def _patch_requests(self) -> None:
         try:
             import requests
 
             from agent_trace.interceptor.requests_patch import RecordingAdapter
 
+            # requests.Session.get_adapter(url) is already resolved fresh on
+            # every request (not at Session-construction time), so — unlike
+            # the old httpx.Client.__init__ patch — this already covers
+            # pre-existing Sessions and caller-mounted custom adapters
+            # correctly.  The only change here is resolving the fixture from
+            # the ContextVar at call time instead of a closed-over value, so
+            # concurrent recordings route correctly too.
+            active_fixture_var = self._active_fixture_var
             orig = requests.Session.get_adapter
 
             def _patched(session_self: Any, url: str, **kwargs: Any) -> Any:
-                # Call the original dispatch so custom adapters are respected,
-                # then wrap the returned adapter to record the exchange.
+                # Call the original dispatch so custom/mounted adapters are
+                # respected, then wrap the returned adapter to record the
+                # exchange for whichever trace is active in this context.
                 inner = orig(session_self, url, **kwargs)
+                fixture = active_fixture_var.get()
+                if fixture is None or isinstance(inner, RecordingAdapter):
+                    return inner
                 return RecordingAdapter(fixture, inner=inner)
 
             self._original_requests_get_adapter = orig
@@ -391,18 +461,18 @@ class Tracer:
             pass
 
     def _unpatch_httpx(self) -> None:
-        orig = self._original_httpx_init
+        orig = self._original_httpx_transport_for_url
         if orig is None:
             return
         try:
             import httpx
 
             orig_sync, orig_async = orig
-            setattr(httpx.Client, "__init__", orig_sync)
-            setattr(httpx.AsyncClient, "__init__", orig_async)
+            setattr(httpx.Client, "_transport_for_url", orig_sync)
+            setattr(httpx.AsyncClient, "_transport_for_url", orig_async)
         except ImportError:
             pass
-        self._original_httpx_init = None
+        self._original_httpx_transport_for_url = None
 
     def _unpatch_requests(self) -> None:
         orig = self._original_requests_get_adapter
