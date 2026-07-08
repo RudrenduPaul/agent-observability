@@ -180,6 +180,40 @@ class TestRecordingAdapter:
 
 
 # ---------------------------------------------------------------------------
+# RecordingAdapter nesting / double-wrap safety
+# ---------------------------------------------------------------------------
+
+
+class TestRecordingAdapterDoubleWrapSafety:
+    """RecordingAdapter must not raise or drop the response if it ends up
+    wrapping another RecordingAdapter as `inner` (defensive — mirrors
+    TestRecordingTransportDoubleWrapSafety in test_httpx_hook.py). In
+    practice ``Tracer._patch_requests`` avoids this with an
+    ``isinstance(inner, RecordingAdapter)`` guard before wrapping.
+    """
+
+    def test_wrapping_an_already_recording_adapter_still_works(
+        self, tmp_path
+    ) -> None:
+        fixture = _make_fixture(tmp_path)
+        url = "https://api.example.com/double-wrap"
+        req = _make_prepared_request(url, "GET")
+        mock_response = _make_mock_response(200, '{"ok": true}')
+
+        with patch.object(HTTPAdapter, "send", return_value=mock_response):
+            inner_adapter = RecordingAdapter(fixture)
+            outer_adapter = RecordingAdapter(fixture, inner=inner_adapter)
+            response = outer_adapter.send(req)
+
+        assert response is mock_response
+        # Both layers recorded — documents current low-level behavior; the
+        # Tracer-level patch avoids ever nesting RecordingAdapters in
+        # practice via its isinstance guard.
+        assert fixture.exchange_count() == 2
+        fixture.close()
+
+
+# ---------------------------------------------------------------------------
 # ReplayAdapter
 # ---------------------------------------------------------------------------
 

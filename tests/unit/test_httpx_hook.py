@@ -179,6 +179,67 @@ class TestRecordingTransport:
 
 
 # ---------------------------------------------------------------------------
+# RecordingTransport nesting / double-wrap safety
+# ---------------------------------------------------------------------------
+
+
+class TestRecordingTransportDoubleWrapSafety:
+    """RecordingTransport must not raise or drop the response if it ends up
+    wrapping another RecordingTransport as `inner` (defensive — this can
+    happen if instrumentation layers overlap).  In practice
+    ``Tracer._patch_httpx`` avoids this entirely with an
+    ``isinstance(base_transport, RecordingTransport)`` guard before wrapping,
+    so double-recording never happens through the normal Tracer patch path;
+    this test only documents/locks in that the class itself stays safe.
+    """
+
+    @respx.mock
+    def test_wrapping_an_already_recording_transport_still_works(
+        self, tmp_path
+    ) -> None:
+        url = "https://api.example.com/double-wrap"
+        respx.get(url).mock(return_value=httpx.Response(200, json={"ok": True}))
+
+        fixture = _make_fixture(tmp_path)
+        inner_transport = RecordingTransport(
+            fixture, inner=httpx.MockTransport(respx.mock.handler)
+        )
+        outer_transport = RecordingTransport(fixture, inner=inner_transport)
+
+        client = httpx.Client(transport=outer_transport)
+        with client:
+            response = client.get(url)
+
+        assert response.status_code == 200
+        assert response.json() == {"ok": True}
+        # Both layers recorded — documents current low-level behavior; the
+        # Tracer-level patch avoids ever nesting RecordingTransports in
+        # practice via its isinstance guard.
+        assert fixture.exchange_count() == 2
+        fixture.close()
+
+    @respx.mock
+    async def test_wrapping_an_already_recording_async_transport_still_works(
+        self, tmp_path
+    ) -> None:
+        url = "https://api.example.com/async-double-wrap"
+        respx.get(url).mock(return_value=httpx.Response(200, json={"ok": True}))
+
+        fixture = _make_fixture(tmp_path)
+        inner_transport = AsyncRecordingTransport(
+            fixture, inner=httpx.MockTransport(respx.mock.handler)
+        )
+        outer_transport = AsyncRecordingTransport(fixture, inner=inner_transport)
+
+        async with httpx.AsyncClient(transport=outer_transport) as client:
+            response = await client.get(url)
+
+        assert response.status_code == 200
+        assert fixture.exchange_count() == 2
+        fixture.close()
+
+
+# ---------------------------------------------------------------------------
 # ReplayTransport
 # ---------------------------------------------------------------------------
 
