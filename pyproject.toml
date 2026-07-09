@@ -35,6 +35,7 @@ dependencies = [
 [project.optional-dependencies]
 autogen = ["autogen-agentchat>=0.4", "autogen-ext[openai]>=0.4"]
 langgraph = ["langgraph>=1.0.10", "langchain-core>=0.3"]
+mcp = ["mcp>=1.28"]
 openai-agents = ["openai-agents>=0.0.3"]
 crewai = ["crewai>=1.0.0"]
 llama-index = ["llama-index-core>=0.14"]
@@ -114,7 +115,7 @@ no_implicit_optional = true
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
-module = ["langchain_core.*", "opentelemetry.*", "agents.*", "boto3.*", "google.cloud.*", "crewai.*", "llama_index.*", "pydantic.*", "haystack.*", "grpc.*", "google.protobuf.*", "botocore.*"]
+module = ["langchain_core.*", "opentelemetry.*", "agents.*", "boto3.*", "google.cloud.*", "crewai.*", "llama_index.*", "pydantic.*", "haystack.*", "grpc.*", "google.protobuf.*", "botocore.*", "mcp.*", "anyio.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
