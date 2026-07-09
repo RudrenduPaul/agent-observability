@@ -136,7 +136,11 @@ class TestHaystackTracerInit:
     def test_lock_is_a_lock(self, tracer_and_trace):
         t, trace = tracer_and_trace
         h = _make_tracer(t, trace)
-        assert isinstance(h._lock, threading.Lock)
+        # threading.Lock is a factory function returning a
+        # _thread.lock-typed object on Python < 3.13, but a real
+        # isinstance-able class on 3.13+ — compare against the concrete
+        # type of a freshly allocated lock so this works on both.
+        assert isinstance(h._lock, type(threading.Lock()))
 
     def test_two_instances_have_independent_stacks(self, tracer_and_trace):
         t, trace = tracer_and_trace

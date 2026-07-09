@@ -739,23 +739,6 @@ class Tracer:
         except ImportError:
             pass
 
-    def _patch_aiohttp(self, fixture: Any) -> None:
-        try:
-            import aiohttp
-
-            from agent_trace.interceptor.aiohttp_hook import make_recording_request
-
-            orig_request = aiohttp.ClientSession._request
-
-            self._original_aiohttp_request = orig_request
-            setattr(
-                aiohttp.ClientSession,
-                "_request",
-                make_recording_request(fixture, orig_request),
-            )
-        except ImportError:
-            pass
-
     def _unpatch_httpx(self) -> None:
         orig = self._original_httpx_transport_for_url
         if orig is None:
@@ -926,7 +909,9 @@ class Tracer:
                 )
                 fixture = active_fixture_var.get()
                 if fixture is not None:
-                    await _record_exchange(fixture, method, str_or_url, kwargs, response)
+                    await _record_exchange(
+                        fixture, method, str_or_url, kwargs, response
+                    )
                 return response
 
             self._original_aiohttp_request = orig_request
