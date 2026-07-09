@@ -1019,6 +1019,44 @@ class TestInspectSubcommand:
         assert result.returncode == 0, result.stderr
         assert "No anomalies flagged" in result.stdout
 
+    def test_flags_orphaned_responses_api_call_id(self, tmp_path) -> None:
+        """#33895: a Responses API `function_call` with no matching
+        `function_call_output` — the "No call message found for call_*"
+        shape — must surface through `agent-trace inspect` the same way
+        the Chat Completions orphaned-tool_call_id shape does."""
+        import json as _json
+        import os
+
+        env = dict(os.environ)
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
+
+        request_body = _json.dumps(
+            {
+                "input": [
+                    {"type": "function_call", "call_id": "call_1", "name": "get_weather"},
+                ]
+            }
+        )
+        _write_run(
+            tmp_path,
+            "run-responses-api",
+            exchanges=[
+                {
+                    "url": "https://api.openai.com/v1/responses",
+                    "method": "POST",
+                    "request_headers": {},
+                    "request_body": request_body,
+                    "response_status": 200,
+                    "response_headers": {},
+                    "response_body": "{}",
+                }
+            ],
+        )
+
+        result = _run_cli(["inspect", "run-responses-api"], env=env)
+        assert result.returncode == 0, result.stderr
+        assert "orphaned_responses_api_call_ids" in result.stdout
+
     def test_diff_get_post_field_flags_stale_instructions(self, tmp_path) -> None:
         """#2620 (GPTAssistantAgent): a POST /runs referencing the same
         assistant_id as an earlier GET /assistants/{id} sends a stale
