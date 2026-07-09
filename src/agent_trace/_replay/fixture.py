@@ -79,6 +79,25 @@ CREATE TABLE IF NOT EXISTS ws_frames (
 );
 CREATE INDEX IF NOT EXISTS idx_ws_frames_conn_dir_seq
     ON ws_frames (connection_id, direction, sequence_num);
+-- MCP stdio-transport JSON-RPC frames — one row per frame flowing over a
+-- child process's stdin (direction='to_server') or stdout
+-- (direction='from_server').  Distinct from http_exchanges because MCP's
+-- stdio transport has no HTTP request/response pairing: notifications carry
+-- no id, and a single session emits many frames per (server_command, tool).
+CREATE TABLE IF NOT EXISTS mcp_frames (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    trace_id       TEXT NOT NULL,
+    server_command TEXT NOT NULL,
+    direction      TEXT NOT NULL,
+    frame_type     TEXT NOT NULL,
+    rpc_id         TEXT,
+    method         TEXT,
+    payload        TEXT NOT NULL,
+    recorded_at    REAL NOT NULL,
+    sequence_num   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_frames_seq
+    ON mcp_frames (sequence_num);
 """
 
 # Columns added after the original schema. CREATE TABLE IF NOT EXISTS above
@@ -211,6 +230,19 @@ def _row_to_ws_frame(row: sqlite3.Row) -> dict[str, Any]:
         "url": row["url"],
         "direction": row["direction"],
         "frame_type": row["frame_type"],
+        "payload": row["payload"],
+        "recorded_at": row["recorded_at"],
+        "sequence_num": row["sequence_num"],
+    }
+
+
+def _row_to_mcp_frame(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "server_command": row["server_command"],
+        "direction": row["direction"],
+        "frame_type": row["frame_type"],
+        "rpc_id": row["rpc_id"],
+        "method": row["method"],
         "payload": row["payload"],
         "recorded_at": row["recorded_at"],
         "sequence_num": row["sequence_num"],
@@ -410,6 +442,88 @@ class Fixture:
                     "exchange was still recorded locally",
                     exc_info=True,
                 )
+
+    # ------------------------------------------------------------------
+    # MCP stdio-transport frame recording
+    # ------------------------------------------------------------------
+
+    def record_mcp_frame(
+        self,
+        server_command: str,
+        direction: str,
+        frame_type: str,
+        rpc_id: str | None,
+        method: str | None,
+        payload: str,
+    ) -> None:
+        """Persist one MCP stdio JSON-RPC frame to the fixture database.
+
+        Parameters
+        ----------
+        server_command:
+            The command (and args) used to launch the MCP server subprocess,
+            used to disambiguate frames when multiple servers are recorded
+            into the same fixture (e.g. a ``MultiServerMCPClient`` session).
+        direction:
+            ``"to_server"`` (client stdin) or ``"from_server"`` (client stdout).
+        frame_type:
+            ``"request"``, ``"response"``, ``"notification"``, or ``"error"``.
+        rpc_id:
+            The JSON-RPC ``id`` as a string, or None for notifications.
+        method:
+            The JSON-RPC ``method`` name, or None for responses/errors.
+        payload:
+            The raw JSON text of the frame, exactly as sent/received on the wire.
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT COALESCE(MAX(sequence_num), -1) + 1 FROM mcp_frames"
+            )
+            row = cur.fetchone()
+            next_seq: int = int(row[0])
+
+            self._conn.execute(
+                """\
+                INSERT INTO mcp_frames
+                    (trace_id, server_command, direction, frame_type, rpc_id,
+                     method, payload, recorded_at, sequence_num)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    self._trace_id,
+                    server_command,
+                    direction,
+                    frame_type,
+                    rpc_id,
+                    method,
+                    payload,
+                    time.time(),  # wall-clock intentional — see record_exchange
+                    next_seq,
+                ),
+            )
+            self._conn.commit()
+
+    def all_mcp_frames(self) -> list[dict[str, Any]]:
+        """Return every recorded MCP frame in sequence_num order."""
+        with self._lock:
+            cur = self._conn.execute(
+                """\
+                SELECT server_command, direction, frame_type, rpc_id, method,
+                       payload, recorded_at, sequence_num
+                FROM mcp_frames
+                ORDER BY sequence_num ASC
+                """
+            )
+            rows = cur.fetchall()
+
+        return [_row_to_mcp_frame(row) for row in rows]
+
+    def mcp_frame_count(self) -> int:
+        """Return total number of recorded MCP frames."""
+        with self._lock:
+            cur = self._conn.execute("SELECT COUNT(*) FROM mcp_frames")
+            row = cur.fetchone()
+            return int(row[0]) if row else 0
 
     # ------------------------------------------------------------------
     # Replay
