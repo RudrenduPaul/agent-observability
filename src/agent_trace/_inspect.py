@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "check_action_name_not_registered",
     "check_anthropic_thinking_in_tool_result",
+    "check_duplicate_concurrent_tool_calls",
     "check_duplicate_json_blocks",
     "check_empty_content_not_final",
     "check_endpoint_host_mismatch",
@@ -812,6 +813,60 @@ def check_get_post_field_mismatch(
 
 
 # ---------------------------------------------------------------------------
+# 17. More than one tool_calls[] entry naming the same tool within a single
+#     assistant turn — a candidate "non-reentrant tool invoked concurrently"
+#     pattern (#6882: AutoGen's parallel_tool_calls=True calling the same
+#     team/tool twice in one turn).
+# ---------------------------------------------------------------------------
+
+
+def check_duplicate_concurrent_tool_calls(
+    exchanges: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Flag an assistant-message response whose ``tool_calls[]`` names the
+    same tool more than once — the exact shape behind #6882, where a
+    maintainer confirmed the root cause was "calling the same team
+    concurrently" once ``parallel_tool_calls=True`` was enabled. Any tool/
+    wrapper that isn't safely reentrant under parallel tool calling can hit
+    this, not just AutoGen's team-as-tool pattern."""
+    flags: list[dict[str, Any]] = []
+    for exchange in exchanges:
+        body = _loads(exchange.get("response_body"))
+        if not isinstance(body, dict):
+            continue
+        for choice in body.get("choices") or []:
+            if not isinstance(choice, dict):
+                continue
+            message = choice.get("message") or {}
+            tool_calls = message.get("tool_calls")
+            if not isinstance(tool_calls, list) or len(tool_calls) < 2:
+                continue
+
+            names: dict[str, int] = {}
+            for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function") or {}
+                name = fn.get("name")
+                if isinstance(name, str) and name:
+                    names[name] = names.get(name, 0) + 1
+
+            duplicated = {name: count for name, count in names.items() if count > 1}
+            if duplicated:
+                flags.append(
+                    _flag(
+                        "duplicate_concurrent_tool_calls",
+                        exchange,
+                        f"tool_calls[] in one assistant turn names the same "
+                        f"tool more than once — candidate non-reentrant "
+                        f"tool invoked concurrently: {duplicated}",
+                        duplicated_tool_counts=duplicated,
+                    )
+                )
+    return flags
+
+
+# ---------------------------------------------------------------------------
 # Companion diagnostics (distinct backlog items, same "raw capture with zero
 # automated diagnosis" gap that motivates the big `inspect` cluster above).
 # ---------------------------------------------------------------------------
@@ -1202,6 +1257,7 @@ def run_all_exchange_checks(
         "empty_content_not_final": check_empty_content_not_final,
         "json_schema_lookaround_or_anyof": check_json_schema_lookaround_or_anyof,
         "duplicate_json_blocks": check_duplicate_json_blocks,
+        "duplicate_concurrent_tool_calls": check_duplicate_concurrent_tool_calls,
         "missing_tool_call_id": check_missing_tool_call_id,
         "http_error_status": flag_4xx_5xx_exchanges,
         "tool_calling_disabled": check_tool_calling_disabled,
