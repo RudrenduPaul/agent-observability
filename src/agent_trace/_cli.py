@@ -958,6 +958,14 @@ def cmd_inspect(args: argparse.Namespace) -> None:
         "near_duplicate_sibling_content",
         ins.find_near_duplicate_sibling_content(spans),
     )
+    _print_flags(
+        "phantom_tool_call",
+        ins.check_phantom_tool_call(spans, exchanges),
+    )
+    _print_flags(
+        "system_prompt_dropped",
+        ins.check_system_prompt_dropped(spans),
+    )
 
     if args.registered_tools:
         registered = set(args.registered_tools.split(","))
