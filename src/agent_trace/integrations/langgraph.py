@@ -292,6 +292,333 @@ def _install_runtime_capture_patch() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Exception classification — origin layer + known error signatures
+# ---------------------------------------------------------------------------
+#
+# agent-trace's callback layer already captures exception.type/message onto
+# error spans, but nothing classifies it: a developer has to read the raw
+# trace.json and independently recognize a known LangGraph error code (e.g.
+# ErrorCode.INVALID_CHAT_HISTORY) or figure out whether the failure came from
+# the LLM provider's SDK or from application/framework code. This section
+# tags every error span with a best-effort "error.origin" and, where the
+# message matches a known pattern, an "error.known_pattern" attribute.
+
+# Top-level package names recognized as an LLM-provider SDK. type(exc).__module__
+# starts with one of these -> the exception originated inside the provider's
+# client library (a 4xx/5xx wire error, a provider-side validation error),
+# not inside the developer's own chain/application code.
+_PROVIDER_MODULE_PREFIXES: frozenset[str] = frozenset(
+    {
+        "openai",
+        "anthropic",
+        "groq",
+        "google",
+        "genai",
+        "cohere",
+        "mistralai",
+        "boto3",
+        "botocore",
+    }
+)
+
+# Top-level package names recognized as framework/orchestration code, as
+# distinct from the developer's own application code.
+_CHAIN_MODULE_PREFIXES: frozenset[str] = frozenset(
+    {"langgraph", "langchain_core", "langchain", "langchain_community"}
+)
+
+# (message substring, label) pairs for exception messages that match a known,
+# previously root-caused failure signature. Matched case-insensitively
+# against str(exc). Order matters only in that the first match wins, but
+# entries are written to be mutually exclusive in practice.
+_KNOWN_ERROR_SIGNATURES: tuple[tuple[str, str], ...] = (
+    (
+        "invalid_chat_history",
+        "langgraph_invalid_chat_history",
+    ),
+    (
+        "selected invalid tool",
+        "middleware_invalid_tool_selection",
+    ),
+)
+
+
+def _classify_exception_origin(error: BaseException) -> str:
+    """Best-effort "which layer did this exception come from" tag.
+
+    Returns "provider" (an LLM-SDK-raised exception — e.g. an OpenAI/
+    Anthropic/Groq 4xx), "chain" (LangGraph/LangChain framework code), or
+    "application" (everything else — the developer's own node/tool code, the
+    most common case for a genuine bug).
+    """
+    module = type(error).__module__ or ""
+    top_level = module.split(".", 1)[0]
+    if top_level in _PROVIDER_MODULE_PREFIXES:
+        return "provider"
+    if top_level in _CHAIN_MODULE_PREFIXES:
+        return "chain"
+    return "application"
+
+
+def _match_known_error_signature(message: str) -> str | None:
+    """Return a short label if *message* matches a known, previously
+    root-caused failure signature, else None."""
+    if not message:
+        return None
+    lowered = message.lower()
+    for needle, label in _KNOWN_ERROR_SIGNATURES:
+        if needle in lowered:
+            return label
+    return None
+
+
+def _classify_and_tag_exception(span: Span, error: BaseException) -> None:
+    """Apply error.origin + error.known_pattern attributes to *span*.
+
+    Called after ``span.record_exception`` for any span closing ERROR, so
+    the classification is available directly on the span instead of
+    requiring a developer to read exception.message out of raw trace.json
+    and recognize the pattern themselves.
+    """
+    span.set_attribute("error.origin", _classify_exception_origin(error))
+    known_pattern = _match_known_error_signature(str(error))
+    if known_pattern:
+        span.set_attribute("error.known_pattern", known_pattern)
+
+
+# ---------------------------------------------------------------------------
+# LangGraph internal control-flow signals — not application errors
+# ---------------------------------------------------------------------------
+#
+# LangGraph raises its own exceptions internally to implement control flow
+# that has nothing to do with application failure:
+#   - ParentCommand: raised when a node returns Command(graph=Command.PARENT,
+#     ...) to implement a multi-agent handoff jump up to the parent graph.
+#   - GraphInterrupt: raised when a node calls interrupt() to pause a run
+#     for human-in-the-loop resumption.
+# Both subclass langgraph.errors.GraphBubbleUp (confirmed against the
+# installed langgraph package). Without special-casing these, on_chain_error
+# marks the node span ERROR with exception.type=ParentCommand/GraphInterrupt,
+# identical in shape to a genuine application exception — a developer has to
+# manually filter these out before finding the real error in a trace.
+
+_control_flow_exception_types: tuple[type[BaseException], ...] | None = None
+_control_flow_types_lock = threading.Lock()
+
+
+def _get_control_flow_exception_types() -> tuple[type[BaseException], ...]:
+    """Lazily resolve LangGraph's internal control-flow exception types.
+
+    Tries the shared ``GraphBubbleUp`` base first (covers both
+    ``ParentCommand`` and ``GraphInterrupt`` in one isinstance check on
+    LangGraph versions that have it). Falls back to importing the two known
+    concrete types individually for versions where no shared base exists.
+    Every import is wrapped so a version mismatch degrades to "nothing
+    special-cased" (the pre-existing behavior) rather than breaking tracing.
+    """
+    global _control_flow_exception_types  # noqa: PLW0603
+    if _control_flow_exception_types is not None:
+        return _control_flow_exception_types
+    with _control_flow_types_lock:
+        if _control_flow_exception_types is not None:
+            return _control_flow_exception_types
+
+        found: list[type[BaseException]] = []
+        try:
+            from langgraph.errors import GraphBubbleUp
+
+            found.append(GraphBubbleUp)
+        except Exception:
+            for type_name in ("ParentCommand", "GraphInterrupt"):
+                try:
+                    from langgraph import errors as _lg_errors
+
+                    found.append(getattr(_lg_errors, type_name))
+                except Exception:
+                    logger.debug(
+                        "agent-trace: could not import langgraph.errors.%s "
+                        "on this LangGraph version; it will not be "
+                        "special-cased as a control-flow signal.",
+                        type_name,
+                        exc_info=True,
+                    )
+        _control_flow_exception_types = tuple(found)
+        return _control_flow_exception_types
+
+
+def _is_langgraph_control_flow_signal(error: BaseException) -> bool:
+    """True if *error* is LangGraph's own internal control-flow signal
+    (a Command/ParentCommand handoff jump or a GraphInterrupt pause) rather
+    than an application-level exception."""
+    types_ = _get_control_flow_exception_types()
+    return bool(types_) and isinstance(error, types_)
+
+
+def _record_control_flow_signal(span: Span, error: BaseException) -> None:
+    """Close *span* OK with an informational attribute instead of ERROR.
+
+    Distinguishes a GraphInterrupt (run paused, not failed) from a
+    ParentCommand/other handoff jump via separate boolean attributes, since
+    the two mean different things to a developer reading the trace.
+    """
+    type_name = type(error).__name__
+    span.set_attribute("langgraph.control_flow_signal", type_name)
+    if type_name == "GraphInterrupt":
+        span.set_attribute("langgraph.interrupted", True)
+    else:
+        span.set_attribute("langgraph.handoff", True)
+    span.add_event(
+        "langgraph_control_flow",
+        attributes={
+            "control_flow.type": type_name,
+            "control_flow.message": _safe_str(error)[:_MAX_ATTR_LEN],
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Branch (conditional-edge) dispatch exception capture
+# ---------------------------------------------------------------------------
+#
+# LangGraph builds a conditional edge's routing dispatch as a RunnableCallable
+# constructed with trace=False (langgraph/graph/_branch.py, BranchSpec.run()):
+# a deliberate choice by LangGraph itself so the dispatch step doesn't show up
+# as its own chain span. RunnableCallable.invoke/ainvoke skip the callback
+# manager entirely when self.trace is falsy (langgraph/_internal/_runnable.py)
+# — no on_chain_start/on_chain_error ever fires for this component, so an
+# exception raised inside it (e.g. a KeyError from BranchSpec._finish() when a
+# router's return value doesn't match a registered destination) produces zero
+# agent-trace spans or callback events today.
+#
+# The capture point has to be RunnableCallable.invoke/ainvoke themselves (the
+# same class the Runtime-capture patch above already wraps), NOT
+# BranchSpec._route/_aroute directly: BranchSpec.run() captures
+# `func=self._route`/`afunc=self._aroute` as bound-method values baked into a
+# RunnableCallable instance at *graph-compile time* (builder.compile()) —
+# typically long before any LangGraphTracer is ever constructed. Patching
+# BranchSpec._route/_aroute as class attributes only affects bound-method
+# lookups that happen *after* the patch installs; a RunnableCallable compiled
+# earlier already holds a direct reference to the pre-patch function and would
+# never observe a later patch. RunnableCallable.invoke/ainvoke, by contrast,
+# are resolved fresh via normal method lookup every time `.invoke()`/
+# `.ainvoke()` is called on any instance — patching them here (regardless of
+# when any given RunnableCallable was constructed) reliably intercepts every
+# call, exactly like the Runtime-capture patch above already relies on.
+
+_current_langgraph_tracer: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
+    "agent_trace_langgraph_current_tracer", default=None
+)
+
+_branch_patch_lock = threading.Lock()
+_branch_patch_installed = False
+
+
+def _is_branch_dispatch_callable(runnable_callable: Any, branch_spec_cls: type) -> bool:
+    """True if *runnable_callable* wraps a BranchSpec._route/_aroute bound
+    method — i.e. this is LangGraph's conditional-edge dispatch step, not one
+    of the other unrelated trace=False RunnableCallables LangGraph also
+    constructs internally (channel writes, ToolNode, etc.)."""
+    for attr_name in ("func", "afunc"):
+        bound_method = getattr(runnable_callable, attr_name, None)
+        bound_owner = getattr(bound_method, "__self__", None)
+        if isinstance(bound_owner, branch_spec_cls):
+            return True
+    return False
+
+
+def _record_branch_dispatch_error(runnable_callable: Any, error: BaseException) -> None:
+    """Open a standalone span for a Branch dispatch failure and record it.
+
+    Best-effort: swallows every exception itself (an instrumentation bug
+    here must never break — or change the exception raised by — the real
+    LangGraph routing dispatch it's piggybacking on). No-ops entirely if no
+    LangGraphTracer instance is active in this context (e.g. the graph was
+    invoked without one).
+    """
+    handler = _current_langgraph_tracer.get()
+    if handler is None:
+        return
+    try:
+        span = handler._tracer.start_span("branch:dispatch")
+        span.set_attribute("langgraph.branch_dispatch", True)
+        branch_self = getattr(runnable_callable, "func", None) or getattr(
+            runnable_callable, "afunc", None
+        )
+        ends = getattr(getattr(branch_self, "__self__", None), "ends", None) or {}
+        if ends:
+            span.set_attribute(
+                "branch.registered_destinations",
+                ",".join(str(v) for v in ends.values()),
+            )
+        span.record_exception(error)
+        _classify_and_tag_exception(span, error)
+        span.end(SpanStatus.ERROR)
+    except Exception:
+        logger.debug(
+            "agent-trace: failed to record Branch dispatch exception",
+            exc_info=True,
+        )
+
+
+def _install_branch_exception_capture_patch() -> None:
+    """Best-effort monkeypatch making LangGraph's trace=False Branch dispatch
+    observable to agent-trace.
+
+    Touches private-ish LangGraph modules (``langgraph.graph._branch``,
+    ``langgraph._internal._runnable``) that may change shape across versions
+    without notice; every step here is wrapped so a mismatch degrades to
+    "dispatch exceptions not captured" (the pre-existing behavior) rather
+    than breaking tracing or import.
+    """
+    global _branch_patch_installed  # noqa: PLW0603
+    if _branch_patch_installed:
+        return
+    with _branch_patch_lock:
+        if _branch_patch_installed:
+            return
+        try:
+            from langgraph._internal._runnable import RunnableCallable
+            from langgraph.graph._branch import BranchSpec
+        except Exception:
+            logger.debug(
+                "agent-trace: LangGraph Branch dispatch capture patch "
+                "unavailable (internal module shape not as expected on "
+                "this LangGraph version); conditional-edge dispatch "
+                "exceptions will not be captured.",
+                exc_info=True,
+            )
+            _branch_patch_installed = True  # don't retry every call
+            return
+
+        original_invoke = RunnableCallable.invoke
+        original_ainvoke = RunnableCallable.ainvoke
+
+        def _patched_invoke(
+            self: Any, input: Any, config: Any = None, **kwargs: Any
+        ) -> Any:
+            try:
+                return original_invoke(self, input, config, **kwargs)
+            except BaseException as exc:
+                if not self.trace and _is_branch_dispatch_callable(self, BranchSpec):
+                    _record_branch_dispatch_error(self, exc)
+                raise
+
+        async def _patched_ainvoke(
+            self: Any, input: Any, config: Any = None, **kwargs: Any
+        ) -> Any:
+            try:
+                return await original_ainvoke(self, input, config, **kwargs)
+            except BaseException as exc:
+                if not self.trace and _is_branch_dispatch_callable(self, BranchSpec):
+                    _record_branch_dispatch_error(self, exc)
+                raise
+
+        RunnableCallable.invoke = _patched_invoke  # type: ignore[method-assign]
+        RunnableCallable.ainvoke = _patched_ainvoke  # type: ignore[method-assign]
+        _branch_patch_installed = True
+
+
+# ---------------------------------------------------------------------------
 # on_llm_end helpers — pulled out to keep the callback itself flat/scannable
 # ---------------------------------------------------------------------------
 
@@ -447,6 +774,11 @@ def _get_tracer_class() -> type:
         # to on_chain_start below. No-ops safely if the private LangGraph
         # internals it depends on aren't present.
         _install_runtime_capture_patch()
+        # Best-effort — makes Branch (conditional-edge) dispatch exceptions
+        # observable despite LangGraph building that component with
+        # trace=False. No-ops safely if the internals it depends on aren't
+        # present.
+        _install_branch_exception_capture_patch()
 
         class _LangGraphTracerImpl(base_cls):  # type: ignore[misc]
             """Concrete implementation — see LangGraphTracer for public docs."""
@@ -458,6 +790,14 @@ def _get_tracer_class() -> type:
                 # Thread-safe span registry: run_id (UUID str) -> open Span
                 self._spans: dict[str, Span] = {}
                 self._lock: threading.Lock = threading.Lock()
+                # Best-effort: makes this instance discoverable to the
+                # Branch-dispatch patch (see _record_branch_dispatch_error),
+                # which has no other way to reach a LangGraphTracer/Tracer
+                # since the callback manager never invokes it for a
+                # trace=False component. Constructed in the same execution
+                # context that will go on to call graph.invoke()/.ainvoke(),
+                # so the ContextVar value is visible throughout that call.
+                _current_langgraph_tracer.set(self)
 
             # ------------------------------------------------------------------
             # Internal helpers
@@ -502,7 +842,18 @@ def _get_tracer_class() -> type:
                 run_id: uuid.UUID | str,
                 error: BaseException,
             ) -> None:
-                """Pop the span, record the exception, and end it as ERROR.
+                """Pop the span and close it according to what *error* means.
+
+                Three distinct outcomes, checked in order:
+                  1. LangGraph's own internal control-flow signal (a
+                     Command/ParentCommand handoff jump or a GraphInterrupt
+                     pause) -> span closes OK with an informational
+                     attribute, not ERROR — it isn't an application failure.
+                  2. asyncio.CancelledError -> span closes CANCELLED, kept
+                     distinct from ERROR so a reader can tell "this failed"
+                     apart from "this was cut off mid-flight".
+                  3. Anything else -> genuine error: record the exception,
+                     classify its origin/known pattern, close ERROR.
 
                 Consolidates the three error callbacks into a single lock
                 acquisition + record + end sequence.
@@ -510,10 +861,25 @@ def _get_tracer_class() -> type:
                 run_key = str(run_id)
                 with self._lock:
                     span = self._spans.pop(run_key, None)
-                if span is not None:
-                    span.record_exception(error)
+                if span is None:
+                    return
+
+                if _is_langgraph_control_flow_signal(error):
+                    _record_control_flow_signal(span, error)
                     if span.end_time is None:
-                        span.end(SpanStatus.ERROR)
+                        span.end(SpanStatus.OK)
+                    return
+
+                if isinstance(error, asyncio.CancelledError):
+                    span.record_exception(error, status=SpanStatus.CANCELLED)
+                    if span.end_time is None:
+                        span.end(SpanStatus.CANCELLED)
+                    return
+
+                span.record_exception(error)
+                _classify_and_tag_exception(span, error)
+                if span.end_time is None:
+                    span.end(SpanStatus.ERROR)
 
             # ------------------------------------------------------------------
             # Chain (graph node) callbacks

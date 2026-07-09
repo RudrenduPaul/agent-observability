@@ -930,3 +930,285 @@ class TestLangGraphIntegration:
         assert "a very distinctive prompt" in llm_span.attributes.get(
             "llm.messages", ""
         )
+
+
+# ---------------------------------------------------------------------------
+# LangGraph internal control-flow signals — must not be marked ERROR
+# ---------------------------------------------------------------------------
+#
+# Verified against the real langgraph package's actual exception types
+# (langgraph.errors.ParentCommand / GraphInterrupt / GraphBubbleUp) — not
+# stand-ins — since these tests require a real langgraph installation.
+
+
+@pytest.mark.integration
+class TestControlFlowSignalNotMarkedError:
+    def test_command_parent_handoff_closes_span_ok_not_error(
+        self, tmp_path: Path
+    ) -> None:
+        """A node returning Command(graph=Command.PARENT, ...) raises
+        langgraph.errors.ParentCommand internally to implement the handoff
+        jump — this must close OK with langgraph.handoff=true, not ERROR."""
+        from typing import TypedDict
+
+        from langgraph.errors import ParentCommand
+        from langgraph.graph import END, StateGraph
+        from langgraph.types import Command
+
+        from agent_trace import SpanStatus, Tracer
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        class S(TypedDict):
+            x: int
+
+        def handoff_node(state: S) -> Command:
+            return Command(graph=Command.PARENT, goto=END, update={"x": state["x"] + 1})
+
+        builder = StateGraph(S)
+        builder.add_node("handoff", handoff_node)
+        builder.set_entry_point("handoff")
+        builder.add_edge("handoff", END)
+        graph = builder.compile()
+
+        t = Tracer(trace_dir=tmp_path)
+        with pytest.raises(ParentCommand):
+            with t.start_trace("handoff-test") as trace:
+                cb = LangGraphTracer(tracer=t, trace=trace)
+                graph.invoke({"x": 0}, config={"callbacks": [cb]})
+
+        handoff_spans = [s for s in trace.spans if "handoff" in s.name]
+        assert handoff_spans, f"Expected a handoff span. Got: {trace.spans}"
+        for span in handoff_spans:
+            assert span.status == SpanStatus.OK, (
+                f"{span.name} should close OK, not {span.status}"
+            )
+            assert span.attributes.get("langgraph.handoff") is True
+            assert (
+                span.attributes.get("langgraph.control_flow_signal")
+                == "ParentCommand"
+            )
+
+    def test_no_error_status_span_anywhere_on_handoff_run(self, tmp_path: Path) -> None:
+        """A clean handoff run must produce zero ERROR-status spans."""
+        from typing import TypedDict
+
+        from langgraph.errors import ParentCommand
+        from langgraph.graph import END, StateGraph
+        from langgraph.types import Command
+
+        from agent_trace import SpanStatus, Tracer
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        class S(TypedDict):
+            x: int
+
+        def handoff_node(state: S) -> Command:
+            return Command(graph=Command.PARENT, goto=END, update={"x": state["x"]})
+
+        builder = StateGraph(S)
+        builder.add_node("handoff", handoff_node)
+        builder.set_entry_point("handoff")
+        builder.add_edge("handoff", END)
+        graph = builder.compile()
+
+        t = Tracer(trace_dir=tmp_path)
+        with pytest.raises(ParentCommand):
+            with t.start_trace("handoff-no-error-test") as trace:
+                cb = LangGraphTracer(tracer=t, trace=trace)
+                graph.invoke({"x": 0}, config={"callbacks": [cb]})
+
+        error_spans = [s for s in trace.spans if s.status == SpanStatus.ERROR]
+        assert error_spans == [], (
+            f"A handoff jump must not produce any ERROR span. "
+            f"Got: {[(s.name, s.status) for s in error_spans]}"
+        )
+
+    def test_graph_interrupt_closes_span_ok_not_error(self, tmp_path: Path) -> None:
+        """A node calling interrupt() raises langgraph.errors.GraphInterrupt
+        internally — the node's span must close OK with
+        langgraph.interrupted=true, not ERROR."""
+        from typing import TypedDict
+
+        from langgraph.graph import END, StateGraph
+        from langgraph.types import interrupt
+
+        from agent_trace import SpanStatus, Tracer
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        class S(TypedDict):
+            x: int
+
+        def pause_node(state: S) -> S:
+            interrupt("need human input")
+            return {"x": state["x"] + 1}  # pragma: no cover — unreachable pre-resume
+
+        builder = StateGraph(S)
+        builder.add_node("pause", pause_node)
+        builder.set_entry_point("pause")
+        builder.add_edge("pause", END)
+        graph = builder.compile()
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("interrupt-test") as trace:
+            cb = LangGraphTracer(tracer=t, trace=trace)
+            result = graph.invoke({"x": 0}, config={"callbacks": [cb]})
+
+        assert "__interrupt__" in result
+
+        pause_spans = [s for s in trace.spans if "pause" in s.name]
+        assert pause_spans, f"Expected a pause span. Got: {trace.spans}"
+        for span in pause_spans:
+            assert span.status == SpanStatus.OK, (
+                f"{span.name} should close OK, not {span.status}"
+            )
+            assert span.attributes.get("langgraph.interrupted") is True
+            assert "langgraph.handoff" not in span.attributes
+
+
+# ---------------------------------------------------------------------------
+# CANCELLED span status — asyncio.CancelledError distinct from ERROR
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestCancelledSpanStatus:
+    async def test_cancelled_async_node_closes_spans_cancelled_not_error(
+        self, tmp_path: Path
+    ) -> None:
+        import asyncio
+        from typing import TypedDict
+
+        from langgraph.graph import END, StateGraph
+
+        from agent_trace import SpanStatus, Tracer
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        class S(TypedDict):
+            x: int
+
+        async def slow_node(state: S) -> S:
+            await asyncio.sleep(5)
+            return {"x": state["x"] + 1}  # pragma: no cover — never reached
+
+        builder = StateGraph(S)
+        builder.add_node("slow", slow_node)
+        builder.set_entry_point("slow")
+        builder.add_edge("slow", END)
+        graph = builder.compile()
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("cancel-test") as trace:
+            cb = LangGraphTracer(tracer=t, trace=trace)
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(
+                    graph.ainvoke({"x": 0}, config={"callbacks": [cb]}),
+                    timeout=0.2,
+                )
+
+        slow_spans = [s for s in trace.spans if "slow" in s.name]
+        assert slow_spans, f"Expected a slow-node span. Got: {trace.spans}"
+        for span in slow_spans:
+            assert span.status == SpanStatus.CANCELLED
+        error_spans = [s for s in trace.spans if s.status == SpanStatus.ERROR]
+        assert error_spans == [], (
+            f"Cancellation must not produce ERROR spans. "
+            f"Got: {[(s.name, s.status) for s in error_spans]}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Branch (conditional-edge) dispatch exception capture despite trace=False
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestBranchDispatchExceptionCapture:
+    def test_unregistered_destination_produces_branch_dispatch_span(
+        self, tmp_path: Path
+    ) -> None:
+        """A router returning a destination absent from the registered
+        path_map raises KeyError inside BranchSpec._finish() — a component
+        LangGraph itself builds with trace=False. Without the patch this
+        produces zero additional evidence; with it, a 'branch:dispatch'
+        ERROR span is captured.
+
+        Graph is compiled *before* any LangGraphTracer is constructed —
+        the realistic ordering (module-level build_graph(), tracer
+        constructed per-invocation) — to guard against a patch that only
+        works when installed before compile-time.
+        """
+        from typing import TypedDict
+
+        from langgraph.graph import END, START, StateGraph
+
+        from agent_trace import SpanStatus, Tracer
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        class S(TypedDict):
+            x: int
+
+        def route(state) -> str:
+            return "not_a_registered_destination"
+
+        def a_node(state: S) -> S:
+            return {"x": state["x"] + 100}  # pragma: no cover — unreachable
+
+        builder = StateGraph(S)
+        builder.add_node("a", a_node)
+        builder.add_conditional_edges(START, route, {"a": "a"})
+        builder.add_edge("a", END)
+        graph = builder.compile()  # compiled before any LangGraphTracer exists
+
+        t = Tracer(trace_dir=tmp_path)
+        with pytest.raises(KeyError):
+            with t.start_trace("branch-dispatch-test") as trace:
+                cb = LangGraphTracer(tracer=t, trace=trace)
+                graph.invoke({"x": 0}, config={"callbacks": [cb]})
+
+        branch_spans = [s for s in trace.spans if s.name == "branch:dispatch"]
+        assert branch_spans, (
+            f"Expected a 'branch:dispatch' span. Got: {[s.name for s in trace.spans]}"
+        )
+        span = branch_spans[0]
+        assert span.status == SpanStatus.ERROR
+        assert span.attributes.get("langgraph.branch_dispatch") is True
+        assert "a" in span.attributes.get("branch.registered_destinations", "")
+        exception_events = [e for e in span.events if e.name == "exception"]
+        assert exception_events
+        assert exception_events[0].attributes["exception.type"] == "KeyError"
+
+    def test_normal_conditional_edge_dispatch_produces_no_branch_error_span(
+        self, tmp_path: Path
+    ) -> None:
+        """A router returning a *registered* destination must not produce
+        any branch:dispatch span — only the failure path should."""
+        from typing import TypedDict
+
+        from langgraph.graph import END, START, StateGraph
+
+        from agent_trace import Tracer
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        class S(TypedDict):
+            x: int
+
+        def route(state) -> str:
+            return "a"
+
+        def a_node(state: S) -> S:
+            return {"x": state["x"] + 1}
+
+        builder = StateGraph(S)
+        builder.add_node("a", a_node)
+        builder.add_conditional_edges(START, route, {"a": "a"})
+        builder.add_edge("a", END)
+        graph = builder.compile()
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("branch-dispatch-ok-test") as trace:
+            cb = LangGraphTracer(tracer=t, trace=trace)
+            result = graph.invoke({"x": 0}, config={"callbacks": [cb]})
+
+        assert result["x"] == 1
+        branch_spans = [s for s in trace.spans if s.name == "branch:dispatch"]
+        assert branch_spans == []

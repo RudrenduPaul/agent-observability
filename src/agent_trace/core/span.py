@@ -28,11 +28,20 @@ _AttrValue = str | int | float | bool
 
 
 class SpanStatus(str, Enum):
-    """Lifecycle status of a Span, modelled after OpenTelemetry's StatusCode."""
+    """Lifecycle status of a Span, modelled after OpenTelemetry's StatusCode.
+
+    CANCELLED is deliberately distinct from ERROR: a span ended because the
+    run/task it belonged to was cancelled (e.g. ``asyncio.CancelledError``)
+    did not fail — it was cut off mid-flight. Collapsing both into ERROR
+    makes a genuine application failure indistinguishable from a cancelled
+    run when reading a trace, which matters for diagnosing
+    cancellation-triggered data-loss bugs (e.g. unpersisted checkpoints).
+    """
 
     UNSET = "UNSET"
     OK = "OK"
     ERROR = "ERROR"
+    CANCELLED = "CANCELLED"
 
 
 @dataclass
@@ -114,11 +123,18 @@ class Span:
         """Set or overwrite a single attribute."""
         self.attributes[key] = value
 
-    def record_exception(self, exc: BaseException) -> None:
-        """Capture an exception as a SpanEvent and mark status ERROR.
+    def record_exception(
+        self, exc: BaseException, status: SpanStatus = SpanStatus.ERROR
+    ) -> None:
+        """Capture an exception as a SpanEvent and mark the span's status.
 
         Follows OpenTelemetry's exception semantic conventions so downstream
         exporters (e.g. the OTLP exporter) can surface the stack trace.
+
+        ``status`` defaults to ``SpanStatus.ERROR`` (the historical
+        behavior). Pass ``status=SpanStatus.CANCELLED`` for a span ended by
+        run/task cancellation so a reader of the trace can tell "this
+        failed" apart from "this was cut off mid-flight".
         """
         self.add_event(
             "exception",
@@ -130,7 +146,7 @@ class Span:
                 ),
             },
         )
-        self.status = SpanStatus.ERROR
+        self.status = status
 
     # ------------------------------------------------------------------
     # Computed properties

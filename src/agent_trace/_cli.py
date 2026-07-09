@@ -144,6 +144,85 @@ def _format_mtime(ts: float) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Error classification summary — surfaces error.origin/error.known_pattern
+# (set by the LangGraph integration's exception classifier) as a one-line
+# pointer per ERROR span, instead of requiring a developer to read the raw
+# trace.json blob and find those attributes by eye.
+# ---------------------------------------------------------------------------
+
+
+def _error_classification_rows(spans: list[dict[str, object]]) -> list[dict[str, str]]:
+    """Return one row per ERROR-status span with its origin/known-pattern
+    classification (empty string for a field that wasn't set)."""
+    rows: list[dict[str, str]] = []
+    for span in spans:
+        if span.get("status") != "ERROR":
+            continue
+        attrs = span.get("attributes") or {}
+        if not isinstance(attrs, dict):
+            continue
+        rows.append(
+            {
+                "name": str(span.get("name", "?")),
+                "origin": str(attrs.get("error.origin", "")),
+                "known_pattern": str(attrs.get("error.known_pattern", "")),
+            }
+        )
+    return rows
+
+
+def _print_error_classification(spans: list[dict[str, object]]) -> None:
+    rows = _error_classification_rows(spans)
+    if not rows:
+        return
+    print()
+    print("Error classification:")
+    for row in rows:
+        origin = row["origin"] or "unclassified"
+        line = f"  {row['name']:<30}  origin={origin}"
+        if row["known_pattern"]:
+            line += f"  known_pattern={row['known_pattern']}"
+        print(line)
+
+
+# ---------------------------------------------------------------------------
+# Duplicate node span detection — flags a node:<name> span that appears more
+# than once within a single trace, the shape produced when a resumed
+# graph.stream()/.invoke() call re-executes a task that should have reused a
+# cached checkpointed write (see issue #6050). Heuristic, not a definitive
+# bug detector: an intentionally looping node (e.g. a ReAct agent) also
+# produces repeated node:<name> spans by design — this surfaces the count as
+# a fact for a developer to interpret, rather than claiming a verdict.
+# ---------------------------------------------------------------------------
+
+
+def _duplicate_node_span_counts(spans: list[dict[str, object]]) -> dict[str, int]:
+    """Return {node span name: occurrence count} for every node:<name> span
+    name that appears more than once in *spans*."""
+    counts: dict[str, int] = {}
+    for span in spans:
+        name = span.get("name")
+        if isinstance(name, str) and name.startswith("node:"):
+            counts[name] = counts.get(name, 0) + 1
+    return {name: n for name, n in counts.items() if n > 1}
+
+
+def _print_duplicate_node_spans(spans: list[dict[str, object]]) -> None:
+    duplicates = _duplicate_node_span_counts(spans)
+    if not duplicates:
+        return
+    print()
+    print("Duplicate node spans (same node:<name> executed more than once):")
+    for name, count in sorted(duplicates.items()):
+        print(f"  {name:<30}  executed {count} times")
+    print(
+        "  (Expected for an intentionally looping node — e.g. a ReAct agent. "
+        "Unexpected for a task that should have reused a cached checkpointed "
+        "write across a resume — see issue #6050.)"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Subcommand: show
 # ---------------------------------------------------------------------------
 
@@ -187,6 +266,8 @@ def cmd_show(args: argparse.Namespace) -> None:
     print(f"File: {trace_path}")
     spans = data.get("spans", [])
     print(f"Spans: {len(spans)}")
+    _print_error_classification(spans)
+    _print_duplicate_node_spans(spans)
 
 
 # ---------------------------------------------------------------------------
@@ -250,11 +331,12 @@ def cmd_replay(args: argparse.Namespace) -> None:
             from agent_trace.core.trace import Trace
             from agent_trace.exporters.stdout import StdoutExporter
 
-            trace_obj = Trace.from_dict(
-                json.loads(trace_json_path.read_text(encoding="utf-8"))
-            )
+            trace_data = json.loads(trace_json_path.read_text(encoding="utf-8"))
+            trace_obj = Trace.from_dict(trace_data)
             print("--- Original span tree (from trace.json) ---")
             StdoutExporter().export(trace_obj)
+            _print_error_classification(trace_data.get("spans", []))
+            _print_duplicate_node_spans(trace_data.get("spans", []))
         except Exception as exc:
             print(f"Could not render span tree: {exc}")
     else:

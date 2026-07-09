@@ -179,6 +179,75 @@ class TestRecordingAdapter:
         fixture.close()
 
 
+class TestRecordingAdapterDurationAndFailure:
+    """duration_ms capture + failed-before-response persistence."""
+
+    def test_send_records_duration_ms(self, tmp_path) -> None:
+        fixture = _make_fixture(tmp_path)
+        url = "https://api.example.com/duration-test"
+        req = _make_prepared_request(url, "GET")
+        mock_response = _make_mock_response(200, '{"ok": true}')
+
+        adapter = RecordingAdapter(fixture)
+        with patch.object(HTTPAdapter, "send", return_value=mock_response):
+            adapter.send(req)
+
+        ex = fixture.all_exchanges()[0]
+        assert ex["duration_ms"] is not None
+        assert ex["duration_ms"] >= 0
+        fixture.close()
+
+    def test_send_persists_failed_attempt_before_raising(self, tmp_path) -> None:
+        """A connection-level exception (raised before any Response exists)
+        must still be persisted — as a failed-before-response exchange, not
+        silently lost — and the original exception must still propagate."""
+        import requests
+
+        fixture = _make_fixture(tmp_path)
+        url = "https://bad-host.invalid/x"
+        req = _make_prepared_request(url, "POST", body='{"model": "gpt-4o"}')
+
+        adapter = RecordingAdapter(fixture)
+        with patch.object(
+            HTTPAdapter,
+            "send",
+            side_effect=requests.exceptions.ConnectionError("Connection refused"),
+        ):
+            with pytest.raises(requests.exceptions.ConnectionError):
+                adapter.send(req)
+
+        assert fixture.exchange_count() == 1
+        assert fixture.failed_exchange_count() == 1
+        ex = fixture.all_exchanges()[0]
+        assert ex["response_status"] is None
+        assert ex["error_type"] == "ConnectionError"
+        assert "Connection refused" in ex["error_message"]
+        assert ex["url"] == url
+        assert ex["method"] == "POST"
+        # Request body was still captured — it was constructed before the
+        # failure, so it's available regardless of whether the call succeeded.
+        assert "gpt-4o" in ex["request_body"]
+        fixture.close()
+
+    def test_failed_attempt_records_duration_ms_too(self, tmp_path) -> None:
+        import requests
+
+        fixture = _make_fixture(tmp_path)
+        req = _make_prepared_request("https://bad-host.invalid/x", "GET")
+
+        adapter = RecordingAdapter(fixture)
+        with patch.object(
+            HTTPAdapter, "send", side_effect=requests.exceptions.Timeout("timed out")
+        ):
+            with pytest.raises(requests.exceptions.Timeout):
+                adapter.send(req)
+
+        ex = fixture.all_exchanges()[0]
+        assert ex["duration_ms"] is not None
+        assert ex["duration_ms"] >= 0
+        fixture.close()
+
+
 # ---------------------------------------------------------------------------
 # RecordingAdapter nesting / double-wrap safety
 # ---------------------------------------------------------------------------
