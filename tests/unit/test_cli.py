@@ -1,0 +1,183 @@
+"""
+Unit tests for agent_trace._cli — the pure-function helpers behind
+`agent-trace show`/`agent-trace replay`'s error-classification summary and
+duplicate-node-span detection.
+
+Only the data-shaping helpers are tested directly (no subprocess/argparse
+wiring) — they operate on plain dicts shaped like trace.json's "spans" list,
+so no LangGraph/langchain_core dependency is needed here.
+"""
+
+from __future__ import annotations
+
+from agent_trace._cli import (
+    _duplicate_node_span_counts,
+    _error_classification_rows,
+    _print_duplicate_node_spans,
+    _print_error_classification,
+)
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _span(
+    name: str,
+    status: str = "OK",
+    attributes: dict[str, object] | None = None,
+) -> dict[str, object]:
+    return {"name": name, "status": status, "attributes": attributes or {}}
+
+
+# ---------------------------------------------------------------------------
+# _error_classification_rows()
+# ---------------------------------------------------------------------------
+
+
+class TestErrorClassificationRows:
+    def test_empty_spans_returns_empty(self) -> None:
+        assert _error_classification_rows([]) == []
+
+    def test_ok_span_excluded(self) -> None:
+        spans = [_span("node:a", status="OK")]
+        assert _error_classification_rows(spans) == []
+
+    def test_error_span_included(self) -> None:
+        spans = [
+            _span(
+                "node:a",
+                status="ERROR",
+                attributes={"error.origin": "application"},
+            )
+        ]
+        rows = _error_classification_rows(spans)
+        assert len(rows) == 1
+        assert rows[0]["name"] == "node:a"
+        assert rows[0]["origin"] == "application"
+
+    def test_error_span_without_origin_attribute_still_included(self) -> None:
+        spans = [_span("node:a", status="ERROR")]
+        rows = _error_classification_rows(spans)
+        assert rows[0]["origin"] == ""
+
+    def test_known_pattern_captured_when_present(self) -> None:
+        spans = [
+            _span(
+                "node:a",
+                status="ERROR",
+                attributes={
+                    "error.origin": "chain",
+                    "error.known_pattern": "langgraph_invalid_chat_history",
+                },
+            )
+        ]
+        rows = _error_classification_rows(spans)
+        assert rows[0]["known_pattern"] == "langgraph_invalid_chat_history"
+
+    def test_multiple_error_spans_all_included(self) -> None:
+        spans = [
+            _span("node:a", status="ERROR", attributes={"error.origin": "provider"}),
+            _span("node:b", status="OK"),
+            _span(
+                "node:c", status="ERROR", attributes={"error.origin": "application"}
+            ),
+        ]
+        rows = _error_classification_rows(spans)
+        assert [r["name"] for r in rows] == ["node:a", "node:c"]
+
+    def test_malformed_attributes_field_skipped_not_raised(self) -> None:
+        spans = [{"name": "node:a", "status": "ERROR", "attributes": "not-a-dict"}]
+        # Must not raise — malformed data degrades gracefully.
+        assert _error_classification_rows(spans) == []
+
+
+class TestPrintErrorClassification:
+    def test_no_output_when_no_errors(self, capsys) -> None:
+        _print_error_classification([_span("node:a", status="OK")])
+        assert capsys.readouterr().out == ""
+
+    def test_prints_header_and_row_for_error_span(self, capsys) -> None:
+        spans = [
+            _span(
+                "node:a",
+                status="ERROR",
+                attributes={"error.origin": "provider"},
+            )
+        ]
+        _print_error_classification(spans)
+        out = capsys.readouterr().out
+        assert "Error classification:" in out
+        assert "node:a" in out
+        assert "origin=provider" in out
+
+    def test_prints_known_pattern_when_present(self, capsys) -> None:
+        spans = [
+            _span(
+                "node:a",
+                status="ERROR",
+                attributes={
+                    "error.origin": "chain",
+                    "error.known_pattern": "middleware_invalid_tool_selection",
+                },
+            )
+        ]
+        _print_error_classification(spans)
+        out = capsys.readouterr().out
+        assert "known_pattern=middleware_invalid_tool_selection" in out
+
+    def test_unclassified_origin_shown_as_unclassified(self, capsys) -> None:
+        _print_error_classification([_span("node:a", status="ERROR")])
+        out = capsys.readouterr().out
+        assert "origin=unclassified" in out
+
+
+# ---------------------------------------------------------------------------
+# _duplicate_node_span_counts()
+# ---------------------------------------------------------------------------
+
+
+class TestDuplicateNodeSpanCounts:
+    def test_empty_spans_returns_empty(self) -> None:
+        assert _duplicate_node_span_counts([]) == {}
+
+    def test_single_occurrence_not_flagged(self) -> None:
+        spans = [_span("node:a"), _span("node:b")]
+        assert _duplicate_node_span_counts(spans) == {}
+
+    def test_repeated_node_span_flagged_with_count(self) -> None:
+        spans = [_span("node:get_time"), _span("node:other"), _span("node:get_time")]
+        assert _duplicate_node_span_counts(spans) == {"node:get_time": 2}
+
+    def test_non_node_spans_ignored(self) -> None:
+        spans = [_span("llm:gpt-4"), _span("llm:gpt-4"), _span("tool:search")]
+        assert _duplicate_node_span_counts(spans) == {}
+
+    def test_three_occurrences_counted_correctly(self) -> None:
+        spans = [_span("node:loop") for _ in range(3)]
+        assert _duplicate_node_span_counts(spans) == {"node:loop": 3}
+
+    def test_multiple_duplicated_names(self) -> None:
+        spans = [
+            _span("node:a"),
+            _span("node:a"),
+            _span("node:b"),
+            _span("node:b"),
+            _span("node:c"),
+        ]
+        result = _duplicate_node_span_counts(spans)
+        assert result == {"node:a": 2, "node:b": 2}
+
+
+class TestPrintDuplicateNodeSpans:
+    def test_no_output_when_no_duplicates(self, capsys) -> None:
+        _print_duplicate_node_spans([_span("node:a"), _span("node:b")])
+        assert capsys.readouterr().out == ""
+
+    def test_prints_duplicate_with_count(self, capsys) -> None:
+        spans = [_span("node:get_time"), _span("node:get_time")]
+        _print_duplicate_node_spans(spans)
+        out = capsys.readouterr().out
+        assert "node:get_time" in out
+        assert "executed 2 times" in out
+        assert "Duplicate node spans" in out

@@ -652,6 +652,262 @@ class TestRuntimeContextCapture:
         assert "chain.runtime" not in span.attributes
 
 
+class TestExceptionClassification:
+    """error.origin + error.known_pattern — applied to any span closing ERROR
+    via _close_span_with_exception (on_chain_error/on_llm_error/on_tool_error
+    all funnel through it)."""
+
+    def test_classify_origin_provider(self):
+        from agent_trace.integrations.langgraph import _classify_exception_origin
+
+        class FakeError(Exception):
+            pass
+
+        FakeError.__module__ = "openai._exceptions"
+        assert _classify_exception_origin(FakeError("boom")) == "provider"
+
+    def test_classify_origin_chain(self):
+        from agent_trace.integrations.langgraph import _classify_exception_origin
+
+        class FakeError(Exception):
+            pass
+
+        FakeError.__module__ = "langgraph.errors"
+        assert _classify_exception_origin(FakeError("boom")) == "chain"
+
+    def test_classify_origin_application_default(self):
+        from agent_trace.integrations.langgraph import _classify_exception_origin
+
+        class FakeError(Exception):
+            pass
+
+        FakeError.__module__ = "my_app.agents"
+        assert _classify_exception_origin(FakeError("boom")) == "application"
+
+    def test_match_known_error_signature_invalid_chat_history(self):
+        from agent_trace.integrations.langgraph import _match_known_error_signature
+
+        msg = "ErrorCode.INVALID_CHAT_HISTORY: messages must alternate roles"
+        assert (
+            _match_known_error_signature(msg) == "langgraph_invalid_chat_history"
+        )
+
+    def test_match_known_error_signature_invalid_tool_selection(self):
+        from agent_trace.integrations.langgraph import _match_known_error_signature
+
+        msg = "Selected invalid tool(s): frobulate. Available: search, math."
+        assert (
+            _match_known_error_signature(msg) == "middleware_invalid_tool_selection"
+        )
+
+    def test_match_known_error_signature_no_match(self):
+        from agent_trace.integrations.langgraph import _match_known_error_signature
+
+        assert _match_known_error_signature("some unrelated failure") is None
+
+    def test_match_known_error_signature_empty_message(self):
+        from agent_trace.integrations.langgraph import _match_known_error_signature
+
+        assert _match_known_error_signature("") is None
+
+    def test_chain_error_sets_origin_attribute(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chain_start({"name": "n"}, {}, run_id=run_id)
+        span_ref = handler._spans[str(run_id)]
+        handler.on_chain_error(ValueError("plain application bug"), run_id=run_id)
+        assert span_ref.attributes.get("error.origin") == "application"
+
+    def test_chain_error_sets_known_pattern_when_matched(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chain_start({"name": "n"}, {}, run_id=run_id)
+        span_ref = handler._spans[str(run_id)]
+        handler.on_chain_error(
+            ValueError("Selected invalid tool(s): foo"), run_id=run_id
+        )
+        assert (
+            span_ref.attributes.get("error.known_pattern")
+            == "middleware_invalid_tool_selection"
+        )
+
+    def test_chain_error_no_known_pattern_attribute_when_unmatched(
+        self, tracer_and_trace
+    ):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chain_start({"name": "n"}, {}, run_id=run_id)
+        span_ref = handler._spans[str(run_id)]
+        handler.on_chain_error(ValueError("totally unrelated"), run_id=run_id)
+        assert "error.known_pattern" not in span_ref.attributes
+
+    def test_tool_error_also_classified(self, tracer_and_trace):
+        """_close_span_with_exception is shared — tool spans get the same
+        classification as chain spans."""
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_tool_start({"name": "t"}, "in", run_id=run_id)
+        span_ref = handler._spans[str(run_id)]
+        handler.on_tool_error(RuntimeError("tool broke"), run_id=run_id)
+        assert span_ref.attributes.get("error.origin") == "application"
+
+
+class TestControlFlowSignalHandling:
+    """Command/ParentCommand handoff jumps and GraphInterrupt pauses must
+    close OK with an informational attribute, not ERROR — verified against
+    the real langgraph package's exception types in
+    tests/integration/test_langgraph.py. These unit tests inject a fake type
+    into the module-level cache so the behavior is exercised even when the
+    real langgraph package's types aren't the ones under test."""
+
+    @pytest.fixture()
+    def fake_control_flow_type(self, monkeypatch):
+        import agent_trace.integrations.langgraph as lg_module
+
+        class FakeParentCommand(BaseException):
+            pass
+
+        monkeypatch.setattr(
+            lg_module, "_control_flow_exception_types", (FakeParentCommand,)
+        )
+        return FakeParentCommand
+
+    def test_control_flow_signal_closes_span_ok(
+        self, tracer_and_trace, fake_control_flow_type
+    ):
+        from agent_trace.core.span import SpanStatus
+
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chain_start({"name": "handoff"}, {}, run_id=run_id)
+        span_ref = handler._spans[str(run_id)]
+        handler.on_chain_error(fake_control_flow_type("jump"), run_id=run_id)
+        assert span_ref.status == SpanStatus.OK
+
+    def test_control_flow_signal_sets_handoff_attribute(
+        self, tracer_and_trace, fake_control_flow_type
+    ):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chain_start({"name": "handoff"}, {}, run_id=run_id)
+        span_ref = handler._spans[str(run_id)]
+        handler.on_chain_error(fake_control_flow_type("jump"), run_id=run_id)
+        assert span_ref.attributes.get("langgraph.handoff") is True
+        assert (
+            span_ref.attributes.get("langgraph.control_flow_signal")
+            == "FakeParentCommand"
+        )
+
+    def test_graph_interrupt_sets_interrupted_attribute_not_handoff(
+        self, tracer_and_trace, monkeypatch
+    ):
+        import agent_trace.integrations.langgraph as lg_module
+
+        class GraphInterrupt(BaseException):
+            pass
+
+        monkeypatch.setattr(
+            lg_module, "_control_flow_exception_types", (GraphInterrupt,)
+        )
+
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chain_start({"name": "pause"}, {}, run_id=run_id)
+        span_ref = handler._spans[str(run_id)]
+        handler.on_chain_error(GraphInterrupt(), run_id=run_id)
+        assert span_ref.attributes.get("langgraph.interrupted") is True
+        assert "langgraph.handoff" not in span_ref.attributes
+
+    def test_control_flow_signal_does_not_set_error_origin(
+        self, tracer_and_trace, fake_control_flow_type
+    ):
+        """Control-flow signals are not classified as errors at all — they
+        never reach the error.origin/known_pattern classification path."""
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chain_start({"name": "handoff"}, {}, run_id=run_id)
+        span_ref = handler._spans[str(run_id)]
+        handler.on_chain_error(fake_control_flow_type("jump"), run_id=run_id)
+        assert "error.origin" not in span_ref.attributes
+
+    def test_genuine_error_still_marked_error_when_not_control_flow(
+        self, tracer_and_trace, fake_control_flow_type
+    ):
+        """A ValueError (not the injected fake control-flow type) is
+        unaffected by the fake-type patch and still closes ERROR."""
+        from agent_trace.core.span import SpanStatus
+
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chain_start({"name": "n"}, {}, run_id=run_id)
+        span_ref = handler._spans[str(run_id)]
+        handler.on_chain_error(ValueError("real bug"), run_id=run_id)
+        assert span_ref.status == SpanStatus.ERROR
+
+
+class TestCancelledStatus:
+    """asyncio.CancelledError must close a span CANCELLED, not ERROR."""
+
+    def test_chain_error_cancelled_error_sets_cancelled_status(
+        self, tracer_and_trace
+    ):
+        import asyncio
+
+        from agent_trace.core.span import SpanStatus
+
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chain_start({"name": "n"}, {}, run_id=run_id)
+        span_ref = handler._spans[str(run_id)]
+        handler.on_chain_error(asyncio.CancelledError(), run_id=run_id)
+        assert span_ref.status == SpanStatus.CANCELLED
+
+    def test_cancelled_status_distinct_from_error_status(self, tracer_and_trace):
+        import asyncio
+
+        from agent_trace.core.span import SpanStatus
+
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+
+        run_id_cancelled = _run_id()
+        handler.on_chain_start({"name": "n1"}, {}, run_id=run_id_cancelled)
+        span_cancelled = handler._spans[str(run_id_cancelled)]
+        handler.on_chain_error(asyncio.CancelledError(), run_id=run_id_cancelled)
+
+        run_id_error = _run_id()
+        handler.on_chain_start({"name": "n2"}, {}, run_id=run_id_error)
+        span_error = handler._spans[str(run_id_error)]
+        handler.on_chain_error(RuntimeError("real failure"), run_id=run_id_error)
+
+        assert span_cancelled.status == SpanStatus.CANCELLED
+        assert span_error.status == SpanStatus.ERROR
+        assert span_cancelled.status != span_error.status
+
+    def test_cancelled_error_still_records_exception_event(self, tracer_and_trace):
+        import asyncio
+
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chain_start({"name": "n"}, {}, run_id=run_id)
+        span_ref = handler._spans[str(run_id)]
+        handler.on_chain_error(asyncio.CancelledError(), run_id=run_id)
+        exception_events = [e for e in span_ref.events if e.name == "exception"]
+        assert len(exception_events) == 1
+        assert exception_events[0].attributes["exception.type"] == "CancelledError"
+
+
 class TestSerializationRobustness:
     """Regression coverage for the recursive-Mock hang: _deep_serialize must
     terminate quickly even against objects whose model_dump()/dict()/

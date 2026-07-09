@@ -20,6 +20,7 @@ AttributeError on the first request.
 from __future__ import annotations
 
 import logging
+import time
 import warnings
 from typing import TYPE_CHECKING, Any
 
@@ -65,17 +66,41 @@ class RecordingTransport(httpx.BaseTransport):
         )
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
-        """Forward the request, record the exchange, return the response."""
-        response = self._inner.handle_request(request)
+        """Forward the request, record the exchange, return the response.
+
+        A pre-response exception (connection refused, DNS failure, TLS
+        failure, an httpx.UnsupportedProtocol from a malformed/missing-scheme
+        URL, ...) is recorded too — as a failed-before-response exchange
+        (error_type/error_message, no response_status) — instead of being
+        silently lost, then re-raised unchanged so the caller sees the exact
+        same failure it would without recording active.
+        """
+        url = str(request.url)
+        method = request.method
+        req_headers = dict(request.headers)
+        req_body = request.content.decode("utf-8", errors="replace")
+
+        start = time.monotonic()
+        try:
+            response = self._inner.handle_request(request)
+        except Exception as exc:
+            duration_ms = (time.monotonic() - start) * 1000
+            self._fixture.record_exchange(
+                url=url,
+                method=method,
+                request_headers=req_headers,
+                request_body=req_body,
+                duration_ms=duration_ms,
+                error_type=type(exc).__qualname__,
+                error_message=str(exc),
+            )
+            raise
+        duration_ms = (time.monotonic() - start) * 1000
 
         # Read the body eagerly so we can persist it; httpx streams lazily by
         # default and the caller may never fully read it otherwise.
         response.read()
 
-        url = str(request.url)
-        method = request.method
-        req_headers = dict(request.headers)
-        req_body = request.content.decode("utf-8", errors="replace")
         resp_status = response.status_code
         resp_headers = dict(response.headers)
         resp_body = response.text
@@ -88,6 +113,7 @@ class RecordingTransport(httpx.BaseTransport):
             response_status=resp_status,
             response_headers=resp_headers,
             response_body=resp_body,
+            duration_ms=duration_ms,
         )
 
         # Reconstruct so the caller receives a fully-read response with the
@@ -205,14 +231,35 @@ class AsyncRecordingTransport(httpx.AsyncBaseTransport):
         )
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        """Forward the request async, record the exchange, return the response."""
-        response = await self._inner.handle_async_request(request)
-        await response.aread()
+        """Forward the request async, record the exchange, return the response.
 
+        A pre-response exception is recorded too — see
+        ``RecordingTransport.handle_request``'s docstring for the sync
+        equivalent of this behavior.
+        """
         url = str(request.url)
         method = request.method
         req_headers = dict(request.headers)
         req_body = request.content.decode("utf-8", errors="replace")
+
+        start = time.monotonic()
+        try:
+            response = await self._inner.handle_async_request(request)
+        except Exception as exc:
+            duration_ms = (time.monotonic() - start) * 1000
+            self._fixture.record_exchange(
+                url=url,
+                method=method,
+                request_headers=req_headers,
+                request_body=req_body,
+                duration_ms=duration_ms,
+                error_type=type(exc).__qualname__,
+                error_message=str(exc),
+            )
+            raise
+        duration_ms = (time.monotonic() - start) * 1000
+        await response.aread()
+
         resp_status = response.status_code
         resp_headers = dict(response.headers)
         resp_body = response.text
@@ -225,6 +272,7 @@ class AsyncRecordingTransport(httpx.AsyncBaseTransport):
             response_status=resp_status,
             response_headers=resp_headers,
             response_body=resp_body,
+            duration_ms=duration_ms,
         )
 
         return httpx.Response(
