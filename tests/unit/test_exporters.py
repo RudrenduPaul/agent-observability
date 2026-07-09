@@ -185,6 +185,92 @@ class TestStdoutExporter:
         trace.add_span(span)
         exporter.export(trace)
 
+    def test_export_span_prints_exception_message_for_error_status(self, capsys) -> None:
+        exporter = StdoutExporter()
+        span = Span(name="broken")
+        span.record_exception(ValueError("boom-details"))
+        span.end(SpanStatus.ERROR)
+        exporter.export_span(span, depth=0)
+        captured = capsys.readouterr()
+        assert "boom-details" in captured.out
+
+    def test_export_span_does_not_print_exception_for_ok_status(self, capsys) -> None:
+        exporter = StdoutExporter()
+        span = Span(name="fine")
+        span.add_event(
+            "exception", {"exception.type": "X", "exception.message": "should-not-show"}
+        )
+        span.end(SpanStatus.OK)
+        exporter.export_span(span, depth=0)
+        captured = capsys.readouterr()
+        assert "should-not-show" not in captured.out
+
+    def test_export_span_prints_inline_attributes(self, capsys) -> None:
+        exporter = StdoutExporter()
+        span = Span(name="llm:gpt-4")
+        span.set_attribute("llm.model", "gpt-4")
+        span.set_attribute("llm.usage.prompt_tokens", 100)
+        span.set_attribute("llm.usage.completion_tokens", 20)
+        span.end()
+        exporter.export_span(span, depth=0)
+        captured = capsys.readouterr()
+        assert "llm.model=gpt-4" in captured.out
+        assert "llm.usage.prompt_tokens=100" in captured.out
+        assert "llm.usage.completion_tokens=20" in captured.out
+
+    def test_export_span_no_attribute_suffix_when_no_tracked_attrs(self, capsys) -> None:
+        exporter = StdoutExporter()
+        span = Span(name="tool:x")
+        span.set_attribute("tool.output", "some output")
+        span.end()
+        exporter.export_span(span, depth=0)
+        captured = capsys.readouterr()
+        assert "tool.output" not in captured.out
+
+    def test_rich_export_includes_exception_message_for_error_span(self, capsys) -> None:
+        exporter = StdoutExporter()
+        trace = Trace(trace_id="t-err2", run_id="run-err2")
+        trace.metadata["name"] = "error-trace"
+        span = Span(name="broken", span_id="e002", trace_id="t-err2")
+        span.record_exception(ValueError("rich-boom-details"))
+        span.end(SpanStatus.ERROR)
+        trace.add_span(span)
+        exporter.export(trace)
+        captured = capsys.readouterr()
+        assert "rich-boom-details" in captured.out
+
+    def test_rich_export_includes_inline_attributes(self, capsys) -> None:
+        exporter = StdoutExporter()
+        trace = Trace(trace_id="t-attrs", run_id="run-attrs")
+        trace.metadata["name"] = "attrs-trace"
+        span = Span(name="llm:gpt-4", span_id="a001", trace_id="t-attrs")
+        span.set_attribute("llm.model", "gpt-4")
+        span.end()
+        trace.add_span(span)
+        exporter.export(trace)
+        captured = capsys.readouterr()
+        assert "llm.model=gpt-4" in captured.out
+
+    def test_plain_export_includes_exception_message(self, capsys) -> None:
+        import sys
+        import unittest.mock
+
+        exporter = StdoutExporter()
+        trace = Trace(trace_id="t-plain-err", run_id="run-plain-err")
+        trace.metadata["name"] = "plain-error-trace"
+        span = Span(name="broken", span_id="pe001", trace_id="t-plain-err")
+        span.record_exception(ValueError("plain-boom-details"))
+        span.end(SpanStatus.ERROR)
+        trace.add_span(span)
+
+        with unittest.mock.patch.dict(
+            sys.modules, {"rich": None, "rich.console": None, "rich.tree": None}
+        ):
+            exporter.export(trace)
+
+        captured = capsys.readouterr()
+        assert "plain-boom-details" in captured.out
+
 
 # ---------------------------------------------------------------------------
 # FileExporter
