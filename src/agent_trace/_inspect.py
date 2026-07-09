@@ -57,6 +57,7 @@ __all__ = [
     "flag_4xx_5xx_exchanges",
     "match_known_error_patterns",
     "multi_block_llm_responses",
+    "check_orphaned_responses_api_call_ids",
     "run_all_exchange_checks",
 ]
 
@@ -124,6 +125,59 @@ def check_orphaned_tool_call_ids(
                     exchange,
                     f"{len(orphaned)} tool_call_id(s) requested but never "
                     f"responded to: {sorted(orphaned)}",
+                    orphaned_ids=sorted(orphaned),
+                )
+            )
+    return flags
+
+
+# ---------------------------------------------------------------------------
+# 1b. The same orphaned-id shape as above, but for the OpenAI Responses API's
+#     distinct message shape: a flat `input` list of `function_call`/
+#     `function_call_output` items keyed by `call_id`, instead of Chat
+#     Completions' nested `messages[].tool_calls[].id` /
+#     `messages[].tool_call_id` shape check_orphaned_tool_call_ids and
+#     check_missing_tool_call_id both assume (#33895 — "No call message
+#     found for call_*", the Responses-API-specific pairing failure neither
+#     of those two checks can see since they never look at `input`/
+#     `function_call`/`function_call_output` at all).
+# ---------------------------------------------------------------------------
+
+
+def check_orphaned_responses_api_call_ids(
+    exchanges: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    flags: list[dict[str, Any]] = []
+    for exchange in exchanges:
+        body = _loads(exchange.get("request_body"))
+        if not isinstance(body, dict):
+            continue
+        items = body.get("input")
+        if not isinstance(items, list):
+            continue
+
+        requested: set[str] = set()
+        responded: set[str] = set()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            call_id = item.get("call_id")
+            if not isinstance(call_id, str):
+                continue
+            if item.get("type") == "function_call":
+                requested.add(call_id)
+            elif item.get("type") == "function_call_output":
+                responded.add(call_id)
+
+        orphaned = requested - responded
+        if orphaned:
+            flags.append(
+                _flag(
+                    "orphaned_responses_api_call_ids",
+                    exchange,
+                    f"{len(orphaned)} Responses API call_id(s) requested "
+                    f"(function_call) but never responded to "
+                    f"(function_call_output): {sorted(orphaned)}",
                     orphaned_ids=sorted(orphaned),
                 )
             )
@@ -1139,6 +1193,7 @@ def run_all_exchange_checks(
     ``{check_name: [flags]}`` for every check that found at least one flag."""
     checks: dict[str, Any] = {
         "orphaned_tool_call_ids": check_orphaned_tool_call_ids,
+        "orphaned_responses_api_call_ids": check_orphaned_responses_api_call_ids,
         "tool_call_boundary_leak": check_tool_call_boundary_leak,
         "malformed_tool_call_arguments": check_malformed_tool_call_arguments,
         "null_content_with_tool_calls": check_null_content_with_tool_calls,

@@ -90,6 +90,67 @@ class TestCheckOrphanedToolCallIds:
 
 
 # ---------------------------------------------------------------------------
+# check_orphaned_responses_api_call_ids (#33895)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckOrphanedResponsesApiCallIds:
+    def test_no_input_no_flag(self) -> None:
+        assert ins.check_orphaned_responses_api_call_ids([_exchange(request_body="{}")]) == []
+
+    def test_paired_call_id_not_flagged(self) -> None:
+        body = json.dumps(
+            {
+                "input": [
+                    {"type": "function_call", "call_id": "call_1", "name": "get_weather"},
+                    {"type": "function_call_output", "call_id": "call_1", "output": "sunny"},
+                ]
+            }
+        )
+        assert ins.check_orphaned_responses_api_call_ids([_exchange(request_body=body)]) == []
+
+    def test_orphaned_call_id_flagged(self) -> None:
+        """The exact #33895 shape: a function_call with no matching
+        function_call_output — "No call message found for call_*"."""
+        body = json.dumps(
+            {
+                "input": [
+                    {"type": "function_call", "call_id": "call_1", "name": "get_weather"},
+                ]
+            }
+        )
+        flags = ins.check_orphaned_responses_api_call_ids([_exchange(request_body=body)])
+        assert len(flags) == 1
+        assert flags[0]["orphaned_ids"] == ["call_1"]
+        assert flags[0]["check"] == "orphaned_responses_api_call_ids"
+
+    def test_chat_completions_shape_not_flagged(self) -> None:
+        """A plain Chat Completions body has no top-level `input` list at
+        all — must not be misinterpreted as an empty Responses API body."""
+        body = json.dumps(
+            {"messages": [{"role": "assistant", "tool_calls": [{"id": "c1"}]}]}
+        )
+        assert ins.check_orphaned_responses_api_call_ids([_exchange(request_body=body)]) == []
+
+    def test_non_function_call_items_ignored(self) -> None:
+        body = json.dumps(
+            {
+                "input": [
+                    {"type": "message", "role": "user", "content": "hi"},
+                    {"type": "reasoning", "id": "r1"},
+                ]
+            }
+        )
+        assert ins.check_orphaned_responses_api_call_ids([_exchange(request_body=body)]) == []
+
+    def test_malformed_body_not_raised(self) -> None:
+        assert (
+            ins.check_orphaned_responses_api_call_ids([_exchange(request_body="not json")])
+            == []
+        )
+
+
+# ---------------------------------------------------------------------------
 # check_tool_call_boundary_leak
 # ---------------------------------------------------------------------------
 
