@@ -11,12 +11,16 @@ so no LangGraph/langchain_core dependency is needed here.
 from __future__ import annotations
 
 from agent_trace._cli import (
+    _checkpoint_durability_summary,
     _duplicate_node_span_counts,
     _error_classification_rows,
+    _print_checkpoint_durability,
     _print_duplicate_node_spans,
     _print_error_classification,
     _print_streaming_timing,
+    _print_zero_task_updates,
     _streaming_timing_rows,
+    _zero_task_update_rows,
 )
 
 # ---------------------------------------------------------------------------
@@ -237,3 +241,127 @@ class TestPrintStreamingTiming:
         assert "chunks=" in out
         assert "first_chunk=" in out
         assert "max_gap=" in out
+
+
+# ---------------------------------------------------------------------------
+# _checkpoint_durability_summary() / _print_checkpoint_durability()
+# ---------------------------------------------------------------------------
+
+
+def _write_span(
+    name: str = "checkpoint:put",
+    completed: bool = True,
+    status: str = "OK",
+) -> dict[str, object]:
+    return _span(name, status=status, attributes={"checkpoint.completed": completed})
+
+
+class TestCheckpointDurabilitySummary:
+    def test_no_checkpoint_spans_returns_none(self) -> None:
+        spans = [_span("node:a"), _span("llm:gpt-4")]
+        assert _checkpoint_durability_summary(spans) is None
+
+    def test_all_writes_flushed_is_durable(self) -> None:
+        spans = [_write_span(), _write_span(name="checkpoint:put_writes")]
+        summary = _checkpoint_durability_summary(spans)
+        assert summary["checkpoint_status"] == "durable"
+        assert summary["writes_enqueued_count"] == 2
+        assert summary["writes_flushed_count"] == 2
+        assert summary["cancellation_requested"] is False
+
+    def test_zero_writes_flushed_is_abandoned(self) -> None:
+        spans = [_write_span(completed=False)]
+        summary = _checkpoint_durability_summary(spans)
+        assert summary["checkpoint_status"] == "abandoned"
+        assert summary["writes_flushed_count"] == 0
+
+    def test_some_but_not_all_flushed_is_partial(self) -> None:
+        spans = [_write_span(completed=True), _write_span(completed=False)]
+        summary = _checkpoint_durability_summary(spans)
+        assert summary["checkpoint_status"] == "partial"
+
+    def test_cancellation_downgrades_fully_flushed_from_durable(self) -> None:
+        spans = [
+            _write_span(completed=True),
+            _span("tool:x", status="CANCELLED"),
+        ]
+        summary = _checkpoint_durability_summary(spans)
+        assert summary["cancellation_requested"] is True
+        assert summary["checkpoint_status"] != "durable"
+
+    def test_async_write_span_names_also_counted(self) -> None:
+        spans = [
+            _write_span(name="checkpoint:aput"),
+            _write_span(name="checkpoint:aput_writes"),
+        ]
+        summary = _checkpoint_durability_summary(spans)
+        assert summary["writes_enqueued_count"] == 2
+        assert summary["writes_flushed_count"] == 2
+
+
+class TestPrintCheckpointDurability:
+    def test_no_output_when_no_checkpoint_spans(self, capsys) -> None:
+        _print_checkpoint_durability([_span("node:a")])
+        assert capsys.readouterr().out == ""
+
+    def test_prints_durable_status(self, capsys) -> None:
+        _print_checkpoint_durability([_write_span()])
+        out = capsys.readouterr().out
+        assert "Checkpoint durability:" in out
+        assert "checkpoint_status:        durable" in out
+
+    def test_prints_warning_when_not_durable(self, capsys) -> None:
+        _print_checkpoint_durability([_write_span(completed=False)])
+        out = capsys.readouterr().out
+        assert "issue #5672" in out
+
+
+# ---------------------------------------------------------------------------
+# _zero_task_update_rows() / _print_zero_task_updates()
+# ---------------------------------------------------------------------------
+
+
+def _update_span(
+    zero_tasks: bool, as_node: str | None = None, as_node_provided: bool = False
+) -> dict[str, object]:
+    attrs: dict[str, object] = {"checkpoint.zero_tasks_scheduled": zero_tasks}
+    if as_node is not None:
+        attrs["checkpoint.as_node"] = as_node
+    attrs["checkpoint.as_node_provided"] = as_node_provided
+    return _span("checkpoint:update_state", attributes=attrs)
+
+
+class TestZeroTaskUpdateRows:
+    def test_no_update_spans_returns_empty(self) -> None:
+        assert _zero_task_update_rows([_span("node:a")]) == []
+
+    def test_non_zero_task_update_excluded(self) -> None:
+        spans = [_update_span(zero_tasks=False)]
+        assert _zero_task_update_rows(spans) == []
+
+    def test_zero_task_update_included(self) -> None:
+        spans = [_update_span(zero_tasks=True, as_node="my_node", as_node_provided=True)]
+        rows = _zero_task_update_rows(spans)
+        assert len(rows) == 1
+        assert rows[0]["as_node"] == "my_node"
+        assert rows[0]["as_node_provided"] is True
+
+    def test_zero_task_update_without_as_node(self) -> None:
+        spans = [_update_span(zero_tasks=True)]
+        rows = _zero_task_update_rows(spans)
+        assert rows[0]["as_node"] == "<not provided>"
+
+
+class TestPrintZeroTaskUpdates:
+    def test_no_output_when_none_flagged(self, capsys) -> None:
+        _print_zero_task_updates([_update_span(zero_tasks=False)])
+        assert capsys.readouterr().out == ""
+
+    def test_prints_warning_with_as_node(self, capsys) -> None:
+        _print_zero_task_updates(
+            [_update_span(zero_tasks=True, as_node="my_node", as_node_provided=True)]
+        )
+        out = capsys.readouterr().out
+        assert "Zero tasks scheduled" in out
+        assert "as_node=my_node" in out
+        assert "issue #4217" in out

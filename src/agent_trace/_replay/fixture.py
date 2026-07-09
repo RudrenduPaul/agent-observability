@@ -20,14 +20,18 @@ from __future__ import annotations
 
 import itertools
 import json
+import logging
 import sqlite3
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from types import TracebackType
 from typing import Any
 
 __all__ = ["Fixture", "max_inter_chunk_gap_ms", "time_to_first_chunk_ms"]
+
+logger = logging.getLogger(__name__)
 
 _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS http_exchanges (
@@ -158,11 +162,31 @@ class Fixture:
     trace_id:
         Optional trace identifier stored in every recorded exchange.  Pass an
         empty string (the default) when the trace_id is not yet known.
+    on_exchange_recorded:
+        Optional callback invoked with the just-recorded exchange dict
+        (same shape as an ``all_exchanges()``/``next_exchange()`` entry,
+        plus its ``id``) immediately after each successful
+        ``record_exchange()`` commit. Wire this to a remote fixture backend
+        (see ``agent_trace.exporters.remote_fixture``) to durably persist
+        each exchange as it's recorded — so a worker process killed or
+        swept mid-run (e.g. on a managed platform, issue #7417) still has
+        every exchange recorded up to that point recoverable from remote
+        storage, instead of only the local, ephemeral ``fixture.db`` this
+        process's filesystem may never be read again. Exceptions raised by
+        the callback are caught and logged, never propagated — a remote
+        upload failure must not break the local recording it's piggybacking
+        on.
     """
 
-    def __init__(self, path: Path, trace_id: str = "") -> None:
+    def __init__(
+        self,
+        path: Path,
+        trace_id: str = "",
+        on_exchange_recorded: Callable[[dict[str, Any]], None] | None = None,
+    ) -> None:
         self._path = path
         self._trace_id = trace_id
+        self._on_exchange_recorded = on_exchange_recorded
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(str(path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
@@ -271,6 +295,34 @@ class Fixture:
                 ),
             )
             self._conn.commit()
+            id_row = self._conn.execute("SELECT last_insert_rowid()").fetchone()
+            recorded_row_id = int(id_row[0])
+
+        if self._on_exchange_recorded is not None:
+            try:
+                exchange = {
+                    "id": recorded_row_id,
+                    "url": url,
+                    "method": method.upper(),
+                    "request_headers": request_headers,
+                    "request_body": request_body,
+                    "response_status": response_status,
+                    "response_headers": response_headers or {},
+                    "response_body": response_body or "",
+                    "recorded_at": time.time(),
+                    "sequence_num": next_seq,
+                    "duration_ms": duration_ms,
+                    "error_type": error_type,
+                    "error_message": error_message,
+                    "chunk_timestamps": chunk_timestamps,
+                }
+                self._on_exchange_recorded(exchange)
+            except Exception:
+                logger.warning(
+                    "agent-trace: on_exchange_recorded callback raised — "
+                    "exchange was still recorded locally",
+                    exc_info=True,
+                )
 
     # ------------------------------------------------------------------
     # Replay
