@@ -35,16 +35,19 @@ __all__ = [
     "check_action_name_not_registered",
     "check_all_tool_calls_no_terminal_response",
     "check_anthropic_thinking_in_tool_result",
+    "check_content_block_missing_type",
     "check_duplicate_concurrent_tool_calls",
     "check_duplicate_json_blocks",
     "check_empty_content_not_final",
     "check_endpoint_host_mismatch",
+    "check_forced_tool_call_unfulfilled",
     "check_get_post_field_mismatch",
     "check_json_schema_lookaround_or_anyof",
     "check_malformed_tool_call_arguments",
     "check_markdown_fenced_json_response",
     "check_missing_extra_kwarg",
     "check_missing_tool_call_id",
+    "check_non_ok_finish_reason",
     "check_null_content_with_tool_calls",
     "check_orphaned_tool_call_ids",
     "check_reserved_kwarg_collision",
@@ -291,6 +294,60 @@ def check_null_content_with_tool_calls(
                         f"{type(content).__name__})",
                     )
                 )
+    return flags
+
+
+# ---------------------------------------------------------------------------
+# 4b. Request-side malformed content-array shape: a `messages[].content`
+#     list item that is a dict missing a `type` key — the exact shape a
+#     tool returning a raw list of dicts (e.g. Tavily's
+#     `[{"url": ..., "content": ...}]`) produces once it lands back in a
+#     tool-role message's `content` array without ever being normalized
+#     into a proper content block. Distinct from check_null_content_with_
+#     tool_calls (#6761), which inspects RESPONSE message content, not
+#     REQUEST-side tool-message content blocks. (#1069)
+# ---------------------------------------------------------------------------
+
+
+def check_content_block_missing_type(
+    exchanges: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Flag a captured request body where a `messages[].content` array
+    contains a dict item with no `type` key — the exact malformed shape
+    behind #1069's `messages[3].content[0].type` `BadRequestError`, produced
+    when a tool (there, Tavily) returns a plain list of dicts that gets
+    threaded straight into a tool-message's `content` array with no
+    normalization into a proper `{"type": ..., ...}` content block."""
+    flags: list[dict[str, Any]] = []
+    for exchange in exchanges:
+        body = _loads(exchange.get("request_body"))
+        if not isinstance(body, dict):
+            continue
+        messages = body.get("messages")
+        if not isinstance(messages, list):
+            continue
+        for msg_index, msg in enumerate(messages):
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+            for block_index, block in enumerate(content):
+                if isinstance(block, dict) and "type" not in block:
+                    flags.append(
+                        _flag(
+                            "content_block_missing_type",
+                            exchange,
+                            f"messages[{msg_index}].content[{block_index}] is a "
+                            "dict content block with no `type` key — malformed "
+                            "shape a naive json.loads()-then-forward of a raw "
+                            "tool return value produces (e.g. a tool returning "
+                            "`[{'url': ..., 'content': ...}]` with no `type` "
+                            "field)",
+                            message_index=msg_index,
+                            content_index=block_index,
+                        )
+                    )
     return flags
 
 
@@ -595,12 +652,28 @@ def check_duplicate_json_blocks(
 
 def _get_path(obj: Any, path: str) -> tuple[bool, Any]:
     """Return (found, value) for a dotted path like
-    'extra_body.chat_template_kwargs.thinking'."""
+    'extra_body.chat_template_kwargs.thinking'.
+
+    Also resolves numeric segments as list indices, so a path like
+    'choices.0.message.reasoning_content' walks into a JSON array the same
+    way it would walk into a nested dict — needed for provider response
+    shapes where the field of interest is nested inside a list (e.g.
+    DeepSeek's ``choices[0].message.reasoning_content``, #5526)."""
     current = obj
     for part in path.split("."):
-        if not isinstance(current, dict) or part not in current:
+        if isinstance(current, dict):
+            if part not in current:
+                return False, None
+            current = current[part]
+        elif isinstance(current, list):
+            if not re.fullmatch(r"-?\d+", part):
+                return False, None
+            index = int(part)
+            if not (-len(current) <= index < len(current)):
+                return False, None
+            current = current[index]
+        else:
             return False, None
-        current = current[part]
     return True, current
 
 
@@ -1062,6 +1135,161 @@ def check_tool_calling_disabled(
     return flags
 
 
+# ---------------------------------------------------------------------------
+# Response finish/stop reason other than a normal-completion value — e.g.
+# 'length' (context/max-tokens truncation), 'content_filter', Gemini's
+# MALFORMED_FUNCTION_CALL, or Anthropic's 'max_tokens'/'refusal'. Today
+# nothing in agent-trace surfaces this without a developer manually reading
+# the raw response body — the exact manual step behind the intermittent,
+# hard-to-reproduce `LengthFinishReasonError` reports (#30924).
+# ---------------------------------------------------------------------------
+
+_OK_FINISH_REASONS = {"stop", "tool_calls", "end_turn", "tool_use", "function_call"}
+
+
+def check_non_ok_finish_reason(
+    exchanges: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Flag a captured response whose finish/stop reason is not one of the
+    normal-completion values (OpenAI-style `choices[].finish_reason`, or
+    Anthropic's top-level `stop_reason`) — surfacing `'length'` (the
+    response was truncated by max_tokens, #30924's `LengthFinishReasonError`
+    shape), `'content_filter'`, Gemini's `MALFORMED_FUNCTION_CALL`, and any
+    other non-`'stop'`/`'tool_calls'`/`'end_turn'` value a developer would
+    otherwise only notice by manually reading the raw response body."""
+    flags: list[dict[str, Any]] = []
+    for exchange in exchanges:
+        body = _loads(exchange.get("response_body"))
+        if not isinstance(body, dict):
+            continue
+
+        for choice in body.get("choices") or []:
+            if not isinstance(choice, dict):
+                continue
+            reason = choice.get("finish_reason")
+            if isinstance(reason, str) and reason.lower() not in _OK_FINISH_REASONS:
+                flags.append(
+                    _flag(
+                        "non_ok_finish_reason",
+                        exchange,
+                        f"choices[].finish_reason={reason!r} is not a "
+                        "normal-completion value ('stop'/'tool_calls'/"
+                        "'end_turn') — the response was truncated/filtered "
+                        "rather than completed normally",
+                        finish_reason=reason,
+                        choice_index=choice.get("index"),
+                    )
+                )
+
+        stop_reason = body.get("stop_reason")
+        if (
+            isinstance(stop_reason, str)
+            and stop_reason.lower() not in _OK_FINISH_REASONS
+        ):
+            flags.append(
+                _flag(
+                    "non_ok_finish_reason",
+                    exchange,
+                    f"stop_reason={stop_reason!r} is not a normal-completion "
+                    "value ('stop'/'tool_calls'/'end_turn') — the response "
+                    "was truncated/filtered rather than completed normally",
+                    finish_reason=stop_reason,
+                )
+            )
+    return flags
+
+
+# ---------------------------------------------------------------------------
+# A request declares a forced/single tool choice but the corresponding
+# response's message carries no (or empty) tool_calls — the framework asked
+# the provider to guarantee a tool call and the provider silently didn't
+# deliver one (#3153: ChatOllama accepts a forced tool_choice but Ollama
+# doesn't honor it, so downstream code that assumes `tool_calls[0]` exists
+# crashes with `TypeError: 'NoneType' object is not subscriptable`).
+# Distinct from check_tool_calling_disabled, which flags the opposite,
+# explicitly-disabled ('none') shape.
+# ---------------------------------------------------------------------------
+
+_GENERIC_TOOL_CHOICE_KEYWORDS = {"auto", "none", "required", "any"}
+
+
+def _forced_tool_choice_name(body: dict[str, Any]) -> str | None:
+    """Return the forced tool name if *body* declares a forced/single tool
+    choice, else None. Handles OpenAI's dict shape (``{"type": "function",
+    "function": {"name": ...}}``), Anthropic's dict shape (``{"type":
+    "tool", "name": ...}``), a plain tool-name string (``tool_choice:
+    "my_tool"``, distinct from the generic 'auto'/'none'/'required'/'any'
+    keywords), and Gemini's equivalent forced-choice signal on its tool
+    config (`function_calling_config.mode == 'ANY'` restricted to exactly
+    one entry in `allowed_function_names`)."""
+    tool_choice = body.get("tool_choice")
+    if isinstance(tool_choice, dict):
+        if tool_choice.get("type") == "function":
+            fn = tool_choice.get("function")
+            fn_name = fn.get("name") if isinstance(fn, dict) else None
+            if isinstance(fn_name, str):
+                return fn_name
+        elif tool_choice.get("type") == "tool":
+            name = tool_choice.get("name")
+            if isinstance(name, str):
+                return name
+    elif isinstance(tool_choice, str) and tool_choice:
+        if tool_choice.lower() not in _GENERIC_TOOL_CHOICE_KEYWORDS:
+            return tool_choice
+
+    found, mode = _get_path(body, "tool_config.function_calling_config.mode")
+    if found and isinstance(mode, str) and mode.upper() == "ANY":
+        _, names = _get_path(
+            body, "tool_config.function_calling_config.allowed_function_names"
+        )
+        if isinstance(names, list) and len(names) == 1 and isinstance(names[0], str):
+            return names[0]
+    return None
+
+
+def check_forced_tool_call_unfulfilled(
+    exchanges: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Flag a captured exchange where the request declared a forced/single
+    tool choice but the response's message has no (or empty) `tool_calls` —
+    "expected forced tool call, got none" (#3153)."""
+    flags: list[dict[str, Any]] = []
+    for exchange in exchanges:
+        request_body = _loads(exchange.get("request_body"))
+        if not isinstance(request_body, dict):
+            continue
+        forced_name = _forced_tool_choice_name(request_body)
+        if not forced_name:
+            continue
+
+        response_body = _loads(exchange.get("response_body"))
+        if not isinstance(response_body, dict):
+            continue
+        choices = response_body.get("choices")
+        if not isinstance(choices, list) or not choices:
+            continue
+
+        got_tool_call = any(
+            isinstance(choice, dict)
+            and isinstance(choice.get("message"), dict)
+            and choice["message"].get("tool_calls")
+            for choice in choices
+        )
+        if not got_tool_call:
+            flags.append(
+                _flag(
+                    "forced_tool_call_unfulfilled",
+                    exchange,
+                    f"request declared a forced/single tool_choice "
+                    f"({forced_name!r}) but the response's message has no "
+                    "(or empty) tool_calls — expected forced tool call, "
+                    "got none",
+                    forced_tool_name=forced_name,
+                )
+            )
+    return flags
+
+
 def match_known_error_patterns(spans: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Scan ERROR-status spans' exception.message text for recognizable
     cross-provider error shapes and surface a flagged summary line, starting
@@ -1268,18 +1496,31 @@ def field_present_on_wire_absent_downstream(
     """Diff/inspect: compare a raw captured LLM response field against the
     framework's final serialized span attributes, flagging when a field
     present on the wire never appears downstream (#3936 — "is Azure
-    returning usage data that something downstream strips")."""
-    wire_has_field = any(
-        isinstance(body := _loads(e.get("response_body")), dict) and field_name in body
-        for e in exchanges
-    )
+    returning usage data that something downstream strips").
+
+    *field_name* may be a plain top-level key (``"usage"``) or a dotted/
+    nested path resolved via ``_get_path`` (``"choices.0.message.
+    reasoning_content"``) — needed for provider fields nested inside the
+    response body rather than sitting at the top level, e.g. DeepSeek's
+    ``choices[0].message.reasoning_content`` (#5526), which a plain
+    ``field_name in body`` top-level-key check can never see."""
+    wire_has_field = False
+    for exchange in exchanges:
+        body = _loads(exchange.get("response_body"))
+        if isinstance(body, dict) and _get_path(body, field_name)[0]:
+            wire_has_field = True
+            break
     if not wire_has_field:
         return []
 
+    # Span attributes are flat (e.g. "llm.content", "llm.finish_reason"),
+    # never namespaced by a full nested path, so match on the path's last
+    # segment for the downstream-presence check.
+    leaf_field = field_name.rsplit(".", 1)[-1]
     span_has_field = False
     for span in spans:
         attrs = span.get("attributes") or {}
-        if any(str(k).startswith(f"llm.{field_name}") for k in attrs):
+        if any(str(k).startswith(f"llm.{leaf_field}") for k in attrs):
             span_has_field = True
             break
 
@@ -1380,6 +1621,7 @@ def run_all_exchange_checks(
         "tool_call_boundary_leak": check_tool_call_boundary_leak,
         "malformed_tool_call_arguments": check_malformed_tool_call_arguments,
         "null_content_with_tool_calls": check_null_content_with_tool_calls,
+        "content_block_missing_type": check_content_block_missing_type,
         "tools_with_response_format": check_tools_with_response_format,
         "anthropic_thinking_in_tool_result": check_anthropic_thinking_in_tool_result,
         "empty_content_not_final": check_empty_content_not_final,
@@ -1391,6 +1633,8 @@ def run_all_exchange_checks(
         "all_tool_calls_no_terminal_response": check_all_tool_calls_no_terminal_response,
         "markdown_fenced_json_response": check_markdown_fenced_json_response,
         "tool_calling_disabled": check_tool_calling_disabled,
+        "forced_tool_call_unfulfilled": check_forced_tool_call_unfulfilled,
+        "non_ok_finish_reason": check_non_ok_finish_reason,
         "multi_block_response": multi_block_llm_responses,
         "stream_merge_invalid_json": check_stream_merge_validity,
         "response_shape_anomaly": detect_response_shape_anomalies,
