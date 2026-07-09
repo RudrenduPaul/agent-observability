@@ -218,6 +218,40 @@ with replay("<run_id>") as ctx:
 
 ---
 
+## 5b. Self-hosted / custom `base_url` providers (e.g. `ChatOpenAI(base_url=...)`)
+
+No special wiring is needed to record traffic to a self-hosted or
+OpenAI-compatible custom-endpoint provider — e.g. a local llama.cpp-style
+server via `ChatOpenAI(base_url="http://host.docker.internal:9118", ...)`
+feeding a prebuilt `ToolNode`, the exact configuration behind issue #3538.
+
+`Tracer._patch_httpx()` patches `httpx.Client._transport_for_url` at the
+*class* level, at request-dispatch time — so any `httpx.Client` instance
+constructed by any SDK, including the one `ChatOpenAI`/`openai.OpenAI`
+build internally for a custom `base_url`, is intercepted automatically the
+moment `Tracer.start_trace(record=True)` is active:
+
+```python
+model = ChatOpenAI(base_url="http://host.docker.internal:9118/v1", api_key="not-checked")
+graph = create_react_agent(model, tools=[...])
+
+with tracer.start_trace("local-llm-run", record=True) as trace:
+    result = graph.invoke({"messages": [...]})
+```
+
+No `http_client=httpx.Client(transport=RecordingTransport(...))` argument
+is required. Self-hosted providers are one of the more common reasons to
+reach for a debugging/observability tool in the first place, since they
+tend to deviate most from major-provider API conventions — e.g. returning
+an **empty-string** `tool_calls[].id` instead of a missing/null one, a
+malformed shape `agent-trace inspect <run_id>`'s `missing_tool_call_id`
+check (`src/agent_trace/_inspect.py`) still catches (it flags falsy `id`
+values, not just absent ones). See
+`examples/17-langgraph-toolnode-custom-provider/` for a full worked
+example.
+
+---
+
 ## 6. Known limitations
 
 - **LangGraph version pin:** agent-trace targets `langgraph>=0.2,<1.0`. The
