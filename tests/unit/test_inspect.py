@@ -1215,6 +1215,78 @@ class TestCheckStreamMergeValidity:
 
 
 # ---------------------------------------------------------------------------
+# check_null_or_missing_sse_delta
+# ---------------------------------------------------------------------------
+
+
+class TestCheckNullOrMissingSseDelta:
+    def test_non_sse_exchange_not_flagged(self) -> None:
+        assert (
+            ins.check_null_or_missing_sse_delta([_exchange(response_body="plain text")])
+            == []
+        )
+
+    def test_normal_delta_not_flagged(self) -> None:
+        body = 'data: {"choices": [{"delta": {"content": "hi"}, "index": 0}]}\n'
+        exchange = {
+            **_exchange(response_body=body),
+            "response_headers": {"Content-Type": "text/event-stream"},
+        }
+        assert ins.check_null_or_missing_sse_delta([exchange]) == []
+
+    def test_null_delta_with_no_other_fields_not_flagged(self) -> None:
+        # A trailing null-delta chunk that carries no other signal (e.g. a
+        # bare heartbeat) isn't a dropped-signal shape — nothing to flag.
+        body = 'data: {"choices": [{"delta": null, "index": 0}]}\n'
+        exchange = {
+            **_exchange(response_body=body),
+            "response_headers": {"Content-Type": "text/event-stream"},
+        }
+        assert ins.check_null_or_missing_sse_delta([exchange]) == []
+
+    def test_null_delta_with_content_filter_offsets_flagged(self) -> None:
+        # Azure OpenAI async content-filter shape: choices[0].delta is null
+        # while content_filter_offsets/content_filter_results are populated.
+        body = json.dumps(
+            {
+                "choices": [
+                    {
+                        "delta": None,
+                        "finish_reason": None,
+                        "index": 0,
+                        "content_filter_offsets": {
+                            "check_offset": 100,
+                            "start_offset": 100,
+                            "end_offset": 140,
+                        },
+                        "content_filter_results": {
+                            "hate": {"filtered": False, "severity": "safe"}
+                        },
+                    }
+                ]
+            }
+        )
+        exchange = {
+            **_exchange(response_body=f"data: {body}\n"),
+            "response_headers": {"Content-Type": "text/event-stream"},
+        }
+        flags = ins.check_null_or_missing_sse_delta([exchange])
+        assert len(flags) == 1
+        assert flags[0]["check"] == "null_or_missing_sse_delta"
+        assert "content_filter_offsets" in flags[0]["populated_fields"]
+
+    def test_missing_delta_key_with_finish_reason_flagged(self) -> None:
+        body = 'data: {"choices": [{"finish_reason": "content_filter", "index": 0}]}\n'
+        exchange = {
+            **_exchange(response_body=body),
+            "response_headers": {"Content-Type": "text/event-stream"},
+        }
+        flags = ins.check_null_or_missing_sse_delta([exchange])
+        assert len(flags) == 1
+        assert flags[0]["populated_fields"] == ["finish_reason"]
+
+
+# ---------------------------------------------------------------------------
 # detect_response_shape_anomalies
 # ---------------------------------------------------------------------------
 
@@ -1357,6 +1429,205 @@ class TestFindNearDuplicateSiblingContent:
         flags = ins.find_near_duplicate_sibling_content(spans)
         assert len(flags) == 1
         assert flags[0]["similarity"] == 1.0
+
+
+# ---------------------------------------------------------------------------
+# check_phantom_tool_call (#13449)
+# ---------------------------------------------------------------------------
+
+
+def _exchange_with_correlation(correlation_id: str) -> dict[str, object]:
+    exchange = _exchange()
+    exchange["correlation_id"] = correlation_id
+    return exchange
+
+
+class TestCheckPhantomToolCall:
+    def test_langgraph_tool_span_with_correlated_exchange_not_flagged(self) -> None:
+        spans = [
+            {
+                "name": "tool:get_weather",
+                "status": "OK",
+                "span_id": "span-1",
+                "attributes": {"tool.name": "get_weather"},
+                "events": [],
+            }
+        ]
+        exchanges = [_exchange_with_correlation("span-1")]
+        assert ins.check_phantom_tool_call(spans, exchanges) == []
+
+    def test_langgraph_tool_span_with_zero_exchanges_flagged(self) -> None:
+        spans = [
+            {
+                "name": "tool:get_weather",
+                "status": "OK",
+                "span_id": "span-1",
+                "attributes": {"tool.name": "get_weather"},
+                "events": [],
+            }
+        ]
+        flags = ins.check_phantom_tool_call(spans, exchanges=[])
+        assert len(flags) == 1
+        assert flags[0]["check"] == "phantom_tool_call"
+        assert flags[0]["tool_name"] == "get_weather"
+        assert flags[0]["span_id"] == "span-1"
+
+    def test_llama_index_tool_call_event_with_correlated_exchange_not_flagged(
+        self,
+    ) -> None:
+        spans = [
+            {
+                "name": "FunctionTool.call",
+                "status": "OK",
+                "span_id": "span-2",
+                "attributes": {},
+                "events": [
+                    {
+                        "name": "tool_call",
+                        "attributes": {"tool.name": "call_api"},
+                    }
+                ],
+            }
+        ]
+        exchanges = [_exchange_with_correlation("span-2")]
+        assert ins.check_phantom_tool_call(spans, exchanges) == []
+
+    def test_llama_index_tool_call_event_with_zero_exchanges_flagged(self) -> None:
+        spans = [
+            {
+                "name": "FunctionTool.call",
+                "status": "OK",
+                "span_id": "span-2",
+                "attributes": {},
+                "events": [
+                    {
+                        "name": "tool_call",
+                        "attributes": {"tool.name": "call_api"},
+                    }
+                ],
+            }
+        ]
+        flags = ins.check_phantom_tool_call(spans, exchanges=[])
+        assert len(flags) == 1
+        assert flags[0]["tool_name"] == "call_api"
+
+    def test_non_tool_span_never_flagged(self) -> None:
+        spans = [
+            {
+                "name": "node:graph",
+                "status": "OK",
+                "span_id": "span-3",
+                "attributes": {},
+                "events": [],
+            }
+        ]
+        assert ins.check_phantom_tool_call(spans, exchanges=[]) == []
+
+    def test_span_with_no_span_id_skipped(self) -> None:
+        spans = [
+            {
+                "name": "tool:get_weather",
+                "status": "OK",
+                "attributes": {"tool.name": "get_weather"},
+                "events": [],
+            }
+        ]
+        assert ins.check_phantom_tool_call(spans, exchanges=[]) == []
+
+    def test_exchange_with_different_correlation_id_still_flagged(self) -> None:
+        spans = [
+            {
+                "name": "tool:get_weather",
+                "status": "OK",
+                "span_id": "span-1",
+                "attributes": {"tool.name": "get_weather"},
+                "events": [],
+            }
+        ]
+        exchanges = [_exchange_with_correlation("some-other-span")]
+        flags = ins.check_phantom_tool_call(spans, exchanges)
+        assert len(flags) == 1
+
+
+# ---------------------------------------------------------------------------
+# check_system_prompt_dropped (#3277)
+# ---------------------------------------------------------------------------
+
+
+def _llm_span(
+    span_id: str,
+    start_time: float,
+    has_system_prompt_part: bool,
+    agent_name: str = "my-agent",
+    model: str = "gpt-4o",
+) -> dict[str, object]:
+    return {
+        "name": f"llm:{model}",
+        "status": "OK",
+        "span_id": span_id,
+        "start_time": start_time,
+        "attributes": {
+            "agent.name": agent_name,
+            "llm.model": model,
+            "llm.has_system_prompt_part": has_system_prompt_part,
+        },
+        "events": [],
+    }
+
+
+class TestCheckSystemPromptDropped:
+    def test_system_prompt_present_on_every_call_not_flagged(self) -> None:
+        spans = [
+            _llm_span("s1", 1.0, has_system_prompt_part=True),
+            _llm_span("s2", 2.0, has_system_prompt_part=True),
+        ]
+        assert ins.check_system_prompt_dropped(spans) == []
+
+    def test_system_prompt_absent_from_first_call_not_flagged(self) -> None:
+        # Never had one to begin with — not a "drop".
+        spans = [
+            _llm_span("s1", 1.0, has_system_prompt_part=False),
+            _llm_span("s2", 2.0, has_system_prompt_part=False),
+        ]
+        assert ins.check_system_prompt_dropped(spans) == []
+
+    def test_system_prompt_dropped_on_later_call_flagged(self) -> None:
+        spans = [
+            _llm_span("s1", 1.0, has_system_prompt_part=True),
+            _llm_span("s2", 2.0, has_system_prompt_part=False),
+        ]
+        flags = ins.check_system_prompt_dropped(spans)
+        assert len(flags) == 1
+        assert flags[0]["check"] == "system_prompt_dropped"
+        assert flags[0]["earlier_span"] == "s1"
+        assert flags[0]["later_span"] == "s2"
+        assert flags[0]["agent_name"] == "my-agent"
+
+    def test_different_agents_not_cross_flagged(self) -> None:
+        spans = [
+            _llm_span("s1", 1.0, has_system_prompt_part=True, agent_name="agent-a"),
+            _llm_span("s2", 2.0, has_system_prompt_part=False, agent_name="agent-b"),
+        ]
+        assert ins.check_system_prompt_dropped(spans) == []
+
+    def test_out_of_order_spans_sorted_by_start_time(self) -> None:
+        # Passed in reverse chronological order — the check must sort by
+        # start_time itself rather than trust list order.
+        spans = [
+            _llm_span("s2", 2.0, has_system_prompt_part=False),
+            _llm_span("s1", 1.0, has_system_prompt_part=True),
+        ]
+        flags = ins.check_system_prompt_dropped(spans)
+        assert len(flags) == 1
+        assert flags[0]["earlier_span"] == "s1"
+        assert flags[0]["later_span"] == "s2"
+
+    def test_non_llm_spans_ignored(self) -> None:
+        spans = [
+            {"name": "tool:x", "status": "OK", "span_id": "t1", "attributes": {}},
+            _llm_span("s1", 1.0, has_system_prompt_part=True),
+        ]
+        assert ins.check_system_prompt_dropped(spans) == []
 
 
 # ---------------------------------------------------------------------------
