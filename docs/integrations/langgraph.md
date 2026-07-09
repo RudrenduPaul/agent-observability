@@ -241,22 +241,59 @@ with replay("<run_id>") as ctx:
   node outputs are deterministic during replay, conditional edges route the
   same way they did during recording.
 
-- **Conditional-edge dispatch exceptions (`trace=False`):** LangGraph
+- **Conditional-edge routing dispatch (`trace=False`):** LangGraph
   deliberately builds a conditional edge's routing dispatch
-  (`add_conditional_edges`) as an internal component with `trace=False` —
-  it never fires `on_chain_start`/`on_chain_error`, so by default an
-  exception raised inside the routing function itself (e.g. a `KeyError`
-  when a router's return value doesn't match a registered destination) is
-  invisible to any callback-based tool. `LangGraphTracer` patches around
-  this specific gap (best-effort — it touches a LangGraph internal module,
-  `langgraph._internal._runnable.RunnableCallable`, and degrades silently
-  to "not captured" if that internal shape changes on a future LangGraph
-  version) and records a `branch:dispatch` span with `status=ERROR` when
-  this happens. This does **not** mean every `trace=False` component in
-  LangGraph is now traced — only the conditional-edge dispatch case
-  specifically; other internal `trace=False` components (channel writes,
-  `ToolNode`'s own dispatch, etc.) remain outside agent-trace's callback
+  (`add_conditional_edges`, and the `should_continue`/
+  `post_model_hook_router` edges `create_react_agent` inserts internally)
+  as an internal component with `trace=False` — it never fires
+  `on_chain_start`/`on_chain_end`/`on_chain_error`, so by default neither a
+  successful routing decision nor an exception raised inside the routing
+  function itself (e.g. a `KeyError` when a router's return value doesn't
+  match a registered destination) is visible to any callback-based tool.
+  `LangGraphTracer` patches around this gap (best-effort — it touches a
+  LangGraph internal module, `langgraph._internal._runnable.RunnableCallable`,
+  and degrades silently to "not captured" if that internal shape changes on
+  a future LangGraph version) and records a `branch:dispatch` span for
+  **every** dispatch, success or failure — `branch.router_name` (the
+  underlying router function's name), `branch.registered_destinations`, and
+  `status=ERROR` plus the usual exception/classification attributes when the
+  router itself raises. `ToolNode`'s `InjectedState`/`InjectedStore`
+  argument-injection step (`_inject_tool_args`) is instrumented the same
+  way: a `tool_inject:<name>` span per tool call records `tool.injection_ran`
+  and `tool.injected_arg_keys`, since injection happens before the tool's
+  own `on_tool_start` callback fires and so has no span of its own to
+  attach to. `agent_trace.integrations.langgraph.find_tool_params_shaped_like_state()`
+  additionally flags, at `LangGraphTracer(graph=...)` construction time, any
+  tool parameter that shares a name with a real state field but was never
+  annotated `InjectedState`/`InjectedStore` — the model-facing schema shape
+  behind [langgraph#3266](https://github.com/langchain-ai/langgraph/issues/3266).
+  See `examples/08-langgraph-react-agent-tool-arg-injection/` for a worked
+  example. This does **not** mean every `trace=False` component in
+  LangGraph is now traced — only conditional-edge routing dispatch and
+  `ToolNode` argument injection specifically; other internal `trace=False`
+  components (channel writes, etc.) remain outside agent-trace's callback
   coverage.
+
+- **Pregel-internal state/channel-routing errors:** agent-trace's current
+  architecture (the HTTP interceptor plus LangChain/LangGraph callback
+  spans) cannot capture a failure that happens entirely *inside* LangGraph's
+  own pregel scheduler and never surfaces as an exception or a network call
+  — e.g. a state write silently dropped because a channel (such as the `ui`
+  channel used by `push_ui_message`) isn't registered on the compiled
+  graph's schema, which LangGraph itself only reports as a `logging.warning`
+  call (`"wrote to unknown channel X, ignoring it"`,
+  [langgraph#5464](https://github.com/langchain-ai/langgraph/issues/5464)).
+  Neither the callback layer nor the HTTP interceptor ever sees this class
+  of bug, regardless of how complete the rest of a trace otherwise is.
+  `agent_trace.interceptor.logging_hook.capture_logging()` narrows this gap
+  for the specific case where LangGraph *does* at least log a warning (by
+  attaching a `logging.Handler` to the `langgraph` logger namespace for the
+  duration of a `with` block) — but there is currently no general
+  instrumentation of pregel's own internal scheduling/channel-routing
+  decisions, so a silent channel-routing failure that produces neither a
+  log line nor an exception remains an outright blind spot. If you're
+  evaluating agent-trace specifically for this failure class, know that it
+  gets zero automatic value from agent-trace's callback/HTTP capture today.
 
 ---
 

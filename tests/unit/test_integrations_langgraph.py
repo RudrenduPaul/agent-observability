@@ -124,7 +124,11 @@ class TestLangGraphTracerInit:
     def test_lock_is_a_lock(self, tracer_and_trace):
         t, trace = tracer_and_trace
         handler = _make_handler(t, trace)
-        assert isinstance(handler._lock, threading.Lock)
+        # threading.Lock is a factory function returning a
+        # _thread.lock-typed object on Python < 3.13, but a real
+        # isinstance-able class on 3.13+ — compare against the concrete
+        # type of a freshly allocated lock so this works on both.
+        assert isinstance(handler._lock, type(threading.Lock()))
 
     def test_two_instances_have_independent_span_dicts(self, tracer_and_trace):
         t, trace = tracer_and_trace
@@ -1439,3 +1443,355 @@ class TestLongRunningSpanThreshold:
         finally:
             restore_clock(token)
         assert span_ref.attributes.get("span.exceeded_long_running_threshold") is True
+
+
+# ---------------------------------------------------------------------------
+# Branch (conditional-edge) routing dispatch — pure-logic helpers
+# ---------------------------------------------------------------------------
+#
+# _resolve_router_name/_registered_destinations only reach into duck-typed
+# attributes (.func/.afunc/.__self__/.path/.ends) shared with the real
+# BranchSpec/RunnableCallable shape confirmed by direct inspection of the
+# installed langgraph package — tested here against lightweight fakes rather
+# than real langgraph objects so these pure string-extraction helpers don't
+# need a real graph compiled just to exercise their branches. The real,
+# end-to-end behavior (a genuine BranchSpec dispatch, success and failure)
+# is covered by tests/integration/test_langgraph.py::TestBranchDispatch*.
+
+
+class _FakePath:
+    """Stands in for BranchSpec.path — the Runnable wrapping the user's
+    router callable, e.g. a RunnableLambda."""
+
+    def __init__(self, func=None, afunc=None):
+        self.func = func
+        self.afunc = afunc
+
+
+class _FakeBranchSpec:
+    """Stands in for a real langgraph.graph._branch.BranchSpec instance."""
+
+    def __init__(self, path, ends=None):
+        self.path = path
+        self.ends = ends or {}
+
+    def _route(self, *args, **kwargs):  # pragma: no cover - never called
+        pass
+
+    async def _aroute(self, *args, **kwargs):  # pragma: no cover - never called
+        pass
+
+
+def _fake_runnable_callable(branch_spec, *, async_variant=False):
+    """Build a duck-typed stand-in for the RunnableCallable wrapping
+    BranchSpec._route/_aroute — .func/.afunc must be a bound method whose
+    __self__ is the BranchSpec instance, matching the real shape."""
+    from types import SimpleNamespace
+
+    if async_variant:
+        return SimpleNamespace(func=None, afunc=branch_spec._aroute)
+    return SimpleNamespace(func=branch_spec._route, afunc=None)
+
+
+def _named_router(state):
+    """A router function with a real __name__ — the common case."""
+    return "a"
+
+
+class TestResolveRouterName:
+    def test_named_router_function(self):
+        from agent_trace.integrations.langgraph import _resolve_router_name
+
+        branch = _FakeBranchSpec(path=_FakePath(func=_named_router))
+        rc = _fake_runnable_callable(branch)
+        assert _resolve_router_name(rc) == "_named_router"
+
+    def test_async_router_function(self):
+        from agent_trace.integrations.langgraph import _resolve_router_name
+
+        async def my_async_router(state):
+            return "a"
+
+        branch = _FakeBranchSpec(path=_FakePath(afunc=my_async_router))
+        rc = _fake_runnable_callable(branch, async_variant=True)
+        assert _resolve_router_name(rc) == "my_async_router"
+
+    def test_anonymous_when_path_has_no_name(self):
+        from agent_trace.integrations.langgraph import _resolve_router_name
+
+        # path itself has no .func/.afunc and no __name__ (e.g. an opaque
+        # Runnable instance without a named underlying callable).
+        branch = _FakeBranchSpec(path=object())
+        rc = _fake_runnable_callable(branch)
+        assert _resolve_router_name(rc) == "<anonymous>"
+
+    def test_anonymous_when_branch_instance_unresolvable(self):
+        from types import SimpleNamespace
+
+        from agent_trace.integrations.langgraph import _resolve_router_name
+
+        # .func/.afunc present but not a bound method (no __self__) — the
+        # shape doesn't match at all.
+        rc = SimpleNamespace(func=lambda *a: None, afunc=None)
+        assert _resolve_router_name(rc) == "<anonymous>"
+
+
+class TestRegisteredDestinations:
+    def test_joins_ends_values(self):
+        from agent_trace.integrations.langgraph import _registered_destinations
+
+        branch = _FakeBranchSpec(
+            path=_FakePath(func=_named_router), ends={"a": "node_a", "b": "node_b"}
+        )
+        rc = _fake_runnable_callable(branch)
+        destinations = _registered_destinations(rc)
+        assert set(destinations.split(",")) == {"node_a", "node_b"}
+
+    def test_empty_when_no_ends(self):
+        from agent_trace.integrations.langgraph import _registered_destinations
+
+        branch = _FakeBranchSpec(path=_FakePath(func=_named_router), ends={})
+        rc = _fake_runnable_callable(branch)
+        assert _registered_destinations(rc) == ""
+
+    def test_empty_when_branch_instance_unresolvable(self):
+        from types import SimpleNamespace
+
+        from agent_trace.integrations.langgraph import _registered_destinations
+
+        rc = SimpleNamespace(func=lambda *a: None, afunc=None)
+        assert _registered_destinations(rc) == ""
+
+
+class TestRecordBranchDispatch:
+    """_record_branch_dispatch() — the span-recording half, driven through
+    the _current_langgraph_tracer ContextVar the same way the real
+    RunnableCallable.invoke/ainvoke patch drives it."""
+
+    def test_noop_when_no_active_tracer(self):
+        from agent_trace.integrations.langgraph import _record_branch_dispatch
+
+        branch = _FakeBranchSpec(path=_FakePath(func=_named_router))
+        rc = _fake_runnable_callable(branch)
+        # No _current_langgraph_tracer set in this context — must not raise.
+        _record_branch_dispatch(rc, error=None)
+
+    def test_success_records_ok_span_with_router_name(self, tracer_and_trace):
+        from agent_trace import SpanStatus
+        from agent_trace.integrations.langgraph import (
+            _current_langgraph_tracer,
+            _record_branch_dispatch,
+        )
+
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        token = _current_langgraph_tracer.set(handler)
+        try:
+            branch = _FakeBranchSpec(
+                path=_FakePath(func=_named_router), ends={"a": "node_a"}
+            )
+            rc = _fake_runnable_callable(branch)
+            _record_branch_dispatch(rc, error=None)
+        finally:
+            _current_langgraph_tracer.reset(token)
+
+        spans = [s for s in trace.spans if s.name == "branch:dispatch"]
+        assert len(spans) == 1
+        assert spans[0].status == SpanStatus.OK
+        assert spans[0].attributes["branch.router_name"] == "_named_router"
+        assert spans[0].attributes["branch.registered_destinations"] == "node_a"
+
+    def test_error_records_error_span_with_exception(self, tracer_and_trace):
+        from agent_trace import SpanStatus
+        from agent_trace.integrations.langgraph import (
+            _current_langgraph_tracer,
+            _record_branch_dispatch,
+        )
+
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        token = _current_langgraph_tracer.set(handler)
+        try:
+            branch = _FakeBranchSpec(path=_FakePath(func=_named_router))
+            rc = _fake_runnable_callable(branch)
+            _record_branch_dispatch(rc, error=KeyError("bad_destination"))
+        finally:
+            _current_langgraph_tracer.reset(token)
+
+        spans = [s for s in trace.spans if s.name == "branch:dispatch"]
+        assert len(spans) == 1
+        assert spans[0].status == SpanStatus.ERROR
+        exception_events = [e for e in spans[0].events if e.name == "exception"]
+        assert exception_events
+        assert exception_events[0].attributes["exception.type"] == "KeyError"
+
+
+class TestRecordToolArgInjection:
+    def test_noop_when_no_active_tracer(self):
+        from agent_trace.integrations.langgraph import _record_tool_arg_injection
+
+        # Must not raise even with no active tracer.
+        _record_tool_arg_injection("my_tool", ["user_id"])
+
+    def test_injection_ran_records_keys(self, tracer_and_trace):
+        from agent_trace import SpanStatus
+        from agent_trace.integrations.langgraph import (
+            _current_langgraph_tracer,
+            _record_tool_arg_injection,
+        )
+
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        token = _current_langgraph_tracer.set(handler)
+        try:
+            _record_tool_arg_injection("lookup_user_pref", ["user_id", "store"])
+        finally:
+            _current_langgraph_tracer.reset(token)
+
+        spans = [s for s in trace.spans if s.name == "tool_inject:lookup_user_pref"]
+        assert len(spans) == 1
+        assert spans[0].status == SpanStatus.OK
+        assert spans[0].attributes["tool.injection_ran"] is True
+        assert spans[0].attributes["tool.injected_arg_keys"] == "user_id,store"
+
+    def test_no_injection_omits_keys_attribute(self, tracer_and_trace):
+        from agent_trace.integrations.langgraph import (
+            _current_langgraph_tracer,
+            _record_tool_arg_injection,
+        )
+
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        token = _current_langgraph_tracer.set(handler)
+        try:
+            _record_tool_arg_injection("hallucinated_lookup", [])
+        finally:
+            _current_langgraph_tracer.reset(token)
+
+        span = next(
+            s for s in trace.spans if s.name == "tool_inject:hallucinated_lookup"
+        )
+        assert span.attributes["tool.injection_ran"] is False
+        assert "tool.injected_arg_keys" not in span.attributes
+
+    def test_span_name_does_not_collide_with_tool_prefix_filter(
+        self, tracer_and_trace
+    ):
+        """Regression guard: code/tests that filter spans via
+        name.startswith("tool:") to find the *real* tool-call span must not
+        also match the injection span."""
+        from agent_trace.integrations.langgraph import (
+            _current_langgraph_tracer,
+            _record_tool_arg_injection,
+        )
+
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        token = _current_langgraph_tracer.set(handler)
+        try:
+            _record_tool_arg_injection("my_tool", ["x"])
+        finally:
+            _current_langgraph_tracer.reset(token)
+
+        span = trace.spans[0]
+        assert not span.name.startswith("tool:")
+        assert span.name.startswith("tool_inject:")
+
+
+# ---------------------------------------------------------------------------
+# find_tool_params_shaped_like_state — pure-logic edge cases against fakes
+# ---------------------------------------------------------------------------
+#
+# The real, end-to-end behavior against a genuine compiled StateGraph +
+# ToolNode is covered by
+# tests/integration/test_langgraph.py::TestToolParamsShapedLikeStateAgainstRealGraph.
+# These unit tests exercise the function's defensive fallback paths (missing
+# attributes, unusual shapes) that are impractical to trigger via a real
+# LangGraph graph.
+
+
+class TestFindToolParamsShapedLikeState:
+    def test_empty_when_graph_has_no_builder_attribute(self):
+        from agent_trace.integrations.langgraph import (
+            find_tool_params_shaped_like_state,
+        )
+
+        assert find_tool_params_shaped_like_state(object()) == []
+
+    def test_empty_when_schemas_dict_is_empty(self):
+        from types import SimpleNamespace
+
+        from agent_trace.integrations.langgraph import (
+            find_tool_params_shaped_like_state,
+        )
+
+        graph = SimpleNamespace(builder=SimpleNamespace(schemas={}), nodes={})
+        assert find_tool_params_shaped_like_state(graph) == []
+
+    def test_empty_when_no_tool_nodes_present(self):
+        from types import SimpleNamespace
+
+        from agent_trace.integrations.langgraph import (
+            find_tool_params_shaped_like_state,
+        )
+
+        graph = SimpleNamespace(
+            builder=SimpleNamespace(schemas={object: {"video_path": object()}}),
+            nodes={"n": SimpleNamespace(bound=SimpleNamespace())},
+        )
+        assert find_tool_params_shaped_like_state(graph) == []
+
+    def test_flags_tool_param_matching_state_field_name(self):
+        from types import SimpleNamespace
+
+        from agent_trace.integrations.langgraph import (
+            find_tool_params_shaped_like_state,
+        )
+
+        fake_tool = SimpleNamespace(args={"query": {}, "video_path": {}})
+        graph = SimpleNamespace(
+            builder=SimpleNamespace(
+                schemas={object: {"messages": object(), "video_path": object()}}
+            ),
+            nodes={
+                "tools": SimpleNamespace(
+                    bound=SimpleNamespace(
+                        _tools_by_name={"hallucinate_tool": fake_tool}
+                    )
+                )
+            },
+        )
+        findings = find_tool_params_shaped_like_state(graph)
+        assert findings == [
+            {"node": "tools", "tool": "hallucinate_tool", "param": "video_path"}
+        ]
+
+    def test_does_not_flag_query_param_unrelated_to_state(self):
+        from types import SimpleNamespace
+
+        from agent_trace.integrations.langgraph import (
+            find_tool_params_shaped_like_state,
+        )
+
+        fake_tool = SimpleNamespace(args={"query": {}})
+        graph = SimpleNamespace(
+            builder=SimpleNamespace(
+                schemas={object: {"messages": object(), "video_path": object()}}
+            ),
+            nodes={
+                "tools": SimpleNamespace(
+                    bound=SimpleNamespace(_tools_by_name={"good_tool": fake_tool})
+                )
+            },
+        )
+        assert find_tool_params_shaped_like_state(graph) == []
+
+    def test_never_raises_on_malformed_graph_shape(self):
+        from agent_trace.integrations.langgraph import (
+            find_tool_params_shaped_like_state,
+        )
+
+        # A graph object whose attributes are the wrong type entirely —
+        # must degrade to an empty list, never raise into the caller.
+        assert find_tool_params_shaped_like_state("not a graph") == []
+        assert find_tool_params_shaped_like_state(None) == []
