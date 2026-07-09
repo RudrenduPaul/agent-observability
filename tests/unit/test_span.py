@@ -344,6 +344,112 @@ class TestRecordException:
         )
         assert span_error.status != span_cancelled.status
 
+    def test_record_exception_without_response_omits_http_body_attrs(self) -> None:
+        span = Span()
+        span.record_exception(ValueError("plain error, no .response attribute"))
+        attrs = span.events[0].attributes
+        assert "exception.http_response_body" not in attrs
+        assert "exception.http_status_code" not in attrs
+
+    def test_record_exception_attaches_requests_style_http_error_body(self) -> None:
+        """requests.exceptions.HTTPError.response has .status_code and
+        .text — mirrors the actual shape #4940's Bedrock validation error
+        arrives in via botocore/requests."""
+
+        class _FakeResponse:
+            status_code = 400
+            text = '{"message": "Malformed input request: extra fields not permitted"}'
+
+        class _FakeHTTPError(Exception):
+            def __init__(self) -> None:
+                super().__init__("400 Client Error: None for url: https://bedrock.example.com")
+                self.response = _FakeResponse()
+
+        span = Span()
+        span.record_exception(_FakeHTTPError())
+        attrs = span.events[0].attributes
+        assert attrs["exception.http_status_code"] == 400
+        assert "Malformed input request" in attrs["exception.http_response_body"]
+        # The generic str(exc) message is still captured too, unchanged.
+        assert "400 Client Error" in attrs["exception.message"]
+
+    def test_record_exception_attaches_httpx_style_http_error_body(self) -> None:
+        """httpx.HTTPStatusError.response has .status_code and .text as
+        well (httpx.Response's actual public API)."""
+
+        class _FakeHttpxResponse:
+            status_code = 429
+            text = "rate limit exceeded, retry after 30s"
+
+        class _FakeHTTPStatusError(Exception):
+            def __init__(self) -> None:
+                super().__init__("Client error '429 Too Many Requests'")
+                self.response = _FakeHttpxResponse()
+
+        span = Span()
+        span.record_exception(_FakeHTTPStatusError())
+        attrs = span.events[0].attributes
+        assert attrs["exception.http_status_code"] == 429
+        assert attrs["exception.http_response_body"] == "rate limit exceeded, retry after 30s"
+
+    def test_record_exception_falls_back_to_response_content_bytes(self) -> None:
+        class _FakeResponse:
+            status_code = 500
+            text = None
+            content = b"internal proxy error body"
+
+        class _FakeHTTPError(Exception):
+            def __init__(self) -> None:
+                super().__init__("500 Server Error")
+                self.response = _FakeResponse()
+
+        span = Span()
+        span.record_exception(_FakeHTTPError())
+        attrs = span.events[0].attributes
+        assert attrs["exception.http_response_body"] == "internal proxy error body"
+
+    def test_record_exception_truncates_very_large_response_body(self) -> None:
+        class _FakeResponse:
+            status_code = 400
+            text = "x" * 20_000
+
+        class _FakeHTTPError(Exception):
+            def __init__(self) -> None:
+                super().__init__("400 Client Error")
+                self.response = _FakeResponse()
+
+        span = Span()
+        span.record_exception(_FakeHTTPError())
+        body = span.events[0].attributes["exception.http_response_body"]
+        assert len(body) < 20_000
+        assert body.endswith("...<truncated>")
+
+    def test_record_exception_malformed_response_object_degrades_gracefully(self) -> None:
+        """A .response attribute that raises when accessed must never break
+        record_exception itself — best-effort only."""
+
+        class _ExplodingResponse:
+            @property
+            def text(self) -> str:
+                raise RuntimeError("response body already consumed")
+
+            @property
+            def status_code(self) -> int:
+                raise RuntimeError("no status code available")
+
+        class _WeirdHTTPError(Exception):
+            def __init__(self) -> None:
+                super().__init__("weird error")
+                self.response = _ExplodingResponse()
+
+        span = Span()
+        # Must not raise.
+        span.record_exception(_WeirdHTTPError())
+        assert span.status == SpanStatus.ERROR
+        attrs = span.events[0].attributes
+        assert "exception.http_response_body" not in attrs
+        assert "exception.http_status_code" not in attrs
+
 
 # ---------------------------------------------------------------------------
 # Span.to_dict() / from_dict()

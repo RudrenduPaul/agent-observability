@@ -444,6 +444,32 @@ def _span_exception_message(span: dict[str, object]) -> str | None:
     return None
 
 
+def _span_exception_http_detail(span: dict[str, object]) -> str | None:
+    """Return "HTTP <status>: <body preview>" for *span*'s recorded
+    exception event when it carried an HTTP error response body (see
+    Span.record_exception's exception.http_response_body/
+    exception.http_status_code attributes, core/span.py) — the actual
+    provider/proxy error text (#4940), not just the generic one-line
+    str(exc) message which is all `exception.message` alone gives you for
+    e.g. requests.exceptions.HTTPError."""
+    events = span.get("events")
+    if not isinstance(events, list):
+        return None
+    for event in events:
+        if not isinstance(event, dict) or event.get("name") != "exception":
+            continue
+        attrs = event.get("attributes") or {}
+        if not isinstance(attrs, dict):
+            continue
+        body = attrs.get("exception.http_response_body")
+        if not body:
+            continue
+        status = attrs.get("exception.http_status_code")
+        prefix = f"HTTP {status}: " if status is not None else "HTTP: "
+        return f"{prefix}{body}"
+    return None
+
+
 def _error_spans(spans: list[dict[str, object]]) -> list[dict[str, object]]:
     return [s for s in spans if s.get("status") == "ERROR"]
 
@@ -463,6 +489,9 @@ def _print_errors_only(spans: list[dict[str, object]]) -> None:
         message = _span_exception_message(span)
         if message:
             print(f"      {message}")
+        http_detail = _span_exception_http_detail(span)
+        if http_detail:
+            print(f"      {http_detail}")
     _print_error_classification(spans)
 
 
@@ -965,6 +994,17 @@ def cmd_inspect(args: argparse.Namespace) -> None:
             ),
         )
 
+    if args.diff_get_post_field:
+        _print_flags(
+            "get_post_field_mismatch",
+            ins.check_get_post_field_mismatch(
+                exchanges,
+                args.diff_get_post_field,
+                get_id_field=args.diff_get_post_id_field,
+                post_id_field=args.diff_get_post_post_id_field,
+            ),
+        )
+
     if not results and not spans:
         print()
         print("No anomalies flagged (or nothing recorded for this run).")
@@ -1217,6 +1257,32 @@ def main() -> None:
         default=None,
         help="Top-level response field to check for wire-present-but-"
         "downstream-absent (e.g. usage)",
+    )
+    inspect_p.add_argument(
+        "--diff-get-post-field",
+        dest="diff_get_post_field",
+        default=None,
+        help="Dotted field path (e.g. instructions) to compare between an "
+        "earlier GET response and a later, causally-related POST request "
+        "body referencing the same resource id (#2620); flags stale-value "
+        "mismatches such as a GPTAssistantAgent POST /runs still sending "
+        "instructions that no longer match what GET /assistants/{id} "
+        "returns",
+    )
+    inspect_p.add_argument(
+        "--diff-get-post-id-field",
+        dest="diff_get_post_id_field",
+        default="id",
+        help="Field name the GET response uses for the resource id "
+        "(default: id)",
+    )
+    inspect_p.add_argument(
+        "--diff-get-post-post-id-field",
+        dest="diff_get_post_post_id_field",
+        default=None,
+        help="Field name the POST request body uses to reference the same "
+        "resource id, if different from --diff-get-post-id-field (e.g. "
+        "assistant_id)",
     )
 
     # diff
