@@ -37,11 +37,26 @@ from agent_trace.integrations.llama_index import (
 
 @pytest.fixture()
 def llama_index_absent(monkeypatch: pytest.MonkeyPatch):
-    """Force `import llama_index` (and submodules) to fail like it's not installed."""
+    """Force `import llama_index` (and submodules) to fail like it's not installed.
+
+    Also resets the module-level lazily-built handler-class cache
+    (`_SpanHandlerClass`/`_EventHandlerClass` in
+    ``agent_trace.integrations.llama_index``) so this test exercises the real
+    guard behavior regardless of whether some *other* test in the same
+    process already imported real llama-index-core and populated that cache
+    — without the reset, `_get_handler_classes()` would short-circuit on the
+    cached classes and never re-enter `_require_llama_index()`, making this
+    test's outcome depend on suite execution order instead of testing the
+    guard itself.
+    """
+    import agent_trace.integrations.llama_index as li_module
+
     for name in list(sys.modules):
         if name == "llama_index" or name.startswith("llama_index."):
             monkeypatch.delitem(sys.modules, name, raising=False)
     monkeypatch.setitem(sys.modules, "llama_index", None)
+    monkeypatch.setattr(li_module, "_SpanHandlerClass", None, raising=False)
+    monkeypatch.setattr(li_module, "_EventHandlerClass", None, raising=False)
     yield
 
 
