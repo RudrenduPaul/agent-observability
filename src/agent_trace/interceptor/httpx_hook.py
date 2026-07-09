@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import time
 import warnings
+from collections.abc import AsyncIterator, Callable, Iterator
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -42,6 +43,106 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Pass-through streaming tee — used by RecordingTransport/
+# AsyncRecordingTransport when constructed with stream=True.
+# ---------------------------------------------------------------------------
+#
+# The default (stream=False) recording path calls response.read()/aread()
+# before returning anything to the caller: it fully drains the response body
+# first, then reconstructs a fully-buffered httpx.Response. That destroys
+# real incremental delivery for every request made while recording is
+# active, not just the one that eventually reproduces a bug — a real cost
+# for continuous/production recording of a streaming endpoint.
+#
+# The classes below wrap the real response's own byte iterator so the
+# wrapped caller receives each chunk as soon as it arrives off the wire (the
+# returned httpx.Response is constructed with stream=<tee>, never
+# content=<fully-buffered bytes>), while the exact same bytes and their
+# arrival timestamps are tee'd off to an on_complete callback once the
+# stream is fully consumed (or explicitly closed) — that's the point the
+# exchange actually gets written to the fixture.
+#
+# Best-effort by design: if a caller partially iterates the response and
+# then simply drops the reference (never calling .read()/.iter_bytes() to
+# exhaustion and never calling .close()), on_complete never fires and that
+# exchange is not recorded — the same class of best-effort tradeoff the rest
+# of this module already makes (e.g. ReplayTransport's network-guard
+# fallback). httpx.Response.close() (auto-invoked by iter_raw() once its own
+# source stream is exhausted; see httpx._models.Response.iter_raw) always
+# reaches our close() in the normal full-read case.
+
+
+class _TeeSyncByteStream(httpx.SyncByteStream):
+    """Sync pass-through tee — see module docstring above."""
+
+    def __init__(
+        self,
+        inner_response: httpx.Response,
+        on_complete: Callable[[bytes, list[float]], None],
+    ) -> None:
+        self._inner_response = inner_response
+        self._on_complete = on_complete
+        self._chunks: list[bytes] = []
+        self._chunk_offsets_s: list[float] = []
+        self._start = time.monotonic()
+        self._finished = False
+
+    def __iter__(self) -> Iterator[bytes]:
+        try:
+            for chunk in self._inner_response.iter_bytes():
+                self._chunk_offsets_s.append(time.monotonic() - self._start)
+                self._chunks.append(chunk)
+                yield chunk
+        finally:
+            self._finish()
+
+    def close(self) -> None:
+        self._inner_response.close()
+        self._finish()
+
+    def _finish(self) -> None:
+        if self._finished:
+            return
+        self._finished = True
+        self._on_complete(b"".join(self._chunks), list(self._chunk_offsets_s))
+
+
+class _TeeAsyncByteStream(httpx.AsyncByteStream):
+    """Async pass-through tee — see module docstring above."""
+
+    def __init__(
+        self,
+        inner_response: httpx.Response,
+        on_complete: Callable[[bytes, list[float]], None],
+    ) -> None:
+        self._inner_response = inner_response
+        self._on_complete = on_complete
+        self._chunks: list[bytes] = []
+        self._chunk_offsets_s: list[float] = []
+        self._start = time.monotonic()
+        self._finished = False
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        try:
+            async for chunk in self._inner_response.aiter_bytes():
+                self._chunk_offsets_s.append(time.monotonic() - self._start)
+                self._chunks.append(chunk)
+                yield chunk
+        finally:
+            self._finish()
+
+    async def aclose(self) -> None:
+        await self._inner_response.aclose()
+        self._finish()
+
+    def _finish(self) -> None:
+        if self._finished:
+            return
+        self._finished = True
+        self._on_complete(b"".join(self._chunks), list(self._chunk_offsets_s))
+
+
 class RecordingTransport(httpx.BaseTransport):
     """httpx transport that records every exchange to a Fixture.
 
@@ -53,17 +154,33 @@ class RecordingTransport(httpx.BaseTransport):
         The real transport to use for outbound requests.  Defaults to
         ``httpx.HTTPTransport()`` when None, which honours proxy/SSL settings
         from the surrounding httpx.Client.
+    stream:
+        When False (the default), the historical eager-buffering behavior:
+        the full response body is read before this transport returns
+        anything to the caller, and the fixture is written synchronously
+        inside handle_request(). When True, opt into pass-through streaming
+        capture: the caller receives each chunk as it actually arrives off
+        the wire (no full-body buffering before the first byte reaches the
+        caller) while the same bytes and their per-chunk arrival timestamps
+        are tee'd into the fixture once the response stream is fully
+        consumed or closed. Use stream=True for always-on recording of
+        streaming/SSE endpoints, where the default mode's full-buffering
+        would otherwise destroy real incremental token delivery for every
+        request made while recording is active.
     """
 
     def __init__(
         self,
         fixture: Fixture,
         inner: httpx.BaseTransport | None = None,
+        *,
+        stream: bool = False,
     ) -> None:
         self._fixture = fixture
         self._inner: httpx.BaseTransport = (
             inner if inner is not None else httpx.HTTPTransport()
         )
+        self._stream = stream
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         """Forward the request, record the exchange, return the response.
@@ -95,6 +212,12 @@ class RecordingTransport(httpx.BaseTransport):
                 error_message=str(exc),
             )
             raise
+
+        if self._stream:
+            return self._handle_stream_response(
+                request, response, url, method, req_headers, req_body, start
+            )
+
         duration_ms = (time.monotonic() - start) * 1000
 
         # Read the body eagerly so we can persist it; httpx streams lazily by
@@ -122,6 +245,43 @@ class RecordingTransport(httpx.BaseTransport):
             status_code=resp_status,
             headers=resp_headers,
             content=response.content,
+            request=request,
+        )
+
+    def _handle_stream_response(
+        self,
+        request: httpx.Request,
+        response: httpx.Response,
+        url: str,
+        method: str,
+        req_headers: dict[str, str],
+        req_body: str,
+        start: float,
+    ) -> httpx.Response:
+        """stream=True path: tee the response body to the caller and the
+        fixture simultaneously instead of buffering it first."""
+        resp_status = response.status_code
+        resp_headers = dict(response.headers)
+
+        def _on_complete(body_bytes: bytes, chunk_offsets_s: list[float]) -> None:
+            duration_ms = (time.monotonic() - start) * 1000
+            self._fixture.record_exchange(
+                url=url,
+                method=method,
+                request_headers=req_headers,
+                request_body=req_body,
+                response_status=resp_status,
+                response_headers=resp_headers,
+                response_body=body_bytes.decode("utf-8", errors="replace"),
+                duration_ms=duration_ms,
+                chunk_timestamps=chunk_offsets_s,
+            )
+
+        tee = _TeeSyncByteStream(response, _on_complete)
+        return httpx.Response(
+            status_code=resp_status,
+            headers=resp_headers,
+            stream=tee,
             request=request,
         )
 
@@ -218,17 +378,25 @@ class AsyncRecordingTransport(httpx.AsyncBaseTransport):
     inner:
         The real async transport to use for outbound requests.  Defaults to
         ``httpx.AsyncHTTPTransport()`` when None.
+    stream:
+        Same opt-in pass-through streaming capture mode as
+        ``RecordingTransport(..., stream=True)`` — see that class's
+        docstring. Defaults to False (the historical eager-buffering
+        behavior).
     """
 
     def __init__(
         self,
         fixture: Fixture,
         inner: httpx.AsyncBaseTransport | None = None,
+        *,
+        stream: bool = False,
     ) -> None:
         self._fixture = fixture
         self._inner: httpx.AsyncBaseTransport = (
             inner if inner is not None else httpx.AsyncHTTPTransport()
         )
+        self._stream = stream
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         """Forward the request async, record the exchange, return the response.
@@ -257,6 +425,12 @@ class AsyncRecordingTransport(httpx.AsyncBaseTransport):
                 error_message=str(exc),
             )
             raise
+
+        if self._stream:
+            return self._handle_stream_response(
+                request, response, url, method, req_headers, req_body, start
+            )
+
         duration_ms = (time.monotonic() - start) * 1000
         await response.aread()
 
@@ -279,6 +453,43 @@ class AsyncRecordingTransport(httpx.AsyncBaseTransport):
             status_code=resp_status,
             headers=resp_headers,
             content=response.content,
+            request=request,
+        )
+
+    def _handle_stream_response(
+        self,
+        request: httpx.Request,
+        response: httpx.Response,
+        url: str,
+        method: str,
+        req_headers: dict[str, str],
+        req_body: str,
+        start: float,
+    ) -> httpx.Response:
+        """stream=True path: tee the response body to the caller and the
+        fixture simultaneously instead of buffering it first."""
+        resp_status = response.status_code
+        resp_headers = dict(response.headers)
+
+        def _on_complete(body_bytes: bytes, chunk_offsets_s: list[float]) -> None:
+            duration_ms = (time.monotonic() - start) * 1000
+            self._fixture.record_exchange(
+                url=url,
+                method=method,
+                request_headers=req_headers,
+                request_body=req_body,
+                response_status=resp_status,
+                response_headers=resp_headers,
+                response_body=body_bytes.decode("utf-8", errors="replace"),
+                duration_ms=duration_ms,
+                chunk_timestamps=chunk_offsets_s,
+            )
+
+        tee = _TeeAsyncByteStream(response, _on_complete)
+        return httpx.Response(
+            status_code=resp_status,
+            headers=resp_headers,
+            stream=tee,
             request=request,
         )
 

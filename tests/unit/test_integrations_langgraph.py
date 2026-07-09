@@ -1063,3 +1063,250 @@ class TestLangGraph1xSerializedNone:
         span = handler._spans[str(run_id)]
         assert span.name == "tool:web_search"
         assert span.attributes.get("tool.name") == "web_search"
+
+
+# ---------------------------------------------------------------------------
+# Streaming callback hooks — on_llm_new_token
+# ---------------------------------------------------------------------------
+
+
+class TestStreamingCallbackHooks:
+    """on_llm_new_token: per-token/per-delta streaming chunks land on the
+    span instead of being silently discarded."""
+
+    def test_new_token_records_span_event(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chat_model_start({"name": "ChatOpenAI"}, [[]], run_id=run_id)
+        handler.on_llm_new_token("hel", run_id=run_id)
+        handler.on_llm_new_token("lo", run_id=run_id)
+        span = handler._spans[str(run_id)]
+        assert span.attributes.get("llm.streamed") is True
+        assert span.attributes.get("llm.stream_token_count") == 2
+        stream_events = [e for e in span.events if e.name == "llm_stream_delta"]
+        assert [e.attributes["token"] for e in stream_events] == ["hel", "lo"]
+        assert [e.attributes["stream.index"] for e in stream_events] == [0, 1]
+
+    def test_new_token_unknown_run_id_is_noop(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        handler.on_llm_new_token("tok", run_id=_run_id())  # must not raise
+
+    def test_new_token_captures_tool_call_chunks(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chat_model_start({"name": "ChatOpenAI"}, [[]], run_id=run_id)
+
+        class FakeMessage:
+            def __init__(self) -> None:
+                self.tool_call_chunks = [
+                    {"name": "get_weather", "args": '{"city"', "index": 0}
+                ]
+
+        class FakeChunk:
+            def __init__(self) -> None:
+                self.message = FakeMessage()
+
+        handler.on_llm_new_token("", chunk=FakeChunk(), run_id=run_id)
+        span = handler._spans[str(run_id)]
+        events = [e for e in span.events if e.name == "llm_stream_delta"]
+        assert "get_weather" in events[0].attributes["tool_call_chunks"]
+
+    def test_stream_token_count_keeps_counting_past_event_cap(self, tracer_and_trace):
+        """SpanEvents stop being appended past the cap, but the running
+        count attribute keeps counting every token."""
+        import agent_trace.integrations.langgraph as lg_module
+
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chat_model_start({"name": "ChatOpenAI"}, [[]], run_id=run_id)
+        total = lg_module._MAX_STREAM_EVENTS_PER_SPAN + 5
+        for _ in range(total):
+            handler.on_llm_new_token("x", run_id=run_id)
+        span = handler._spans[str(run_id)]
+        assert span.attributes.get("llm.stream_token_count") == total
+        stream_events = [e for e in span.events if e.name == "llm_stream_delta"]
+        assert len(stream_events) == lg_module._MAX_STREAM_EVENTS_PER_SPAN
+
+    def test_stream_token_counter_cleared_on_span_close(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chat_model_start({"name": "ChatOpenAI"}, [[]], run_id=run_id)
+        handler.on_llm_new_token("hi", run_id=run_id)
+        handler.on_llm_end(MagicMock(generations=[]), run_id=run_id)
+        assert str(run_id) not in handler._stream_token_counts
+
+
+# ---------------------------------------------------------------------------
+# Node-level declared tags — captured at graph-construction time
+# ---------------------------------------------------------------------------
+
+
+class TestDeclaredNodeTagsCapture:
+    """on_chain_start: a compiled graph's node-level *declared* tags (from
+    .with_config(tags=[...]) at construction time) land on the span when a
+    graph= is supplied to LangGraphTracer — distinct from the runtime tags
+    callback kwarg, which never carries them."""
+
+    def _fake_graph(self, node_name: str, tags: list[str] | None):
+        class FakeBound:
+            def __init__(self) -> None:
+                self.config = {"tags": tags} if tags else {}
+
+        class FakeNode:
+            def __init__(self) -> None:
+                self.bound = FakeBound()
+
+        class FakeGraph:
+            def __init__(self) -> None:
+                self.nodes = {node_name: FakeNode()}
+
+        return FakeGraph()
+
+    def test_declared_tags_captured_when_graph_supplied(self, tracer_and_trace):
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        t, trace = tracer_and_trace
+        graph = self._fake_graph("my_node", ["nostream"])
+        handler = LangGraphTracer(tracer=t, trace=trace, graph=graph)
+        run_id = _run_id()
+        handler.on_chain_start({"name": "my_node"}, {}, run_id=run_id)
+        span = handler._spans[str(run_id)]
+        assert span.attributes.get("langgraph.declared_tags") == "nostream"
+
+    def test_no_declared_tags_sets_no_attribute(self, tracer_and_trace):
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        t, trace = tracer_and_trace
+        graph = self._fake_graph("my_node", None)
+        handler = LangGraphTracer(tracer=t, trace=trace, graph=graph)
+        run_id = _run_id()
+        handler.on_chain_start({"name": "my_node"}, {}, run_id=run_id)
+        span = handler._spans[str(run_id)]
+        assert "langgraph.declared_tags" not in span.attributes
+
+    def test_no_graph_supplied_sets_no_attribute(self, tracer_and_trace):
+        """Default (graph=None) behavior is unchanged — no lookup attempted."""
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)  # no graph= passed
+        run_id = _run_id()
+        handler.on_chain_start({"name": "my_node"}, {}, run_id=run_id)
+        span = handler._spans[str(run_id)]
+        assert "langgraph.declared_tags" not in span.attributes
+
+    def test_malformed_graph_object_does_not_crash(self, tracer_and_trace):
+        """A graph= whose shape doesn't match expectations degrades to 'no
+        declared tags', never an exception into the caller's callback."""
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        t, trace = tracer_and_trace
+        handler = LangGraphTracer(tracer=t, trace=trace, graph=object())
+        run_id = _run_id()
+        handler.on_chain_start({"name": "my_node"}, {}, run_id=run_id)  # must not raise
+        span = handler._spans[str(run_id)]
+        assert "langgraph.declared_tags" not in span.attributes
+
+
+# ---------------------------------------------------------------------------
+# traced_stream / traced_astream
+# ---------------------------------------------------------------------------
+
+
+class TestTracedStream:
+    def test_yields_every_item_unchanged(self, tmp_path):
+        from agent_trace.integrations.langgraph import traced_stream
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("stream-test") as trace:
+            items = list(traced_stream(t, iter(["a", "b", "c"])))
+        assert items == ["a", "b", "c"]
+
+    def test_records_stream_yield_events_with_index(self, tmp_path):
+        from agent_trace.integrations.langgraph import traced_stream
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("stream-test") as trace:
+            list(traced_stream(t, iter(["a", "b"])))
+        span = next(s for s in trace.spans if s.name == "graph:stream")
+        events = [e for e in span.events if e.name == "stream_yield"]
+        assert [e.attributes["stream.index"] for e in events] == [0, 1]
+        assert span.attributes.get("stream.chunk_count") == 2
+        assert span.status.value == "OK"
+
+    def test_span_name_is_customizable(self, tmp_path):
+        from agent_trace.integrations.langgraph import traced_stream
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("stream-test") as trace:
+            list(traced_stream(t, iter(["a"]), span_name="graph:stream:custom"))
+        assert any(s.name == "graph:stream:custom" for s in trace.spans)
+
+    def test_exception_in_source_stream_closes_span_error(self, tmp_path):
+        from agent_trace.integrations.langgraph import traced_stream
+
+        def bad_stream():
+            yield "a"
+            raise RuntimeError("boom")
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("stream-test") as trace, pytest.raises(RuntimeError):
+            list(traced_stream(t, bad_stream()))
+        span = next(s for s in trace.spans if s.name == "graph:stream")
+        assert span.status.value == "ERROR"
+        assert any(e.name == "exception" for e in span.events)
+
+    def test_early_abandonment_closes_span_cancelled(self, tmp_path):
+        from agent_trace.integrations.langgraph import traced_stream
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("stream-test") as trace:
+            gen = traced_stream(t, iter(["a", "b", "c"]))
+            next(gen)
+            gen.close()
+        span = next(s for s in trace.spans if s.name == "graph:stream")
+        assert span.status.value == "CANCELLED"
+
+    def test_chunk_content_is_captured(self, tmp_path):
+        from agent_trace.integrations.langgraph import traced_stream
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("stream-test") as trace:
+            list(traced_stream(t, iter([{"messages": ["hi"]}])))
+        span = next(s for s in trace.spans if s.name == "graph:stream")
+        event = next(e for e in span.events if e.name == "stream_yield")
+        assert "hi" in event.attributes["stream.chunk"]
+
+
+class TestTracedAstream:
+    async def test_yields_every_item_unchanged(self, tmp_path):
+        from agent_trace.integrations.langgraph import traced_astream
+
+        async def source():
+            for x in ["a", "b"]:
+                yield x
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("astream-test") as trace:
+            items = [x async for x in traced_astream(t, source())]
+        assert items == ["a", "b"]
+        span = next(s for s in trace.spans if s.name == "graph:astream")
+        assert span.attributes.get("stream.chunk_count") == 2
+        assert span.status.value == "OK"
+
+    async def test_exception_in_source_stream_closes_span_error(self, tmp_path):
+        from agent_trace.integrations.langgraph import traced_astream
+
+        async def bad_source():
+            yield "a"
+            raise RuntimeError("boom")
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("astream-test") as trace, pytest.raises(RuntimeError):
+            async for _ in traced_astream(t, bad_source()):
+                pass
+        span = next(s for s in trace.spans if s.name == "graph:astream")
+        assert span.status.value == "ERROR"
