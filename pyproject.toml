@@ -44,6 +44,7 @@ agno = ["agno>=2.7"]
 otlp = ["opentelemetry-exporter-otlp-proto-grpc>=1.25"]
 requests = ["requests>=2.31"]
 groq = ["groq>=0.9"]
+grpc = ["grpcio>=1.60"]
 dev = [
     "pytest>=8.0",
     "pytest-benchmark[histogram]>=4.0",
@@ -57,6 +58,8 @@ dev = [
     "types-requests>=2.31",
     "respx>=0.21",  # httpx mocking for unit tests
     "groq>=0.9",     # verifies the httpx interceptor against the real Groq SDK
+    "grpcio>=1.60",  # gRPC interceptor unit tests
+    "grpcio-tools>=1.60",  # protoc, to compile the test-only echo.proto fixture
 ]
 
 [project.urls]
@@ -104,7 +107,7 @@ no_implicit_optional = true
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
-module = ["langchain_core.*", "opentelemetry.*", "agents.*", "boto3.*", "google.cloud.*", "crewai.*", "llama_index.*", "pydantic.*", "haystack.*"]
+module = ["langchain_core.*", "opentelemetry.*", "agents.*", "boto3.*", "google.cloud.*", "crewai.*", "llama_index.*", "pydantic.*", "haystack.*", "grpc.*", "google.protobuf.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
