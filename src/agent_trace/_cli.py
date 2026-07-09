@@ -973,6 +973,10 @@ def cmd_inspect(args: argparse.Namespace) -> None:
             "action_name_not_registered",
             ins.check_action_name_not_registered(exchanges, registered),
         )
+        _print_flags(
+            "tool_call_name_not_registered",
+            ins.check_tool_call_name_not_registered(exchanges, registered),
+        )
 
     if args.configured_host:
         _print_flags(
@@ -1042,23 +1046,15 @@ def _diff_text(label_a: str, text_a: str, label_b: str, text_b: str) -> list[str
     )
 
 
-def cmd_diff(args: argparse.Namespace) -> None:
-    """Print a structured diff of two recorded runs' exchanges, matched by
-    URL, highlighting field-level differences between request/response
-    bodies."""
-    run_id_a: str = args.run_id_a
-    run_id_b: str = args.run_id_b
-    _require_run_dir(run_id_a)
-    _require_run_dir(run_id_b)
-
-    exchanges_a, _ = _load_run_exchanges_and_spans(run_id_a)
-    exchanges_b, _ = _load_run_exchanges_and_spans(run_id_b)
-
+def _print_exchange_diff(
+    exchanges_a: list[dict[str, Any]],
+    exchanges_b: list[dict[str, Any]],
+    run_id_a: str,
+    run_id_b: str,
+) -> None:
+    """Print the field-level diff of two runs' exchanges, matched by URL."""
     by_url_a = _exchanges_by_url(exchanges_a)
     by_url_b = _exchanges_by_url(exchanges_b)
-
-    print(f"Diffing {run_id_a} ({len(exchanges_a)} exchanges) vs "
-          f"{run_id_b} ({len(exchanges_b)} exchanges)")
 
     all_urls = sorted(set(by_url_a) | set(by_url_b))
     if not all_urls:
@@ -1097,6 +1093,34 @@ def cmd_diff(args: argparse.Namespace) -> None:
 
     if not any_diff:
         print("\nNo differences found — every matched exchange is byte-identical.")
+
+
+def cmd_diff(args: argparse.Namespace) -> None:
+    """Print a structured diff of two recorded runs' exchanges, matched by
+    URL, highlighting field-level differences between request/response
+    bodies."""
+    from agent_trace import _inspect as ins
+
+    run_id_a: str = args.run_id_a
+    run_id_b: str = args.run_id_b
+    _require_run_dir(run_id_a)
+    _require_run_dir(run_id_b)
+
+    exchanges_a, spans_a = _load_run_exchanges_and_spans(run_id_a)
+    exchanges_b, spans_b = _load_run_exchanges_and_spans(run_id_b)
+
+    print(f"Diffing {run_id_a} ({len(exchanges_a)} exchanges) vs "
+          f"{run_id_b} ({len(exchanges_b)} exchanges)")
+
+    _print_exchange_diff(exchanges_a, exchanges_b, run_id_a, run_id_b)
+
+    # Restart-vs-resume: does run_b's root chain span for a shared
+    # LangGraph thread_id continue from run_a's last recorded
+    # langgraph_step, or did the graph start over from scratch (#161)?
+    _print_flags(
+        "restart_vs_resume",
+        ins.check_restart_vs_resume(spans_a, spans_b),
+    )
 
 
 # ---------------------------------------------------------------------------

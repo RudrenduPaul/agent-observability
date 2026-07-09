@@ -47,10 +47,12 @@ from __future__ import annotations
 
 import inspect
 import logging
+import re
 import threading
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
+from agent_trace._inspect import _edit_distance
 from agent_trace.core.span import Span, SpanStatus
 
 if TYPE_CHECKING:
@@ -131,6 +133,13 @@ def _get_runner_cls(sdk: Any) -> Any:
         runner_mod = importlib.import_module("agents.run")
         runner_cls = runner_mod.Runner
     return runner_cls
+
+
+# Matches the "Tool <name> not found" shape openai-agents' ModelBehaviorError
+# raises when the model hallucinates a tool name (#1671), optionally
+# single/double-quoted, e.g. `Tool 'lookup_wather' not found in agent
+# 'voice-agent'` or `Tool transfer_back_to_supervisor not found`.
+_TOOL_NOT_FOUND_RE = re.compile(r"Tool ['\"]?([\w\-.]+)['\"]? not found")
 
 
 def _truncate(value: Any) -> str:
@@ -601,7 +610,17 @@ class AgentTraceRealtimeHook:
     - ``handoff`` -> an event on the outgoing agent's span
     - ``error`` / ``guardrail_tripped`` -> ``record_exception``-style event
       on the session's root span, without ending the session (a realtime
-      session's error/guardrail events are not necessarily fatal)
+      session's error/guardrail events are not necessarily fatal). When an
+      ``error`` event's text matches the "Tool <name> not found" shape
+      (#1671's ``ModelBehaviorError`` traceback — an intermittent crash
+      inside a Realtime/WebSocket voice session, distinct from the
+      httpx-captured chat-completion exchanges
+      ``check_tool_call_name_fuzzy_match`` diagnoses), the offending name is
+      fuzzy-matched against the tool names registered on the most recently
+      started agent for this session (captured from the ``agent_start``
+      event's ``event.agent.tools``) and the nearest match + edit distance
+      are attached as ``exception.nearest_registered_tool``/
+      ``exception.edit_distance`` attributes on the exception event.
 
     Usage::
 
@@ -620,6 +639,12 @@ class AgentTraceRealtimeHook:
         self._trace: Trace = trace
         self._spans: dict[str, Span] = {}
         self._lock: threading.Lock = threading.Lock()
+        # session_key -> registered tool names of the most recently started
+        # agent for that session (#1671). Populated from `agent_start`'s
+        # `event.agent.tools`, the only place a realtime session's tool
+        # roster is available — there is no separate "tools registered"
+        # event.
+        self._registered_tools: dict[str, set[str]] = {}
 
     # ------------------------------------------------------------------
     # Internal helpers (same pattern as AgentTraceHook)
@@ -645,16 +670,57 @@ class AgentTraceRealtimeHook:
             span.end(status)
         return span
 
+    def _diagnose_tool_not_found(
+        self, session_key: str, error_message: str
+    ) -> dict[str, Any]:
+        """Fuzzy-match a "Tool <name> not found" error's ``<name>`` against
+        this session's registered tool names (#1671 — an intermittent
+        ``ModelBehaviorError``-shaped crash inside a Realtime/WebSocket
+        voice session), reusing the same edit-distance helper
+        ``check_tool_call_name_fuzzy_match`` already applies to
+        httpx-captured chat-completion exchanges. Returns an empty dict
+        (no attributes added) when the error text doesn't match the
+        pattern, or no registered tool names were captured for this
+        session."""
+        match = _TOOL_NOT_FOUND_RE.search(error_message)
+        if match is None:
+            return {}
+        with self._lock:
+            registered = self._registered_tools.get(session_key)
+        if not registered:
+            return {}
+        called_name = match.group(1)
+        nearest = min(registered, key=lambda r: _edit_distance(called_name, r))
+        return {
+            "exception.nearest_registered_tool": nearest,
+            "exception.edit_distance": _edit_distance(called_name, nearest),
+        }
+
+    def _capture_registered_tools(self, session_key: str, agent: Any) -> None:
+        """Track *agent*'s registered tool names for *session_key* (#1671),
+        so a later "Tool <name> not found" error event on this session can
+        be fuzzy-matched against them (see _diagnose_tool_not_found)."""
+        tool_names = {
+            name
+            for tool in getattr(agent, "tools", None) or ()
+            if isinstance((name := getattr(tool, "name", None)), str)
+        }
+        if tool_names:
+            with self._lock:
+                self._registered_tools[session_key] = tool_names
+
     def _handle_event(self, session_key: str, event: Any) -> None:
         event_type = getattr(event, "type", None)
 
         if event_type == "agent_start":
-            agent_name = getattr(getattr(event, "agent", None), "name", None) or "agent"
+            agent = getattr(event, "agent", None)
+            agent_name = getattr(agent, "name", None) or "agent"
             self._open_span(
                 f"agent:{session_key}:{agent_name}",
                 f"agent:{agent_name}",
                 parent_key=session_key,
             ).set_attribute("agent.name", agent_name)
+            self._capture_registered_tools(session_key, agent)
 
         elif event_type == "agent_end":
             agent_name = getattr(getattr(event, "agent", None), "name", None) or "agent"
@@ -708,12 +774,19 @@ class AgentTraceRealtimeHook:
                     or getattr(event, "message", None)
                     or event
                 )
+                message = _truncate(detail)
+                attributes = {
+                    "exception.type": event_type,
+                    "exception.message": message,
+                    **(
+                        self._diagnose_tool_not_found(session_key, message)
+                        if event_type == "error"
+                        else {}
+                    ),
+                }
                 root_span.add_event(
                     "exception" if event_type == "error" else "guardrail_tripped",
-                    attributes={
-                        "exception.type": event_type,
-                        "exception.message": _truncate(detail),
-                    },
+                    attributes=attributes,
                 )
 
     async def wrap(
