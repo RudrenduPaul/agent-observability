@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -27,11 +28,22 @@ pytest.importorskip("crewai", reason="crewai not installed")
 from agent_trace import SpanStatus, Tracer
 from agent_trace.integrations.crewai import CrewAITracer
 
+
 # crewAI's Agent construction validates an LLM string against known
 # providers, but does not make a network call at construction time — a
-# placeholder key is enough. Set this once, defensively, in case no real
-# key is present in the test environment.
-os.environ.setdefault("OPENAI_API_KEY", "sk-test-placeholder-not-a-real-key")
+# placeholder key is enough. Applied via a module-scoped, self-undoing
+# fixture (not a bare os.environ.setdefault at import time) so a fake key
+# never leaks into unrelated tests — e.g. openai-agents integration tests
+# further down the same pytest session — that treat a *present*
+# OPENAI_API_KEY as "run this live-API test".
+@pytest.fixture(autouse=True, scope="module")
+def _openai_api_key_placeholder() -> Any:
+    mp = pytest.MonkeyPatch()
+    if not os.environ.get("OPENAI_API_KEY"):
+        mp.setenv("OPENAI_API_KEY", "sk-test-placeholder-not-a-real-key")
+    yield
+    mp.undo()
+
 
 from crewai import Agent, Task
 from crewai.events import (
