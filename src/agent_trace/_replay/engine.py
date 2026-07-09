@@ -3,8 +3,9 @@ ReplayEngine — orchestrates deterministic replay of a recorded agent run.
 
 The engine does three things in the right order:
 1. Installs FixtureClock so all get_time() calls return recorded timestamps.
-2. Patches httpx.Client and requests.Session so outbound HTTP calls are served
-   from the fixture instead of hitting real endpoints.
+2. Patches httpx.Client, requests.Session, and (when installed) grpc's
+   channel factories so outbound HTTP/gRPC calls are served from the fixture
+   instead of hitting real endpoints.
 3. Tears everything down in a finally block so no patch leaks out.
 
 Why monkey-patch rather than dependency-inject?
@@ -34,6 +35,88 @@ from agent_trace.interceptor.httpx_hook import AsyncReplayTransport, ReplayTrans
 __all__ = ["ReplayEngine", "replay_context"]
 
 logger = logging.getLogger(__name__)
+
+
+def _build_grpc_replay_patch(fixture: Fixture) -> Any:
+    """Return a context manager that patches grpc's sync channel factories.
+
+    grpc is an optional dependency (installed transitively by SDKs such as
+    google-generativeai / google-cloud-aiplatform). grpc.insecure_channel /
+    secure_channel are plain module-level functions rather than a shared
+    base-class method, so we patch the module attributes directly -- see
+    grpc_hook.py's module docstring for why this is the correct interception
+    point. Returns nullcontext() when grpc isn't installed.
+    """
+    try:
+        import grpc as _grpc
+
+        from agent_trace.interceptor.grpc_hook import GRPCReplayInterceptor
+
+        orig_insecure = _grpc.insecure_channel
+        orig_secure = _grpc.secure_channel
+
+        def _patched_insecure(
+            target: str, options: Any = None, compression: Any = None
+        ) -> Any:
+            channel = orig_insecure(target, options=options, compression=compression)
+            return _grpc.intercept_channel(
+                channel, GRPCReplayInterceptor(fixture, target)
+            )
+
+        def _patched_secure(
+            target: str,
+            credentials: Any,
+            options: Any = None,
+            compression: Any = None,
+        ) -> Any:
+            channel = orig_secure(
+                target, credentials, options=options, compression=compression
+            )
+            return _grpc.intercept_channel(
+                channel, GRPCReplayInterceptor(fixture, target)
+            )
+
+        return unittest.mock.patch.multiple(
+            _grpc,
+            insecure_channel=_patched_insecure,
+            secure_channel=_patched_secure,
+        )
+    except ImportError:
+        return nullcontext()
+
+
+def _build_grpc_aio_replay_patch(fixture: Fixture) -> Any:
+    """Return a context manager that patches grpc.aio's channel factories.
+
+    Unary-unary only -- see grpc_hook.py's module docstring for why async
+    streaming RPCs are out of scope for this pass. Returns nullcontext()
+    when grpc isn't installed.
+    """
+    try:
+        from grpc import aio as _grpc_aio
+
+        from agent_trace.interceptor.grpc_hook import AsyncGRPCReplayInterceptor
+
+        orig_insecure = _grpc_aio.insecure_channel
+        orig_secure = _grpc_aio.secure_channel
+
+        def _patched_insecure(target: str, **kwargs: Any) -> Any:
+            interceptors = list(kwargs.pop("interceptors", None) or [])
+            interceptors.append(AsyncGRPCReplayInterceptor(fixture, target))
+            return orig_insecure(target, interceptors=interceptors, **kwargs)
+
+        def _patched_secure(target: str, credentials: Any, **kwargs: Any) -> Any:
+            interceptors = list(kwargs.pop("interceptors", None) or [])
+            interceptors.append(AsyncGRPCReplayInterceptor(fixture, target))
+            return orig_secure(target, credentials, interceptors=interceptors, **kwargs)
+
+        return unittest.mock.patch.multiple(
+            _grpc_aio,
+            insecure_channel=_patched_insecure,
+            secure_channel=_patched_secure,
+        )
+    except ImportError:
+        return nullcontext()
 
 
 class ReplayEngine:
@@ -112,6 +195,10 @@ class ReplayEngine:
             except ImportError:
                 requests_patch = nullcontext()
 
+            # --- grpc patch (optional) --------------------------------------
+            grpc_patch = _build_grpc_replay_patch(fixture)
+            grpc_aio_patch = _build_grpc_aio_replay_patch(fixture)
+
             try:
                 with (
                     unittest.mock.patch.object(
@@ -121,6 +208,8 @@ class ReplayEngine:
                         httpx.AsyncClient, "__init__", patched_httpx_async_init
                     ),
                     requests_patch,
+                    grpc_patch,
+                    grpc_aio_patch,
                 ):
                     logger.debug(
                         "agent-trace replay active: fixture=%s exchanges=%d",

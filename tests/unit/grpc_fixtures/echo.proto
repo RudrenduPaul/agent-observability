@@ -1,0 +1,23 @@
+// Tiny self-contained proto service used only to unit-test
+// agent_trace.interceptor.grpc_hook against a real (localhost) grpc server
+// and real generated protobuf message classes -- not shipped, not used by
+// any production code path.
+syntax = "proto3";
+package agenttrace.test;
+
+message EchoRequest {
+  string message = 1;
+}
+
+message EchoResponse {
+  string message = 1;
+}
+
+service Echo {
+  // Unary-unary: mirrors Gemini/Vertex AI's GenerateContent shape.
+  rpc UnaryEcho(EchoRequest) returns (EchoResponse);
+  // Unary-stream (server streaming): mirrors StreamGenerateContent's shape.
+  rpc StreamingEcho(EchoRequest) returns (stream EchoResponse);
+  // Failing call for status/error-path tests.
+  rpc FailingEcho(EchoRequest) returns (EchoResponse);
+}
