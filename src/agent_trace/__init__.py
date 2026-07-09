@@ -63,6 +63,34 @@ __all__ = [
 F = TypeVar("F", bound=Callable[..., Any])
 
 
+class _BoundBotocoreSend:
+    """Adapts an (instance, unbound-function) pair to a ``.send(request)`` object.
+
+    ``botocore.httpsession.URLLib3Session.send`` is patched at the class
+    level (like ``requests.Session.get_adapter``), so the original
+    implementation is an unbound function that needs an explicit
+    ``session_self`` to call.  ``RecordingSession``/``ReplaySession`` expect
+    ``inner`` to be an object exposing ``.send(request)`` (matching
+    ``RecordingTransport``/``RecordingAdapter``'s ``inner`` parameter), so
+    this tiny shim re-binds the saved original to the real session instance
+    that's actually configured with the caller's proxy/SSL/timeout settings.
+    """
+
+    __slots__ = ("_orig", "_session")
+
+    def __init__(self, session: Any, orig: Callable[..., Any]) -> None:
+        self._session = session
+        self._orig = orig
+
+    def send(self, request: Any) -> Any:
+        return self._orig(self._session, request)
+
+    def close(self) -> None:
+        close = getattr(self._session, "close", None)
+        if close is not None:
+            close()
+
+
 # ---------------------------------------------------------------------------
 # Tracer
 # ---------------------------------------------------------------------------
@@ -121,6 +149,7 @@ class Tracer:
         self._original_grpc_channel_fns: tuple[Any, Any] | None = None
         self._original_grpc_aio_channel_fns: tuple[Any, Any] | None = None
         self._original_aiohttp_request: Any = None
+        self._original_botocore_session_send: Any = None
         # Registered plugins — called on span and trace lifecycle events.
         self._plugins: list[Plugin] = []
         # Set by start_auto_record()/AGENT_TRACE_AUTO_RECORD when this
@@ -604,6 +633,7 @@ class Tracer:
         self._patch_requests()
         self._patch_grpc()
         self._patch_aiohttp()
+        self._patch_botocore()
 
     def _uninstall_recording_transport(self) -> None:
         """Restore the original patched methods.
@@ -617,6 +647,7 @@ class Tracer:
         self._unpatch_requests()
         self._unpatch_grpc()
         self._unpatch_aiohttp()
+        self._unpatch_botocore()
 
     def _patch_httpx(self) -> None:
         try:
@@ -911,6 +942,61 @@ class Tracer:
         except ImportError:
             pass
         self._original_aiohttp_request = None
+
+    def _patch_botocore(self) -> None:
+        """Monkey-patch botocore's HTTP-dispatch layer to record AWS SDK calls.
+
+        Every boto3 service client (bedrock-runtime, sagemaker-runtime, s3,
+        ...) routes its outbound HTTP request through
+        ``botocore.httpsession.URLLib3Session.send`` — a single class method
+        shared by every ``Endpoint`` instance, regardless of service —
+        analogous to how ``requests.Session.get_adapter`` is shared across
+        Sessions.  Patching it here means every AWS SDK client is captured
+        without the caller needing to configure anything.
+
+        Like _patch_httpx/_patch_requests/_patch_grpc/_patch_aiohttp, the
+        fixture is resolved from self._active_fixture_var at call time (not
+        closed over at patch-install time) so concurrently active
+        start_trace(record=True) contexts each record into their own
+        fixture.
+        """
+        active_fixture_var = self._active_fixture_var
+        try:
+            import botocore.httpsession
+
+            from agent_trace.interceptor.botocore_hook import RecordingSession
+
+            orig = botocore.httpsession.URLLib3Session.send
+
+            def _patched(session_self: Any, request: Any) -> Any:
+                fixture = active_fixture_var.get()
+                if fixture is None:
+                    return orig(session_self, request)
+                # Bind the real (unpatched) send to *this* session instance
+                # so its own connection pools/proxy/SSL config are preserved,
+                # then hand it to RecordingSession as the "inner" sender —
+                # mirroring how _patch_requests wraps the adapter returned by
+                # the real get_adapter() dispatch instead of constructing a
+                # fresh HTTPAdapter.
+                inner = _BoundBotocoreSend(session_self, orig)
+                return RecordingSession(fixture, inner=inner).send(request)
+
+            self._original_botocore_session_send = orig
+            setattr(botocore.httpsession.URLLib3Session, "send", _patched)
+        except ImportError:
+            pass
+
+    def _unpatch_botocore(self) -> None:
+        orig = self._original_botocore_session_send
+        if orig is None:
+            return
+        try:
+            import botocore.httpsession
+
+            setattr(botocore.httpsession.URLLib3Session, "send", orig)
+        except ImportError:
+            pass
+        self._original_botocore_session_send = None
 
 
 # ---------------------------------------------------------------------------
