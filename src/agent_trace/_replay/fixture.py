@@ -62,6 +62,23 @@ CREATE TABLE IF NOT EXISTS metadata (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+-- WebSocket frames for persistent duplex sessions (e.g. the OpenAI Agents
+-- SDK's Realtime API).  Unlike http_exchanges, a single connection_id can
+-- have many rows in each direction, so replay is served per
+-- (connection_id, direction) rather than per (method, url).
+CREATE TABLE IF NOT EXISTS ws_frames (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    trace_id         TEXT NOT NULL,
+    connection_id    TEXT NOT NULL,
+    url              TEXT NOT NULL,
+    direction        TEXT NOT NULL,
+    frame_type       TEXT NOT NULL DEFAULT 'text',
+    payload          TEXT NOT NULL DEFAULT '',
+    recorded_at      REAL NOT NULL,
+    sequence_num     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ws_frames_conn_dir_seq
+    ON ws_frames (connection_id, direction, sequence_num);
 """
 
 # Columns added after the original schema. CREATE TABLE IF NOT EXISTS above
@@ -188,6 +205,18 @@ def max_inter_chunk_gap_ms(exchange: dict[str, Any]) -> float | None:
     return float(max(gaps)) * 1000
 
 
+def _row_to_ws_frame(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "connection_id": row["connection_id"],
+        "url": row["url"],
+        "direction": row["direction"],
+        "frame_type": row["frame_type"],
+        "payload": row["payload"],
+        "recorded_at": row["recorded_at"],
+        "sequence_num": row["sequence_num"],
+    }
+
+
 class Fixture:
     """Thread-safe SQLite-backed HTTP fixture.
 
@@ -236,6 +265,9 @@ class Fixture:
         # Using id > last_id avoids O(n^2) OFFSET scans — each lookup is
         # O(log n) via the composite index on (method, url, sequence_num).
         self._read_cursor: dict[str, int] = {}
+        # Per-(connection_id:direction) last-served row id for
+        # next_ws_frame(). Same id > last_id strategy as _read_cursor above.
+        self._ws_read_cursor: dict[str, int] = {}
 
     # ------------------------------------------------------------------
     # Recording
@@ -540,6 +572,145 @@ class Fixture:
             cur = self._conn.execute("SELECT MIN(recorded_at) FROM http_exchanges")
             row = cur.fetchone()
             return float(row[0]) if row and row[0] is not None else None
+
+    # ------------------------------------------------------------------
+    # WebSocket frames (persistent duplex sessions, e.g. Realtime API)
+    # ------------------------------------------------------------------
+
+    def record_ws_frame(
+        self,
+        connection_id: str,
+        url: str,
+        direction: str,
+        payload: str,
+        frame_type: str = "text",
+    ) -> None:
+        """Persist one WebSocket frame to the fixture database.
+
+        Parameters
+        ----------
+        connection_id:
+            Identifier for the logical WS connection this frame belongs to
+            (a single fixture can hold frames from multiple connections/
+            sessions recorded in the same trace).
+        direction:
+            ``"send"`` for a frame the client sent, ``"recv"`` for a frame
+            the client received.
+        frame_type:
+            ``"text"`` or ``"binary"``.  Binary payloads are stored as
+            UTF-8-decoded text (errors="replace"), matching how the
+            recording interceptor prepares them before this call.
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT COALESCE(MAX(sequence_num), -1) + 1 FROM ws_frames"
+            )
+            row = cur.fetchone()
+            next_seq: int = int(row[0])
+
+            self._conn.execute(
+                """\
+                INSERT INTO ws_frames
+                    (trace_id, connection_id, url, direction, frame_type,
+                     payload, recorded_at, sequence_num)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    self._trace_id,
+                    connection_id,
+                    url,
+                    direction,
+                    frame_type,
+                    payload,
+                    time.time(),  # wall-clock intentional — see record_exchange
+                    next_seq,
+                ),
+            )
+            self._conn.commit()
+
+    def next_ws_frame(
+        self, connection_id: str, direction: str
+    ) -> dict[str, Any] | None:
+        """Return the next recorded frame for *(connection_id, direction)* or None.
+
+        Frames are served in the order they were recorded (ascending
+        sequence_num), independently for each direction, so a replayed
+        session sees its inbound ("recv") frames in original order without
+        being coupled to how many frames were sent in between.
+        """
+        key = f"{connection_id}:{direction}"
+        with self._lock:
+            last_id = self._ws_read_cursor.get(key, 0)
+            cur = self._conn.execute(
+                """\
+                SELECT id, connection_id, url, direction, frame_type,
+                       payload, recorded_at, sequence_num
+                FROM ws_frames
+                WHERE connection_id = ? AND direction = ? AND id > ?
+                ORDER BY id ASC
+                LIMIT 1
+                """,
+                (connection_id, direction, last_id),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return None
+
+            self._ws_read_cursor[key] = int(row["id"])
+            return _row_to_ws_frame(row)
+
+    def all_ws_frames(self, connection_id: str | None = None) -> list[dict[str, Any]]:
+        """Return recorded WS frames in sequence_num order.
+
+        Pass *connection_id* to filter to a single connection; omit it to
+        return every frame across every connection recorded in this fixture.
+        """
+        with self._lock:
+            if connection_id is None:
+                cur = self._conn.execute(
+                    """\
+                    SELECT connection_id, url, direction, frame_type,
+                           payload, recorded_at, sequence_num
+                    FROM ws_frames
+                    ORDER BY sequence_num ASC
+                    """
+                )
+            else:
+                cur = self._conn.execute(
+                    """\
+                    SELECT connection_id, url, direction, frame_type,
+                           payload, recorded_at, sequence_num
+                    FROM ws_frames
+                    WHERE connection_id = ?
+                    ORDER BY sequence_num ASC
+                    """,
+                    (connection_id,),
+                )
+            rows = cur.fetchall()
+
+        return [_row_to_ws_frame(row) for row in rows]
+
+    def reset_ws_read_cursor(self) -> None:
+        """Reset all per-(connection_id:direction) read offsets to 0.
+
+        Call this at the start of each replay so the same fixture can be
+        replayed multiple times within one process lifetime.
+        """
+        with self._lock:
+            self._ws_read_cursor.clear()
+
+    def ws_frame_count(self, connection_id: str | None = None) -> int:
+        """Return total number of recorded WS frames, optionally per-connection."""
+        with self._lock:
+            if connection_id is None:
+                cur = self._conn.execute("SELECT COUNT(*) FROM ws_frames")
+            else:
+                cur = self._conn.execute(
+                    "SELECT COUNT(*) FROM ws_frames WHERE connection_id = ?",
+                    (connection_id,),
+                )
+            row = cur.fetchone()
+            return int(row[0]) if row else 0
 
     # ------------------------------------------------------------------
     # Metadata helpers
