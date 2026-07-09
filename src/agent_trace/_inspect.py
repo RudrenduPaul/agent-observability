@@ -51,10 +51,13 @@ __all__ = [
     "check_null_content_with_tool_calls",
     "check_orphaned_tool_call_ids",
     "check_reserved_kwarg_collision",
+    "check_restart_vs_resume",
     "check_stream_merge_validity",
     "check_tool_call_boundary_leak",
+    "check_tool_call_name_absent_from_request_tools",
     "check_tool_call_name_dotted_compound",
     "check_tool_call_name_fuzzy_match",
+    "check_tool_call_name_not_registered",
     "check_tool_calling_disabled",
     "check_tools_with_response_format",
     "detect_response_shape_anomalies",
@@ -797,6 +800,40 @@ def check_tool_call_name_dotted_compound(
 
 
 # ---------------------------------------------------------------------------
+# 14b. Structured-JSON-field sibling of check_action_name_not_registered
+#      (which reads plain-text `Action: <name>` lines): flags ANY captured
+#      `tool_calls[].function.name` not present in the run's registered
+#      tool list, unconditionally — no edit-distance threshold. Distinct
+#      from check_tool_call_name_fuzzy_match's near-miss-only scope (#325 —
+#      no retry mechanism for ModelBehaviorError when the model hallucinates
+#      a nonexistent tool name; this surfaces every such hallucination, not
+#      just the ones close enough to a real name to be a plausible typo).
+# ---------------------------------------------------------------------------
+
+
+def check_tool_call_name_not_registered(
+    exchanges: list[dict[str, Any]], registered_tools: set[str]
+) -> list[dict[str, Any]]:
+    """Flag every captured `tool_calls[].function.name` not present in
+    *registered_tools*, with no edit-distance/near-miss threshold — the
+    unconditional counterpart to check_tool_call_name_fuzzy_match (#325)."""
+    flags: list[dict[str, Any]] = []
+    for exchange in exchanges:
+        for name in _extract_tool_call_names(exchange):
+            if name not in registered_tools:
+                flags.append(
+                    _flag(
+                        "tool_call_name_not_registered",
+                        exchange,
+                        f"tool call name {name!r} is not in the run's "
+                        "registered tool list",
+                        called_name=name,
+                    )
+                )
+    return flags
+
+
+# ---------------------------------------------------------------------------
 # 15. choices[].message.tool_calls[] entries missing an `id` key (or
 #     `id: null`) before the framework constructs a ToolMessage/ToolCall.
 #     (#3992)
@@ -1132,6 +1169,63 @@ def check_tool_calling_disabled(
                     provider="openai/anthropic",
                 )
             )
+    return flags
+
+
+# ---------------------------------------------------------------------------
+# A response calls a tool name that was never declared in that *same*
+# exchange's own request `tools` list — the self-contained "the model
+# hallucinated a tool name the client never offered it" shape behind #6037's
+# `transfer_back_to_supervisor is not a valid tool` error inside a LangGraph
+# supervisor multi-agent topology. Unlike check_tool_call_name_fuzzy_match/
+# _dotted_compound (which need a caller-supplied `registered_tools` set
+# spanning the whole run, opted into via `--registered-tools`), this check
+# is entirely self-contained within a single exchange's request/response
+# pair, so it needs no CLI flag and is wired unconditionally into
+# run_all_exchange_checks().
+# ---------------------------------------------------------------------------
+
+
+def check_tool_call_name_absent_from_request_tools(
+    exchanges: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Flag a captured exchange whose response's `tool_calls[]` names a
+    function not present in that exchange's own request `tools[]` list
+    (OpenAI-shape: `tools[].function.name`) — the model calling a tool the
+    client never declared in this request at all (#6037)."""
+    flags: list[dict[str, Any]] = []
+    for exchange in exchanges:
+        request_body = _loads(exchange.get("request_body"))
+        if not isinstance(request_body, dict):
+            continue
+        declared_tools: set[str] = set()
+        for tool in request_body.get("tools") or []:
+            if not isinstance(tool, dict):
+                continue
+            fn = tool.get("function")
+            name = fn.get("name") if isinstance(fn, dict) else None
+            if isinstance(name, str):
+                declared_tools.add(name)
+        if not declared_tools:
+            # No declared tools at all to compare against — not this
+            # check's concern (see check_tool_calling_disabled for that
+            # shape).
+            continue
+
+        for name in _extract_tool_call_names(exchange):
+            if name not in declared_tools:
+                flags.append(
+                    _flag(
+                        "tool_call_name_absent_from_request_tools",
+                        exchange,
+                        f"response tool call names {name!r}, which is not "
+                        "present in this exchange's own request `tools` "
+                        "list — the model called a tool the client never "
+                        "declared in this request",
+                        called_name=name,
+                        declared_tools=sorted(declared_tools),
+                    )
+                )
     return flags
 
 
@@ -1587,6 +1681,105 @@ def find_near_duplicate_sibling_content(
     return flags
 
 
+# ---------------------------------------------------------------------------
+# `agent-trace diff`-style restart-vs-resume detection: a later run's ROOT
+# chain span (`parent_id` is None) carries the same LangGraph `thread_id` —
+# recovered from its captured `chain.metadata`, see LangGraphTracer.
+# on_chain_start — as an earlier run, but its `langgraph_step` does not
+# continue from the earlier run's last recorded step for that thread_id.
+# That is exactly the "new root span with no parent, same thread_id as a
+# prior interrupted run" shape #161 asked to auto-flag: the later run
+# started the graph over from scratch (a *restart*) rather than resuming it
+# from its last checkpoint (a *resume*). cmd_diff (which already loads both
+# runs' spans to compare exchanges) wires this in unconditionally.
+# ---------------------------------------------------------------------------
+
+
+def _chain_metadata(span: dict[str, Any]) -> dict[str, Any] | None:
+    """Best-effort parse of a span's captured `chain.metadata` attribute
+    (set by LangGraphTracer.on_chain_start, JSON-serialized) back into a
+    dict, or None if the span has no (or unparsable) chain metadata."""
+    attrs = span.get("attributes")
+    if not isinstance(attrs, dict):
+        return None
+    raw = attrs.get("chain.metadata")
+    if not isinstance(raw, str):
+        return None
+    parsed = _loads(raw)
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _last_langgraph_step_by_thread(spans: list[dict[str, Any]]) -> dict[str, int]:
+    """The highest `langgraph_step` recorded for each `thread_id` across
+    *every* chain span in a run — not just root spans — since a resumed run
+    should pick up from wherever the earlier run's graph execution actually
+    last got to, not just wherever its root span happened to be."""
+    last_step: dict[str, int] = {}
+    for span in spans:
+        metadata = _chain_metadata(span)
+        if metadata is None:
+            continue
+        thread_id = metadata.get("thread_id")
+        step = metadata.get("langgraph_step")
+        if not isinstance(thread_id, str) or not isinstance(step, int):
+            continue
+        if step > last_step.get(thread_id, -1):
+            last_step[thread_id] = step
+    return last_step
+
+
+def check_restart_vs_resume(
+    spans_a: list[dict[str, Any]], spans_b: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Flag a candidate LangGraph restart-vs-resume mismatch (#161): run
+    *spans_b* (assumed to be the later/second of the two runs) has a root
+    chain span (`parent_id` is None, with `chain.metadata` present) whose
+    `thread_id` also appears in *spans_a* (the earlier/first run), but whose
+    `langgraph_step` does not continue from *spans_a*'s last recorded step
+    for that same `thread_id` — i.e. the later run's graph execution
+    appears to have restarted from scratch instead of resuming the
+    interrupted run from its last checkpoint."""
+    last_steps_a = _last_langgraph_step_by_thread(spans_a)
+    if not last_steps_a:
+        return []
+
+    flags: list[dict[str, Any]] = []
+    for span in spans_b:
+        if span.get("parent_id") is not None:
+            continue
+        metadata = _chain_metadata(span)
+        if metadata is None:
+            continue
+        thread_id = metadata.get("thread_id")
+        step = metadata.get("langgraph_step")
+        if not isinstance(thread_id, str) or not isinstance(step, int):
+            continue
+        prior_last_step = last_steps_a.get(thread_id)
+        if prior_last_step is None:
+            continue
+        if step <= prior_last_step:
+            flags.append(
+                {
+                    "check": "restart_vs_resume",
+                    "span": span.get("name"),
+                    "thread_id": thread_id,
+                    "prior_last_step": prior_last_step,
+                    "root_langgraph_step": step,
+                    "detail": (
+                        f"root span {span.get('name')!r} in the later run "
+                        f"shares thread_id={thread_id!r} with an earlier "
+                        f"run, but its langgraph_step={step} does not "
+                        f"continue from that earlier run's last recorded "
+                        f"step ({prior_last_step}) for the same thread — "
+                        "candidate restart-vs-resume: the graph appears to "
+                        "have restarted from scratch rather than resumed "
+                        "from its last checkpoint"
+                    ),
+                }
+            )
+    return flags
+
+
 def content_hash(method: str, url: str, request_body: str) -> str:
     """Stable identity for "this is the same logical request" — used to
     group retry attempts (see Fixture's attempt_group column).
@@ -1623,6 +1816,9 @@ def run_all_exchange_checks(
         "null_content_with_tool_calls": check_null_content_with_tool_calls,
         "content_block_missing_type": check_content_block_missing_type,
         "tools_with_response_format": check_tools_with_response_format,
+        "tool_call_name_absent_from_request_tools": (
+            check_tool_call_name_absent_from_request_tools
+        ),
         "anthropic_thinking_in_tool_result": check_anthropic_thinking_in_tool_result,
         "empty_content_not_final": check_empty_content_not_final,
         "json_schema_lookaround_or_anyof": check_json_schema_lookaround_or_anyof,

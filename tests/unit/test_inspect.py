@@ -530,6 +530,34 @@ class TestCheckToolCallNameDottedCompound:
 
 
 # ---------------------------------------------------------------------------
+# check_tool_call_name_not_registered (#325)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckToolCallNameNotRegistered:
+    def test_registered_name_not_flagged(self) -> None:
+        exchanges = [_exchange(response_body=_response_with_tool_call("search"))]
+        assert ins.check_tool_call_name_not_registered(exchanges, {"search"}) == []
+
+    def test_unregistered_name_flagged_unconditionally(self) -> None:
+        """Unlike fuzzy_match, ANY unregistered name is flagged — even one
+        with an edit distance far larger than fuzzy_match's threshold."""
+        exchanges = [
+            _exchange(response_body=_response_with_tool_call("completely_made_up_tool"))
+        ]
+        flags = ins.check_tool_call_name_not_registered(exchanges, {"search"})
+        assert len(flags) == 1
+        assert flags[0]["called_name"] == "completely_made_up_tool"
+        # Confirm this is genuinely beyond fuzzy_match's near-miss scope.
+        assert ins.check_tool_call_name_fuzzy_match(exchanges, {"search"}) == []
+
+    def test_near_miss_also_flagged(self) -> None:
+        exchanges = [_exchange(response_body=_response_with_tool_call("serach"))]
+        flags = ins.check_tool_call_name_not_registered(exchanges, {"search"})
+        assert len(flags) == 1
+
+
+# ---------------------------------------------------------------------------
 # check_missing_tool_call_id
 # ---------------------------------------------------------------------------
 
@@ -872,6 +900,49 @@ class TestCheckToolCallingDisabled:
     def test_no_tools_declared_not_flagged(self) -> None:
         body = json.dumps({"tool_choice": "none"})
         assert ins.check_tool_calling_disabled([_exchange(request_body=body)]) == []
+
+
+# ---------------------------------------------------------------------------
+# check_tool_call_name_absent_from_request_tools (#6037)
+# ---------------------------------------------------------------------------
+
+
+def _request_with_tools(*names: str) -> str:
+    return json.dumps(
+        {"tools": [{"type": "function", "function": {"name": n}} for n in names]}
+    )
+
+
+class TestCheckToolCallNameAbsentFromRequestTools:
+    def test_called_tool_declared_in_same_request_not_flagged(self) -> None:
+        exchanges = [
+            _exchange(
+                request_body=_request_with_tools("search", "transfer_to_billing"),
+                response_body=_response_with_tool_call("search"),
+            )
+        ]
+        assert ins.check_tool_call_name_absent_from_request_tools(exchanges) == []
+
+    def test_called_tool_absent_from_request_tools_flagged(self) -> None:
+        exchanges = [
+            _exchange(
+                request_body=_request_with_tools("search"),
+                response_body=_response_with_tool_call("transfer_back_to_supervisor"),
+            )
+        ]
+        flags = ins.check_tool_call_name_absent_from_request_tools(exchanges)
+        assert len(flags) == 1
+        assert flags[0]["called_name"] == "transfer_back_to_supervisor"
+        assert flags[0]["declared_tools"] == ["search"]
+
+    def test_no_declared_tools_not_flagged(self) -> None:
+        exchanges = [
+            _exchange(
+                request_body="{}",
+                response_body=_response_with_tool_call("search"),
+            )
+        ]
+        assert ins.check_tool_call_name_absent_from_request_tools(exchanges) == []
 
 
 # ---------------------------------------------------------------------------
@@ -1286,6 +1357,88 @@ class TestFindNearDuplicateSiblingContent:
         flags = ins.find_near_duplicate_sibling_content(spans)
         assert len(flags) == 1
         assert flags[0]["similarity"] == 1.0
+
+
+# ---------------------------------------------------------------------------
+# check_restart_vs_resume (#161)
+# ---------------------------------------------------------------------------
+
+
+def _root_chain_span(thread_id: str, langgraph_step: int) -> dict[str, object]:
+    """A root chain span (no parent_id) carrying LangGraphTracer's captured
+    chain.metadata — the shape check_restart_vs_resume reads."""
+    return {
+        "name": "node:graph",
+        "status": "OK",
+        "attributes": {
+            "chain.metadata": json.dumps(
+                {"thread_id": thread_id, "langgraph_step": langgraph_step}
+            )
+        },
+        "events": [],
+        "parent_id": None,
+    }
+
+
+def _child_chain_span(
+    thread_id: str, langgraph_step: int, parent_id: str = "root-span-id"
+) -> dict[str, object]:
+    return {
+        "name": "node:some_node",
+        "status": "OK",
+        "attributes": {
+            "chain.metadata": json.dumps(
+                {"thread_id": thread_id, "langgraph_step": langgraph_step}
+            )
+        },
+        "events": [],
+        "parent_id": parent_id,
+    }
+
+
+class TestCheckRestartVsResume:
+    def test_resumed_run_continuing_from_last_step_not_flagged(self) -> None:
+        spans_a = [
+            _root_chain_span("thread-1", 0),
+            _child_chain_span("thread-1", 1),
+            _child_chain_span("thread-1", 2),
+        ]
+        # Resumed run's root picks up beyond the earlier run's last step.
+        spans_b = [_root_chain_span("thread-1", 3)]
+        assert ins.check_restart_vs_resume(spans_a, spans_b) == []
+
+    def test_restarted_run_from_scratch_flagged(self) -> None:
+        spans_a = [
+            _root_chain_span("thread-1", 0),
+            _child_chain_span("thread-1", 1),
+            _child_chain_span("thread-1", 2),
+        ]
+        # Later run's root starts back at step 0 for the SAME thread_id —
+        # a restart, not a resume of the interrupted run.
+        spans_b = [_root_chain_span("thread-1", 0)]
+        flags = ins.check_restart_vs_resume(spans_a, spans_b)
+        assert len(flags) == 1
+        assert flags[0]["check"] == "restart_vs_resume"
+        assert flags[0]["thread_id"] == "thread-1"
+        assert flags[0]["prior_last_step"] == 2
+        assert flags[0]["root_langgraph_step"] == 0
+
+    def test_different_thread_id_not_flagged(self) -> None:
+        spans_a = [_root_chain_span("thread-1", 5)]
+        spans_b = [_root_chain_span("thread-2", 0)]
+        assert ins.check_restart_vs_resume(spans_a, spans_b) == []
+
+    def test_non_root_span_in_later_run_not_flagged(self) -> None:
+        spans_a = [_root_chain_span("thread-1", 5)]
+        # A span with a parent_id is never a candidate root, no matter its
+        # langgraph_step.
+        spans_b = [_child_chain_span("thread-1", 0, parent_id="some-parent")]
+        assert ins.check_restart_vs_resume(spans_a, spans_b) == []
+
+    def test_no_metadata_in_earlier_run_not_flagged(self) -> None:
+        spans_a = [_span("node:no_metadata")]
+        spans_b = [_root_chain_span("thread-1", 0)]
+        assert ins.check_restart_vs_resume(spans_a, spans_b) == []
 
 
 # ---------------------------------------------------------------------------

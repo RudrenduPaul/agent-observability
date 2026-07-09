@@ -1057,6 +1057,107 @@ class TestInspectSubcommand:
         assert result.returncode == 0, result.stderr
         assert "orphaned_responses_api_call_ids" in result.stdout
 
+    def test_tool_call_absent_from_request_tools_flagged_unconditionally(
+        self, tmp_path
+    ) -> None:
+        """#6037: `transfer_back_to_supervisor is not a valid tool` inside a
+        LangGraph supervisor topology — surfaced by `agent-trace inspect`
+        with no CLI flag needed, since the check only needs this one
+        exchange's own request/response pair."""
+        import json as _json
+        import os
+
+        env = dict(os.environ)
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
+
+        request_body = _json.dumps(
+            {"tools": [{"type": "function", "function": {"name": "search"}}]}
+        )
+        response_body = _json.dumps(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "function": {
+                                        "name": "transfer_back_to_supervisor"
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        )
+        _write_run(
+            tmp_path,
+            "run-supervisor",
+            exchanges=[
+                {
+                    "url": "https://api.openai.com/v1/chat/completions",
+                    "method": "POST",
+                    "request_headers": {},
+                    "request_body": request_body,
+                    "response_status": 200,
+                    "response_headers": {},
+                    "response_body": response_body,
+                },
+            ],
+        )
+
+        result = _run_cli(["inspect", "run-supervisor"], env=env)
+        assert result.returncode == 0, result.stderr
+        assert "tool_call_name_absent_from_request_tools" in result.stdout
+        assert "transfer_back_to_supervisor" in result.stdout
+
+    def test_registered_tools_flags_unregistered_tool_call_name(self, tmp_path) -> None:
+        """#325: --registered-tools enables check_tool_call_name_not_registered
+        (unconditional, no edit-distance threshold) alongside the existing
+        fuzzy_match/dotted_compound/action_name_not_registered checks."""
+        import json as _json
+        import os
+
+        env = dict(os.environ)
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
+
+        response_body = _json.dumps(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {"function": {"name": "completely_made_up_tool"}}
+                            ]
+                        }
+                    }
+                ]
+            }
+        )
+        _write_run(
+            tmp_path,
+            "run-unregistered-tool",
+            exchanges=[
+                {
+                    "url": "https://api.openai.com/v1/chat/completions",
+                    "method": "POST",
+                    "request_headers": {},
+                    "request_body": "{}",
+                    "response_status": 200,
+                    "response_headers": {},
+                    "response_body": response_body,
+                },
+            ],
+        )
+
+        result = _run_cli(
+            ["inspect", "run-unregistered-tool", "--registered-tools", "search"],
+            env=env,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "tool_call_name_not_registered" in result.stdout
+        assert "completely_made_up_tool" in result.stdout
+
     def test_diff_get_post_field_flags_stale_instructions(self, tmp_path) -> None:
         """#2620 (GPTAssistantAgent): a POST /runs referencing the same
         assistant_id as an earlier GET /assistants/{id} sends a stale
@@ -1288,6 +1389,73 @@ class TestDiffSubcommand:
         result = _run_cli(["diff", "run-a", "run-b"], env=env)
         assert result.returncode == 0, result.stderr
         assert "only present in run-a" in result.stdout
+
+    def test_restarted_run_flags_restart_vs_resume(self, tmp_path) -> None:
+        """#161: run-b's root chain span shares thread_id="thread-1" with
+        run-a but restarts at langgraph_step=0 instead of continuing past
+        run-a's last recorded step — `agent-trace diff` must surface this
+        without requiring a developer to hand-read both trace.json files."""
+        import json as _json
+        import os
+
+        env = dict(os.environ)
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
+
+        def _root_span(thread_id: str, step: int) -> dict[str, object]:
+            return {
+                "span_id": "root",
+                "trace_id": "t1",
+                "parent_id": None,
+                "name": "node:graph",
+                "start_time": 0.0,
+                "end_time": 1.0,
+                "status": "OK",
+                "attributes": {
+                    "chain.metadata": _json.dumps(
+                        {"thread_id": thread_id, "langgraph_step": step}
+                    )
+                },
+                "events": [],
+            }
+
+        _write_run(tmp_path, "run-a", spans=[_root_span("thread-1", 2)])
+        _write_run(tmp_path, "run-b", spans=[_root_span("thread-1", 0)])
+
+        result = _run_cli(["diff", "run-a", "run-b"], env=env)
+        assert result.returncode == 0, result.stderr
+        assert "restart_vs_resume" in result.stdout
+        assert "thread-1" in result.stdout
+
+    def test_resumed_run_does_not_flag_restart_vs_resume(self, tmp_path) -> None:
+        import json as _json
+        import os
+
+        env = dict(os.environ)
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
+
+        def _root_span(thread_id: str, step: int) -> dict[str, object]:
+            return {
+                "span_id": "root",
+                "trace_id": "t1",
+                "parent_id": None,
+                "name": "node:graph",
+                "start_time": 0.0,
+                "end_time": 1.0,
+                "status": "OK",
+                "attributes": {
+                    "chain.metadata": _json.dumps(
+                        {"thread_id": thread_id, "langgraph_step": step}
+                    )
+                },
+                "events": [],
+            }
+
+        _write_run(tmp_path, "run-a", spans=[_root_span("thread-1", 2)])
+        _write_run(tmp_path, "run-b", spans=[_root_span("thread-1", 3)])
+
+        result = _run_cli(["diff", "run-a", "run-b"], env=env)
+        assert result.returncode == 0, result.stderr
+        assert "restart_vs_resume" not in result.stdout
 
 
 class TestShowErrorsOnlyFlag:
