@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import itertools
 import json
 import logging
 import re
@@ -49,10 +50,13 @@ __all__ = [
     "check_missing_tool_call_id",
     "check_non_ok_finish_reason",
     "check_null_content_with_tool_calls",
+    "check_null_or_missing_sse_delta",
     "check_orphaned_tool_call_ids",
+    "check_phantom_tool_call",
     "check_reserved_kwarg_collision",
     "check_restart_vs_resume",
     "check_stream_merge_validity",
+    "check_system_prompt_dropped",
     "check_tool_call_boundary_leak",
     "check_tool_call_name_absent_from_request_tools",
     "check_tool_call_name_dotted_compound",
@@ -1531,6 +1535,61 @@ def check_stream_merge_validity(
     return flags
 
 
+def check_null_or_missing_sse_delta(
+    exchanges: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Flag a captured SSE exchange where a streamed event's
+    `choices[0].delta` is null/missing while the event still carries other
+    populated fields — e.g. Azure OpenAI's async content-filter shape,
+    where a chunk arrives with `delta: null` alongside a populated
+    `content_filter_offsets`/`content_filter_results` on the same choice.
+
+    `_delta_from_event()` (`interceptor/sse.py`) already treats a null/
+    missing delta as "no delta" and silently skips it during stream
+    reconstruction — correct behavior for merging, but it means a caller
+    consuming only the reconstructed message never learns a chunk carrying
+    real signal (a content-filter hit, a finish_reason) was dropped. This
+    check is the automated flag for that dropped-chunk shape (#797)."""
+    from agent_trace.interceptor.sse import is_sse_exchange, parse_sse_events
+
+    flags: list[dict[str, Any]] = []
+    for exchange in exchanges:
+        if not is_sse_exchange(exchange):
+            continue
+        events = parse_sse_events(exchange.get("response_body") or "")
+        for event_index, event in enumerate(events):
+            if not isinstance(event, dict):
+                continue
+            choices = event.get("choices")
+            if not isinstance(choices, list) or not choices:
+                continue
+            choice = choices[0]
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta")
+            if isinstance(delta, dict):
+                continue  # a real (possibly empty) delta — nothing dropped.
+            other_populated = {
+                key: value
+                for key, value in choice.items()
+                if key not in ("delta", "index") and value not in (None, "", [], {})
+            }
+            if other_populated:
+                flags.append(
+                    _flag(
+                        "null_or_missing_sse_delta",
+                        exchange,
+                        "SSE event has a null/missing `choices[0].delta` while "
+                        f"carrying other populated fields ({sorted(other_populated)}) "
+                        "— the chunk's signal is silently dropped by naive stream "
+                        "merging instead of surfaced",
+                        event_index=event_index,
+                        populated_fields=sorted(other_populated),
+                    )
+                )
+    return flags
+
+
 def detect_response_shape_anomalies(
     exchanges: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -1678,6 +1737,124 @@ def find_near_duplicate_sibling_content(
                             "surfaced via two message types",
                         }
                     )
+    return flags
+
+
+def check_system_prompt_dropped(
+    spans: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Flag a pydantic-ai `system_prompt`-vs-`message_history` regression
+    within one trace (#3277): `agent.run(..., message_history=...)` silently
+    drops the agent's configured `SystemPromptPart` on the follow-up call.
+
+    `integrations/pydantic_ai.py`'s `_open_llm_span` already persists
+    `llm.has_system_prompt_part` (bool) per LLM span. This walks a trace's
+    `llm:*` spans in call order (by `start_time`), grouped by
+    `(agent.name, llm.model)`, and flags any transition where an earlier
+    call had a system prompt part present and a later call for the same
+    agent/model does not — surfacing the drop automatically instead of
+    requiring a developer to already suspect it and hand-diff two
+    fixtures."""
+    llm_spans = [
+        s
+        for s in spans
+        if str(s.get("name", "")).startswith("llm:")
+        and "llm.has_system_prompt_part" in (s.get("attributes") or {})
+    ]
+    llm_spans.sort(key=lambda s: s.get("start_time") or 0)
+
+    by_group: dict[tuple[Any, Any], list[dict[str, Any]]] = {}
+    for span in llm_spans:
+        attrs = span.get("attributes") or {}
+        key = (attrs.get("agent.name"), attrs.get("llm.model"))
+        by_group.setdefault(key, []).append(span)
+
+    flags: list[dict[str, Any]] = []
+    for (agent_name, model), group_spans in by_group.items():
+        for earlier, later in itertools.pairwise(group_spans):
+            earlier_attrs = earlier.get("attributes") or {}
+            later_attrs = later.get("attributes") or {}
+            if earlier_attrs.get("llm.has_system_prompt_part") and not later_attrs.get(
+                "llm.has_system_prompt_part"
+            ):
+                flags.append(
+                    {
+                        "check": "system_prompt_dropped",
+                        "agent_name": agent_name,
+                        "model": model,
+                        "earlier_span": earlier.get("span_id"),
+                        "later_span": later.get("span_id"),
+                        "detail": f"agent {agent_name!r} (model {model!r}) sent a "
+                        "system prompt on an earlier call but a later call in the "
+                        "same trace has no SystemPromptPart — likely dropped when "
+                        "message_history was passed",
+                    }
+                )
+    return flags
+
+
+def check_phantom_tool_call(
+    spans: list[dict[str, Any]], exchanges: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Flag a claimed tool invocation with zero corresponding downstream HTTP
+    exchanges in its time window (#13449 — a ReActAgent transcript claiming a
+    tool ran when nothing actually executed).
+
+    Now that a tool-call span/event can be tied back to the HTTP exchanges
+    it produced (`push_correlation_id(span.span_id)` at the point a tool
+    span opens, recoverable via `Fixture.exchanges_for_correlation_id`; see
+    `integrations/langgraph.py` and `integrations/llama_index.py`), this
+    walks every span, identifies the ones representing a tool call — a
+    LangGraph `tool:<name>` span, or a llama_index span carrying a
+    `tool_call` event — and flags any whose `span_id` has *no* correlated
+    HTTP exchange at all as a likely phantom/silently-skipped invocation:
+    the exact thing a developer previously had to work out by hand from
+    console logs.
+
+    Deliberately over-inclusive rather than silent: a genuinely pure-Python
+    tool (no network call, e.g. a local calculator) will also have zero
+    correlated exchanges and gets flagged too — callers who know a given
+    tool never makes HTTP calls should filter this check's output by
+    `tool_name` rather than treat every flag as proof of a bug."""
+    correlated_ids: set[str] = {
+        str(exchange["correlation_id"])
+        for exchange in exchanges
+        if exchange.get("correlation_id")
+    }
+
+    flags: list[dict[str, Any]] = []
+    for span in spans:
+        span_id = span.get("span_id")
+        if not span_id:
+            continue
+        attrs = span.get("attributes") or {}
+        events = span.get("events") or []
+        tool_call_event = next(
+            (e for e in events if isinstance(e, dict) and e.get("name") == "tool_call"),
+            None,
+        )
+        is_tool_span = str(span.get("name", "")).startswith("tool:")
+        if not is_tool_span and tool_call_event is None and "tool.name" not in attrs:
+            continue
+
+        tool_name = attrs.get("tool.name")
+        if tool_name is None and tool_call_event is not None:
+            tool_name = (tool_call_event.get("attributes") or {}).get("tool.name")
+        tool_name = tool_name or span.get("name")
+
+        if str(span_id) not in correlated_ids:
+            flags.append(
+                {
+                    "check": "phantom_tool_call",
+                    "span": span.get("name"),
+                    "span_id": span_id,
+                    "tool_name": tool_name,
+                    "detail": f"tool call {tool_name!r} (span {span.get('name')!r}) "
+                    "has zero correlated HTTP exchanges — the transcript claims "
+                    "this tool ran but no downstream network call was recorded "
+                    "for it",
+                }
+            )
     return flags
 
 
@@ -1833,6 +2010,7 @@ def run_all_exchange_checks(
         "non_ok_finish_reason": check_non_ok_finish_reason,
         "multi_block_response": multi_block_llm_responses,
         "stream_merge_invalid_json": check_stream_merge_validity,
+        "null_or_missing_sse_delta": check_null_or_missing_sse_delta,
         "response_shape_anomaly": detect_response_shape_anomalies,
     }
     results: dict[str, list[dict[str, Any]]] = {}
