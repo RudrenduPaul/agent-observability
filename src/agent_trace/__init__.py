@@ -89,6 +89,7 @@ class Tracer:
         # Stored as a (sync_init, async_init) tuple when patched; None otherwise.
         self._original_httpx_init: tuple[Any, Any] | None = None
         self._original_requests_get_adapter: Any = None
+        self._original_aiohttp_request: Any = None
         # Registered plugins — called on span and trace lifecycle events.
         self._plugins: list[Plugin] = []
 
@@ -333,6 +334,7 @@ class Tracer:
             return
         self._patch_httpx(fixture)
         self._patch_requests(fixture)
+        self._patch_aiohttp(fixture)
 
     def _uninstall_recording_transport(self) -> None:
         """Restore the original ``__init__`` / ``get_adapter`` methods.
@@ -344,6 +346,7 @@ class Tracer:
             return
         self._unpatch_httpx()
         self._unpatch_requests()
+        self._unpatch_aiohttp()
 
     def _patch_httpx(self, fixture: Any) -> None:
         try:
@@ -390,6 +393,23 @@ class Tracer:
         except ImportError:
             pass
 
+    def _patch_aiohttp(self, fixture: Any) -> None:
+        try:
+            import aiohttp
+
+            from agent_trace.interceptor.aiohttp_hook import make_recording_request
+
+            orig_request = aiohttp.ClientSession._request
+
+            self._original_aiohttp_request = orig_request
+            setattr(
+                aiohttp.ClientSession,
+                "_request",
+                make_recording_request(fixture, orig_request),
+            )
+        except ImportError:
+            pass
+
     def _unpatch_httpx(self) -> None:
         orig = self._original_httpx_init
         if orig is None:
@@ -415,6 +435,18 @@ class Tracer:
         except ImportError:
             pass
         self._original_requests_get_adapter = None
+
+    def _unpatch_aiohttp(self) -> None:
+        orig = self._original_aiohttp_request
+        if orig is None:
+            return
+        try:
+            import aiohttp
+
+            setattr(aiohttp.ClientSession, "_request", orig)
+        except ImportError:
+            pass
+        self._original_aiohttp_request = None
 
 
 # ---------------------------------------------------------------------------
