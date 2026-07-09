@@ -754,6 +754,124 @@ class TestAgentTraceRealtimeHook:
             assert session_span.status == SpanStatus.OK  # wrap() completed normally
             assert any(e.name == "exception" for e in session_span.events)
 
+    async def test_tool_not_found_error_attaches_fuzzy_match(
+        self, tmp_path: Path
+    ) -> None:
+        """#1671: an intermittent 'Tool X not found' ModelBehaviorError
+        crash inside a Realtime/WebSocket voice session — the offending
+        name should be fuzzy-matched against the tools registered on the
+        session's most recently started agent (captured via `agent_start`),
+        with the nearest match + edit distance attached to the exception
+        event."""
+        t = Tracer(trace_dir=tmp_path)
+
+        def _rt_event(event_type: str, **fields: Any) -> Any:
+            e = MagicMock()
+            e.type = event_type
+            for k, v in fields.items():
+                setattr(e, k, v)
+            return e
+
+        weather_tool = MagicMock()
+        weather_tool.name = "get_weather"
+        search_tool = MagicMock()
+        search_tool.name = "search"
+        rt_agent = MagicMock()
+        rt_agent.name = "voice-agent"
+        rt_agent.tools = [weather_tool, search_tool]
+
+        class _FakeSession:
+            def __aiter__(self) -> Any:
+                return self._gen()
+
+            async def _gen(self) -> Any:
+                yield _rt_event("agent_start", agent=rt_agent)
+                # Model hallucinated a near-miss of a registered tool name.
+                yield _rt_event("error", error="Tool get_wather not found")
+
+        with t.start_trace("realtime-tool-not-found") as trace:
+            rt_hook = AgentTraceRealtimeHook(tracer=t, trace=trace)
+            seen = [e async for e in rt_hook.wrap(_FakeSession())]
+            assert len(seen) == 2
+
+            session_span = next(s for s in trace.spans if s.name == "realtime_session")
+            exc_event = next(e for e in session_span.events if e.name == "exception")
+            assert (
+                exc_event.attributes["exception.nearest_registered_tool"]
+                == "get_weather"
+            )
+            assert exc_event.attributes["exception.edit_distance"] == 1
+
+    async def test_tool_not_found_error_without_registered_tools_no_attributes(
+        self, tmp_path: Path
+    ) -> None:
+        """No agent_start event ever fired (or it carried no tools) — there
+        is nothing to fuzzy-match against, so no diagnosis attributes are
+        added; the base exception attributes are still recorded."""
+        t = Tracer(trace_dir=tmp_path)
+
+        def _rt_event(event_type: str, **fields: Any) -> Any:
+            e = MagicMock()
+            e.type = event_type
+            for k, v in fields.items():
+                setattr(e, k, v)
+            return e
+
+        class _FakeSession:
+            def __aiter__(self) -> Any:
+                return self._gen()
+
+            async def _gen(self) -> Any:
+                yield _rt_event("error", error="Tool mystery_tool not found")
+
+        with t.start_trace("realtime-tool-not-found-no-agent") as trace:
+            rt_hook = AgentTraceRealtimeHook(tracer=t, trace=trace)
+            seen = [e async for e in rt_hook.wrap(_FakeSession())]
+            assert len(seen) == 1
+
+            session_span = next(s for s in trace.spans if s.name == "realtime_session")
+            exc_event = next(e for e in session_span.events if e.name == "exception")
+            assert "exception.nearest_registered_tool" not in exc_event.attributes
+            assert "exception.edit_distance" not in exc_event.attributes
+
+    async def test_error_not_matching_tool_not_found_pattern_no_attributes(
+        self, tmp_path: Path
+    ) -> None:
+        """An 'error' event whose text doesn't match the 'Tool <name> not
+        found' shape (e.g. a transient network glitch) must not add fuzzy-
+        match attributes — the diagnosis is specific to that error shape."""
+        t = Tracer(trace_dir=tmp_path)
+
+        def _rt_event(event_type: str, **fields: Any) -> Any:
+            e = MagicMock()
+            e.type = event_type
+            for k, v in fields.items():
+                setattr(e, k, v)
+            return e
+
+        weather_tool = MagicMock()
+        weather_tool.name = "get_weather"
+        rt_agent = MagicMock()
+        rt_agent.name = "voice-agent"
+        rt_agent.tools = [weather_tool]
+
+        class _FakeSession:
+            def __aiter__(self) -> Any:
+                return self._gen()
+
+            async def _gen(self) -> Any:
+                yield _rt_event("agent_start", agent=rt_agent)
+                yield _rt_event("error", error="connection reset by peer")
+
+        with t.start_trace("realtime-unrelated-error") as trace:
+            rt_hook = AgentTraceRealtimeHook(tracer=t, trace=trace)
+            seen = [e async for e in rt_hook.wrap(_FakeSession())]
+            assert len(seen) == 2
+
+            session_span = next(s for s in trace.spans if s.name == "realtime_session")
+            exc_event = next(e for e in session_span.events if e.name == "exception")
+            assert "exception.nearest_registered_tool" not in exc_event.attributes
+
 
 # ---------------------------------------------------------------------------
 # Dead code removal — on_agent_error/on_tool_error (unreachable via the SDK)
