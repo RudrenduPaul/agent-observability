@@ -10,10 +10,23 @@ Run with: uv run pytest tests/integration/ -m integration
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Annotated
 
 import pytest
 
 pytest.importorskip("langgraph", reason="langgraph not installed")
+
+# Module-level (not function-local) on purpose: @tool-decorated functions
+# need their Annotated[...] parameter types resolvable via
+# get_type_hints(func, globalns=func.__globals__) at decoration time — a
+# name only imported inside the enclosing test method's local scope is
+# invisible to that resolution (this file has `from __future__ import
+# annotations`, so annotations are string literals evaluated against
+# __globals__, not local scope) and raises NameError. InjectedState/
+# InjectedStore/BaseStore are safe to import unconditionally here since
+# the whole module already requires langgraph via importorskip above.
+from langgraph.prebuilt import InjectedState, InjectedStore
+from langgraph.store.base import BaseStore
 
 
 @pytest.mark.integration
@@ -1172,21 +1185,25 @@ class TestBranchDispatchExceptionCapture:
         span = branch_spans[0]
         assert span.status == SpanStatus.ERROR
         assert span.attributes.get("langgraph.branch_dispatch") is True
+        assert span.attributes.get("branch.router_name") == "route"
         assert "a" in span.attributes.get("branch.registered_destinations", "")
         exception_events = [e for e in span.events if e.name == "exception"]
         assert exception_events
         assert exception_events[0].attributes["exception.type"] == "KeyError"
 
-    def test_normal_conditional_edge_dispatch_produces_no_branch_error_span(
+    def test_normal_conditional_edge_dispatch_produces_ok_branch_span(
         self, tmp_path: Path
     ) -> None:
-        """A router returning a *registered* destination must not produce
-        any branch:dispatch span — only the failure path should."""
+        """A router returning a *registered* destination must produce an OK
+        branch:dispatch span recording which router ran — not just the
+        failure path. This is the routing-instrumentation half of the
+        conditional-edge/router capture: langgraph#4841 needs to see which
+        router dispatched, whether or not it raised."""
         from typing import TypedDict
 
         from langgraph.graph import END, START, StateGraph
 
-        from agent_trace import Tracer
+        from agent_trace import SpanStatus, Tracer
         from agent_trace.integrations.langgraph import LangGraphTracer
 
         class S(TypedDict):
@@ -1211,7 +1228,11 @@ class TestBranchDispatchExceptionCapture:
 
         assert result["x"] == 1
         branch_spans = [s for s in trace.spans if s.name == "branch:dispatch"]
-        assert branch_spans == []
+        assert len(branch_spans) == 1
+        span = branch_spans[0]
+        assert span.status == SpanStatus.OK
+        assert span.attributes.get("branch.router_name") == "route"
+        assert span.attributes.get("branch.registered_destinations") == "a"
 
 
 @pytest.mark.integration
@@ -1428,3 +1449,360 @@ class TestTracedStreamAgainstRealLangGraph:
         with t.start_trace("stream-test") as trace:
             list(traced_stream(t, graph.stream({"x": 0}, stream_mode="updates")))
         assert any(s.name == "graph:stream" for s in trace.spans)
+
+
+@pytest.mark.integration
+class TestToolArgInjectionCapture:
+    """ToolNode._inject_tool_args() instrumentation — the #4841 shape.
+
+    A tool with an Annotated[..., InjectedState(...)]/InjectedStore()
+    parameter has that value resolved from real graph state/the graph's own
+    BaseStore right before invocation; a same-named plain parameter with no
+    such annotation is left for the model to fill in itself. Both must be
+    observable via tool_inject:<name> spans.
+    """
+
+    @staticmethod
+    def _build_graph():
+        from typing import TypedDict
+
+        from langchain_core.messages import AIMessage
+        from langchain_core.tools import tool
+        from langgraph.graph import END, START, StateGraph
+        from langgraph.prebuilt import ToolNode
+        from langgraph.store.memory import InMemoryStore
+
+        class S(TypedDict):
+            messages: list
+            user_id: str
+
+        @tool
+        def good_tool(
+            query: str,
+            user_id: Annotated[str, InjectedState("user_id")],
+            store: Annotated[BaseStore, InjectedStore()],
+        ) -> str:
+            """Correctly injected tool."""
+            return user_id
+
+        @tool
+        def hallucinated_tool(query: str, user_id: str) -> str:
+            """Not injected — user_id is model-facing."""
+            return user_id
+
+        def route(state) -> str:
+            return "tools"
+
+        builder = StateGraph(S)
+        builder.add_node("tools", ToolNode([good_tool, hallucinated_tool]))
+        builder.add_conditional_edges(START, route, {"tools": "tools"})
+        builder.add_edge("tools", END)
+        graph = builder.compile(store=InMemoryStore())
+
+        ai_msg = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "good_tool",
+                    "args": {"query": "q"},
+                    "id": "call_good",
+                },
+                {
+                    "name": "hallucinated_tool",
+                    "args": {"query": "q", "user_id": "hallucinated-999"},
+                    "id": "call_bad",
+                },
+            ],
+        )
+        return graph, ai_msg
+
+    def test_injected_tool_records_injection_ran_true_with_keys(
+        self, tmp_path: Path
+    ) -> None:
+        from agent_trace import SpanStatus, Tracer
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        graph, ai_msg = self._build_graph()
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("tool-inject-test") as trace:
+            cb = LangGraphTracer(tracer=t, trace=trace, graph=graph)
+            graph.invoke(
+                {"messages": [ai_msg], "user_id": "real-user-1"},
+                config={"callbacks": [cb]},
+            )
+
+        inject_spans = {
+            s.attributes.get("tool.name"): s
+            for s in trace.spans
+            if s.name.startswith("tool_inject:")
+        }
+        assert set(inject_spans) == {"good_tool", "hallucinated_tool"}
+
+        good = inject_spans["good_tool"]
+        assert good.status == SpanStatus.OK
+        assert good.attributes.get("tool.injection_ran") is True
+        injected_keys = good.attributes.get("tool.injected_arg_keys", "")
+        assert "user_id" in injected_keys
+        assert "store" in injected_keys
+
+        bad = inject_spans["hallucinated_tool"]
+        assert bad.attributes.get("tool.injection_ran") is False
+        assert "tool.injected_arg_keys" not in bad.attributes
+
+    def test_injected_tool_receives_real_state_value(self, tmp_path: Path) -> None:
+        """The end-to-end proof: good_tool's ToolMessage content must be the
+        REAL user_id from graph state, not whatever the model would have
+        had to invent."""
+        from agent_trace import Tracer
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        graph, ai_msg = self._build_graph()
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("tool-inject-value-test") as trace:
+            cb = LangGraphTracer(tracer=t, trace=trace, graph=graph)
+            result = graph.invoke(
+                {"messages": [ai_msg], "user_id": "real-user-1"},
+                config={"callbacks": [cb]},
+            )
+
+        tool_messages = {
+            m.tool_call_id: m.content
+            for m in result["messages"]
+            if getattr(m, "type", None) == "tool"
+        }
+        assert tool_messages["call_good"] == "real-user-1"
+        assert tool_messages["call_bad"] == "hallucinated-999"
+
+
+@pytest.mark.integration
+class TestToolParamsShapedLikeStateAgainstRealGraph:
+    """find_tool_params_shaped_like_state() — the schema-level #3266 check —
+    against a real compiled StateGraph + ToolNode."""
+
+    def test_flags_unannotated_state_shaped_param(self) -> None:
+        from typing import TypedDict
+
+        from langchain_core.tools import tool
+        from langgraph.graph import StateGraph
+        from langgraph.prebuilt import ToolNode
+
+        from agent_trace.integrations.langgraph import (
+            find_tool_params_shaped_like_state,
+        )
+
+        class S(TypedDict):
+            messages: list
+            video_path: str
+
+        @tool
+        def hallucinate_tool(query: str, video_path: str) -> str:
+            """video_path shares a name with state but isn't injected."""
+            return video_path
+
+        @tool
+        def good_tool(
+            query: str, video_path: Annotated[str, InjectedState("video_path")]
+        ) -> str:
+            """video_path is correctly injected."""
+            return video_path
+
+        builder = StateGraph(S)
+        builder.add_node("tools", ToolNode([hallucinate_tool, good_tool]))
+        builder.set_entry_point("tools")
+        builder.set_finish_point("tools")
+        graph = builder.compile()
+
+        findings = find_tool_params_shaped_like_state(graph)
+        assert findings == [
+            {"node": "tools", "tool": "hallucinate_tool", "param": "video_path"}
+        ]
+
+    def test_no_findings_when_nothing_shaped_like_state(self) -> None:
+        from typing import TypedDict
+
+        from langchain_core.tools import tool
+        from langgraph.graph import StateGraph
+        from langgraph.prebuilt import ToolNode
+
+        from agent_trace.integrations.langgraph import (
+            find_tool_params_shaped_like_state,
+        )
+
+        class S(TypedDict):
+            messages: list
+
+        @tool
+        def unrelated_tool(query: str) -> str:
+            """No overlap with state field names at all."""
+            return query
+
+        builder = StateGraph(S)
+        builder.add_node("tools", ToolNode([unrelated_tool]))
+        builder.set_entry_point("tools")
+        builder.set_finish_point("tools")
+        graph = builder.compile()
+
+        assert find_tool_params_shaped_like_state(graph) == []
+
+    def test_findings_recorded_onto_trace_metadata_via_tracer_wiring(
+        self, tmp_path: Path
+    ) -> None:
+        """LangGraphTracer(graph=...) runs the check automatically and
+        records findings onto trace.metadata, without requiring the caller
+        to invoke find_tool_params_shaped_like_state() themselves."""
+        from typing import TypedDict
+
+        from langchain_core.tools import tool
+        from langgraph.graph import StateGraph
+        from langgraph.prebuilt import ToolNode
+
+        from agent_trace import Tracer
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        class S(TypedDict):
+            messages: list
+            video_path: str
+
+        @tool
+        def hallucinate_tool(query: str, video_path: str) -> str:
+            """video_path shares a name with state but isn't injected."""
+            return video_path
+
+        builder = StateGraph(S)
+        builder.add_node("tools", ToolNode([hallucinate_tool]))
+        builder.set_entry_point("tools")
+        builder.set_finish_point("tools")
+        graph = builder.compile()
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("schema-check-wiring-test") as trace:
+            LangGraphTracer(tracer=t, trace=trace, graph=graph)
+            # No invocation needed — the check runs at construction time.
+
+        assert "video_path" in trace.metadata.get("tool_state_shaped_params", "")
+        assert "hallucinate_tool" in trace.metadata["tool_state_shaped_params"]
+
+    def test_no_metadata_key_when_no_findings(self, tmp_path: Path) -> None:
+        from typing import TypedDict
+
+        from langgraph.graph import StateGraph
+
+        from agent_trace import Tracer
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        class S(TypedDict):
+            x: int
+
+        def n(state: S) -> S:
+            return {"x": state["x"]}
+
+        builder = StateGraph(S)
+        builder.add_node("n", n)
+        builder.set_entry_point("n")
+        builder.set_finish_point("n")
+        graph = builder.compile()
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("schema-check-no-findings-test") as trace:
+            LangGraphTracer(tracer=t, trace=trace, graph=graph)
+
+        assert "tool_state_shaped_params" not in trace.metadata
+
+
+@pytest.mark.integration
+class TestPerRequestTraceLifecycleAgainstRealGraph:
+    """A LangGraphTracer instance constructed once ('at server startup', the
+    make_graph()-time pattern platform-managed deployments use) and reused
+    across many separate per-request start_trace() contexts must isolate
+    each request's spans into that request's own Trace — never leaking into
+    the construction-time trace or another concurrent request's trace.
+
+    This is possible because span attachment always resolves whichever
+    Trace is active via Tracer._active_trace_var (a ContextVar) at
+    start_span() call time — never the `trace` object captured at
+    LangGraphTracer.__init__ time (confirmed: self._trace is never read
+    anywhere in the class after being stored)."""
+
+    @staticmethod
+    def _build_graph():
+        from typing import TypedDict
+
+        from langgraph.graph import END, START, StateGraph
+
+        class S(TypedDict):
+            x: int
+
+        def n(state: S) -> S:
+            return {"x": state["x"] + 1}
+
+        builder = StateGraph(S)
+        builder.add_node("n", n)
+        builder.add_edge(START, "n")
+        builder.add_edge("n", END)
+        return builder.compile()
+
+    def test_static_handler_reused_across_sequential_traces_isolates_spans(
+        self, tmp_path: Path
+    ) -> None:
+        from agent_trace import Tracer
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        graph = self._build_graph()
+        t = Tracer(trace_dir=tmp_path)
+
+        # Constructed once, bound to a throwaway "startup" trace — the
+        # make_graph()-time pattern.
+        with t.start_trace("startup") as startup_trace:
+            static_handler = LangGraphTracer(tracer=t, trace=startup_trace)
+
+        with t.start_trace("request-1") as trace1:
+            graph.invoke({"x": 1}, config={"callbacks": [static_handler]})
+
+        with t.start_trace("request-2") as trace2:
+            graph.invoke({"x": 10}, config={"callbacks": [static_handler]})
+
+        assert trace1.spans, "request-1 must have its own spans"
+        assert trace2.spans, "request-2 must have its own spans"
+        assert startup_trace.spans == [], (
+            "no spans must leak into the construction-time trace"
+        )
+        # No span from trace1 must appear in trace2 or vice versa.
+        ids1 = {s.span_id for s in trace1.spans}
+        ids2 = {s.span_id for s in trace2.spans}
+        assert ids1.isdisjoint(ids2)
+
+    async def test_static_handler_reused_across_concurrent_async_traces_isolates_spans(
+        self, tmp_path: Path
+    ) -> None:
+        import asyncio
+
+        from agent_trace import Tracer
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        graph = self._build_graph()
+        t = Tracer(trace_dir=tmp_path)
+
+        with t.start_trace("startup-async") as startup_trace:
+            static_handler = LangGraphTracer(tracer=t, trace=startup_trace)
+
+        async def one_request(i: int) -> tuple[int, list[str], str]:
+            with t.start_trace(f"async-request-{i}") as trace:
+                await graph.ainvoke(
+                    {"x": i}, config={"callbacks": [static_handler]}
+                )
+                return i, [s.span_id for s in trace.spans], trace.trace_id
+
+        results = await asyncio.gather(*[one_request(i) for i in range(5)])
+
+        all_span_ids: list[str] = []
+        all_trace_ids: list[str] = []
+        for _i, span_ids, trace_id in results:
+            assert span_ids, "every concurrent request must have its own spans"
+            all_span_ids.extend(span_ids)
+            all_trace_ids.append(trace_id)
+
+        # Every request produced a distinct trace_id and no span_id repeats
+        # across requests (spans never got attributed to the wrong trace).
+        assert len(set(all_trace_ids)) == 5
+        assert len(set(all_span_ids)) == len(all_span_ids)
+        assert startup_trace.spans == []
