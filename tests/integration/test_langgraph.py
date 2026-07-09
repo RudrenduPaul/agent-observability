@@ -659,3 +659,274 @@ class TestLangGraphIntegration:
             f"  Record: {record_lg_attrs}\n"
             f"  Replay: {replay_lg_attrs}"
         )
+
+    # ------------------------------------------------------------------
+    # Previously-discarded data — now captured onto spans (real LangGraph)
+    # ------------------------------------------------------------------
+
+    def test_node_span_captures_inputs_and_outputs(self, tmp_path: Path) -> None:
+        """chain.inputs/chain.outputs must reflect the real node state dict."""
+        from typing import TypedDict
+
+        from langgraph.graph import END, StateGraph
+
+        from agent_trace import Tracer
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        class S(TypedDict):
+            x: int
+
+        builder = StateGraph(S)
+        builder.add_node("step", lambda s: {"x": s["x"] + 1})
+        builder.set_entry_point("step")
+        builder.add_edge("step", END)
+        graph = builder.compile()
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("inputs-outputs-test") as trace:
+            cb = LangGraphTracer(tracer=t, trace=trace)
+            graph.invoke({"x": 5}, config={"callbacks": [cb]})
+
+        node_span = next((s for s in trace.spans if "step" in s.name), None)
+        assert node_span is not None
+        assert node_span.attributes.get("chain.inputs") == '{"x": 5}'
+        assert node_span.attributes.get("chain.outputs") == '{"x": 6}'
+
+    def test_node_span_captures_runtime_context(self, tmp_path: Path) -> None:
+        """chain.runtime must be populated via the RunnableCallable monkeypatch
+        (_install_runtime_capture_patch) for a real graph.invoke() call."""
+        from typing import TypedDict
+
+        from langgraph.graph import END, StateGraph
+
+        from agent_trace import Tracer
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        class S(TypedDict):
+            x: int
+
+        builder = StateGraph(S)
+        builder.add_node("step", lambda s: {"x": s["x"] + 1})
+        builder.set_entry_point("step")
+        builder.add_edge("step", END)
+        graph = builder.compile()
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("runtime-test") as trace:
+            cb = LangGraphTracer(tracer=t, trace=trace)
+            graph.invoke({"x": 0}, config={"callbacks": [cb]})
+
+        node_span = next((s for s in trace.spans if "step" in s.name), None)
+        assert node_span is not None
+        assert "chain.runtime" in node_span.attributes, (
+            f"Expected chain.runtime on the node span; attributes were: "
+            f"{node_span.attributes}"
+        )
+        assert "Runtime" in node_span.attributes["chain.runtime"]
+
+    def test_tool_span_captures_input_and_output(self, tmp_path: Path) -> None:
+        """tool.input/tool.output must reflect the real ToolNode call."""
+        pytest.importorskip("langchain_core", reason="langchain_core not installed")
+
+        from typing import Any, TypedDict
+
+        from langchain_core.callbacks import CallbackManagerForLLMRun
+        from langchain_core.language_models.chat_models import BaseChatModel
+        from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+        from langchain_core.outputs import ChatGeneration, ChatResult
+        from langchain_core.tools import tool
+        from langgraph.graph import END, StateGraph
+        from langgraph.prebuilt import ToolNode
+
+        from agent_trace import Tracer
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        @tool
+        def echo(text: str) -> str:
+            """Echo the given text back."""
+            return f"echo:{text}"
+
+        class _ToolCallingModel(BaseChatModel):
+            @property
+            def _llm_type(self) -> str:
+                return "fake-tool-caller"
+
+            def _generate(
+                self,
+                messages: list[BaseMessage],
+                stop: list[str] | None = None,
+                run_manager: CallbackManagerForLLMRun | None = None,
+                **kwargs: Any,
+            ) -> ChatResult:
+                return ChatResult(
+                    generations=[
+                        ChatGeneration(
+                            message=AIMessage(
+                                content="",
+                                tool_calls=[
+                                    {
+                                        "name": "echo",
+                                        "args": {"text": "hi"},
+                                        "id": "call_1",
+                                    }
+                                ],
+                            )
+                        )
+                    ]
+                )
+
+        class S(TypedDict):
+            messages: list
+
+        model = _ToolCallingModel()
+        tool_node = ToolNode([echo])
+
+        def agent_node(state: S, config) -> S:
+            result = model.invoke(state["messages"], config=config)
+            return {"messages": state["messages"] + [result]}
+
+        builder = StateGraph(S)
+        builder.add_node("agent", agent_node)
+        builder.add_node("tools", tool_node)
+        builder.set_entry_point("agent")
+        builder.add_edge("agent", "tools")
+        builder.add_edge("tools", END)
+        graph = builder.compile()
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("tool-io-test") as trace:
+            cb = LangGraphTracer(tracer=t, trace=trace)
+            graph.invoke(
+                {"messages": [HumanMessage(content="hi")]},
+                config={"callbacks": [cb]},
+            )
+
+        tool_span = next((s for s in trace.spans if s.name.startswith("tool:")), None)
+        assert tool_span is not None, (
+            f"No tool span found. Spans: {[s.name for s in trace.spans]}"
+        )
+        assert "hi" in tool_span.attributes.get("tool.input", "")
+        assert "echo:hi" in tool_span.attributes.get("tool.output", "")
+        assert tool_span.attributes.get("tool.has_event_loop") is False
+
+    def test_llm_span_captures_content_via_fake_chat_model(
+        self, tmp_path: Path
+    ) -> None:
+        """llm.content must carry the actual generated text, not just usage."""
+        pytest.importorskip("langchain_core", reason="langchain_core not installed")
+
+        from typing import Any, TypedDict
+
+        from langchain_core.callbacks import CallbackManagerForLLMRun
+        from langchain_core.language_models.chat_models import BaseChatModel
+        from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+        from langchain_core.outputs import ChatGeneration, ChatResult
+        from langchain_core.runnables import RunnableConfig
+        from langgraph.graph import END, StateGraph
+
+        from agent_trace import Tracer
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        class _FakeChatModel(BaseChatModel):
+            @property
+            def _llm_type(self) -> str:
+                return "fake-chat"
+
+            def _generate(
+                self,
+                messages: list[BaseMessage],
+                stop: list[str] | None = None,
+                run_manager: CallbackManagerForLLMRun | None = None,
+                **kwargs: Any,
+            ) -> ChatResult:
+                return ChatResult(
+                    generations=[
+                        ChatGeneration(message=AIMessage(content="distinctive-text"))
+                    ],
+                )
+
+        class S(TypedDict):
+            messages: list[str]
+
+        model = _FakeChatModel()
+
+        def llm_node(state: S, config: RunnableConfig) -> S:
+            result = model.invoke([HumanMessage(content="hello")], config=config)
+            return {"messages": state["messages"] + [str(result.content)]}
+
+        builder = StateGraph(S)
+        builder.add_node("llm_node", llm_node)
+        builder.set_entry_point("llm_node")
+        builder.add_edge("llm_node", END)
+        graph = builder.compile()
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("content-capture-test") as trace:
+            cb = LangGraphTracer(tracer=t, trace=trace)
+            graph.invoke({"messages": []}, config={"callbacks": [cb]})
+
+        llm_span = next((s for s in trace.spans if s.name.startswith("llm")), None)
+        assert llm_span is not None
+        assert llm_span.attributes.get("llm.content") == "distinctive-text"
+
+    def test_chat_model_start_captures_messages_via_langgraph(
+        self, tmp_path: Path
+    ) -> None:
+        """llm.messages must carry the real HumanMessage content."""
+        pytest.importorskip("langchain_core", reason="langchain_core not installed")
+
+        from typing import Any, TypedDict
+
+        from langchain_core.callbacks import CallbackManagerForLLMRun
+        from langchain_core.language_models.chat_models import BaseChatModel
+        from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+        from langchain_core.outputs import ChatGeneration, ChatResult
+        from langchain_core.runnables import RunnableConfig
+        from langgraph.graph import END, StateGraph
+
+        from agent_trace import Tracer
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        class _FakeChatModel(BaseChatModel):
+            @property
+            def _llm_type(self) -> str:
+                return "fake-chat"
+
+            def _generate(
+                self,
+                messages: list[BaseMessage],
+                stop: list[str] | None = None,
+                run_manager: CallbackManagerForLLMRun | None = None,
+                **kwargs: Any,
+            ) -> ChatResult:
+                return ChatResult(
+                    generations=[ChatGeneration(message=AIMessage(content="ok"))],
+                )
+
+        class S(TypedDict):
+            messages: list[str]
+
+        model = _FakeChatModel()
+
+        def llm_node(state: S, config: RunnableConfig) -> S:
+            result = model.invoke(
+                [HumanMessage(content="a very distinctive prompt")], config=config
+            )
+            return {"messages": state["messages"] + [str(result.content)]}
+
+        builder = StateGraph(S)
+        builder.add_node("llm_node", llm_node)
+        builder.set_entry_point("llm_node")
+        builder.add_edge("llm_node", END)
+        graph = builder.compile()
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("messages-capture-test") as trace:
+            cb = LangGraphTracer(tracer=t, trace=trace)
+            graph.invoke({"messages": []}, config={"callbacks": [cb]})
+
+        llm_span = next((s for s in trace.spans if s.name.startswith("llm")), None)
+        assert llm_span is not None
+        assert "a very distinctive prompt" in llm_span.attributes.get(
+            "llm.messages", ""
+        )
