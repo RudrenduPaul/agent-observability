@@ -606,3 +606,148 @@ class TestAsyncReplayTransport:
         assert response.status_code == 200
         assert "from async fixture" in response.text
         fixture.close()
+
+
+# ---------------------------------------------------------------------------
+# Non-buffering / pass-through streaming capture mode (stream=True)
+# ---------------------------------------------------------------------------
+#
+# respx-mocked responses are always fully-buffered (a single content= chunk),
+# which doesn't exercise a genuine multi-chunk pass-through. These tests use
+# a hand-rolled inner transport whose response stream yields multiple
+# distinct chunks, matching how a real streamed/SSE HTTP response arrives.
+
+_SSE_CHUNKS = [
+    b'data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n',
+    b'data: {"choices":[{"delta":{"content":"lo"}}]}\n\n',
+    b"data: [DONE]\n\n",
+]
+
+
+class _FakeSyncStream(httpx.SyncByteStream):
+    def __iter__(self):
+        yield from _SSE_CHUNKS
+
+    def close(self) -> None:
+        pass
+
+
+class _FakeSyncInnerTransport(httpx.BaseTransport):
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=_FakeSyncStream(),
+            request=request,
+        )
+
+    def close(self) -> None:
+        pass
+
+
+class _FakeAsyncStream(httpx.AsyncByteStream):
+    async def __aiter__(self):
+        for chunk in _SSE_CHUNKS:
+            yield chunk
+
+    async def aclose(self) -> None:
+        pass
+
+
+class _FakeAsyncInnerTransport(httpx.AsyncBaseTransport):
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=_FakeAsyncStream(),
+            request=request,
+        )
+
+    async def aclose(self) -> None:
+        pass
+
+
+class TestRecordingTransportStreamMode:
+    def test_default_mode_unaffected(self, tmp_path) -> None:
+        """stream defaults to False — pre-existing eager-buffering behavior
+        is unchanged when the flag isn't passed."""
+        fixture = _make_fixture(tmp_path)
+        transport = RecordingTransport(fixture, inner=_FakeSyncInnerTransport())
+        assert transport._stream is False
+
+    def test_caller_receives_every_chunk(self, tmp_path) -> None:
+        fixture = _make_fixture(tmp_path)
+        client = httpx.Client(
+            transport=RecordingTransport(
+                fixture, inner=_FakeSyncInnerTransport(), stream=True
+            )
+        )
+        received: list[bytes] = []
+        with client, client.stream("GET", "https://api.example.com/stream") as resp:
+            for chunk in resp.iter_bytes():
+                received.append(chunk)
+        assert received == _SSE_CHUNKS
+
+    def test_fixture_records_full_body_and_chunk_timestamps(self, tmp_path) -> None:
+        fixture = _make_fixture(tmp_path)
+        client = httpx.Client(
+            transport=RecordingTransport(
+                fixture, inner=_FakeSyncInnerTransport(), stream=True
+            )
+        )
+        with client, client.stream("GET", "https://api.example.com/stream") as resp:
+            resp.read()
+
+        assert fixture.exchange_count() == 1
+        exchange = fixture.all_exchanges()[0]
+        assert exchange["response_body"] == b"".join(_SSE_CHUNKS).decode("utf-8")
+        assert exchange["response_status"] == 200
+        timestamps = exchange["chunk_timestamps"]
+        assert timestamps is not None
+        assert len(timestamps) == len(_SSE_CHUNKS)
+        # Arrival offsets must be non-decreasing (each chunk arrives no
+        # earlier than the one before it).
+        assert timestamps == sorted(timestamps)
+
+    def test_non_streaming_exchange_has_no_chunk_timestamps(self, tmp_path) -> None:
+        """An exchange recorded the default (stream=False) way must not
+        carry chunk_timestamps — absence means "not captured this way"."""
+        fixture = _make_fixture(tmp_path)
+        _record_one(fixture, "https://api.example.com/x", "GET", "{}")
+        exchange = fixture.all_exchanges()[0]
+        assert exchange["chunk_timestamps"] is None
+
+
+class TestAsyncRecordingTransportStreamMode:
+    async def test_caller_receives_every_chunk(self, tmp_path) -> None:
+        fixture = _make_fixture(tmp_path)
+        client = httpx.AsyncClient(
+            transport=AsyncRecordingTransport(
+                fixture, inner=_FakeAsyncInnerTransport(), stream=True
+            )
+        )
+        received: list[bytes] = []
+        async with client:
+            async with client.stream("GET", "https://api.example.com/stream") as resp:
+                async for chunk in resp.aiter_bytes():
+                    received.append(chunk)
+        assert received == _SSE_CHUNKS
+
+    async def test_fixture_records_full_body_and_chunk_timestamps(
+        self, tmp_path
+    ) -> None:
+        fixture = _make_fixture(tmp_path)
+        client = httpx.AsyncClient(
+            transport=AsyncRecordingTransport(
+                fixture, inner=_FakeAsyncInnerTransport(), stream=True
+            )
+        )
+        async with client:
+            async with client.stream("GET", "https://api.example.com/stream") as resp:
+                await resp.aread()
+
+        assert fixture.exchange_count() == 1
+        exchange = fixture.all_exchanges()[0]
+        assert exchange["response_body"] == b"".join(_SSE_CHUNKS).decode("utf-8")
+        assert exchange["chunk_timestamps"] is not None
+        assert len(exchange["chunk_timestamps"]) == len(_SSE_CHUNKS)

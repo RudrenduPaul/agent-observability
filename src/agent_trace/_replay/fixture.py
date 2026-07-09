@@ -18,6 +18,7 @@ Why SQLite and not JSON files?
 
 from __future__ import annotations
 
+import itertools
 import json
 import sqlite3
 import threading
@@ -26,7 +27,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any
 
-__all__ = ["Fixture"]
+__all__ = ["Fixture", "max_inter_chunk_gap_ms", "time_to_first_chunk_ms"]
 
 _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS http_exchanges (
@@ -73,6 +74,13 @@ _MIGRATION_COLUMNS: tuple[tuple[str, str], ...] = (
     ("duration_ms", "REAL"),
     ("error_type", "TEXT"),
     ("error_message", "TEXT"),
+    # JSON-encoded list of per-chunk arrival offsets (seconds since the
+    # request was dispatched), populated only when the exchange was recorded
+    # via a streaming/pass-through transport (RecordingTransport(...,
+    # stream=True) / AsyncRecordingTransport(..., stream=True)). NULL for
+    # every exchange recorded the historical eager-buffering way — absence
+    # means "not captured", not "arrived instantly".
+    ("chunk_timestamps", "TEXT"),
 )
 
 
@@ -107,7 +115,36 @@ def _row_to_exchange(row: sqlite3.Row) -> dict[str, Any]:
         "duration_ms": row["duration_ms"] if "duration_ms" in keys else None,
         "error_type": row["error_type"] if "error_type" in keys else None,
         "error_message": row["error_message"] if "error_message" in keys else None,
+        "chunk_timestamps": (
+            json.loads(row["chunk_timestamps"])
+            if "chunk_timestamps" in keys and row["chunk_timestamps"]
+            else None
+        ),
     }
+
+
+def time_to_first_chunk_ms(exchange: dict[str, Any]) -> float | None:
+    """Milliseconds from request dispatch to the first streamed chunk
+    arriving, or None if this exchange has no per-chunk timestamps recorded
+    (not captured via a streaming transport, or a response with zero body
+    chunks)."""
+    timestamps = exchange.get("chunk_timestamps")
+    if not timestamps:
+        return None
+    return float(timestamps[0]) * 1000
+
+
+def max_inter_chunk_gap_ms(exchange: dict[str, Any]) -> float | None:
+    """Largest gap (ms) between two consecutive streamed chunks, or None if
+    this exchange has no per-chunk timestamps recorded. 0.0 for a single
+    chunk (nothing to measure a gap against)."""
+    timestamps = exchange.get("chunk_timestamps")
+    if not timestamps:
+        return None
+    if len(timestamps) < 2:
+        return 0.0
+    gaps = [b - a for a, b in itertools.pairwise(timestamps)]
+    return float(max(gaps)) * 1000
 
 
 class Fixture:
@@ -156,6 +193,7 @@ class Fixture:
         duration_ms: float | None = None,
         error_type: str | None = None,
         error_message: str | None = None,
+        chunk_timestamps: list[float] | None = None,
     ) -> None:
         """Persist one HTTP round-trip — or one failed-before-response
         attempt — to the fixture database.
@@ -183,7 +221,11 @@ class Fixture:
         recorded_at. ``duration_ms``, when provided, is the caller-measured
         elapsed time for the underlying transport call (dispatch to response,
         or dispatch to the failure being raised) — likewise audit/debugging
-        data, not used for replay ordering.
+        data, not used for replay ordering. ``chunk_timestamps``, when
+        provided, is a list of per-chunk arrival offsets (seconds since
+        dispatch) for a streamed response recorded via a pass-through
+        transport — see ``time_to_first_chunk_ms``/``max_inter_chunk_gap_ms``
+        below for reading it back.
         """
         if response_status is None and error_type is None:
             raise ValueError(
@@ -204,8 +246,8 @@ class Fixture:
                     (trace_id, url, method, request_headers, request_body,
                      response_status, response_headers, response_body,
                      recorded_at, sequence_num, duration_ms, error_type,
-                     error_message)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     error_message, chunk_timestamps)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     self._trace_id,
@@ -221,6 +263,11 @@ class Fixture:
                     duration_ms,
                     error_type,
                     error_message,
+                    (
+                        json.dumps(chunk_timestamps)
+                        if chunk_timestamps is not None
+                        else None
+                    ),
                 ),
             )
             self._conn.commit()
@@ -247,7 +294,7 @@ class Fixture:
                 SELECT id, url, method, request_headers, request_body,
                        response_status, response_headers, response_body,
                        recorded_at, sequence_num, duration_ms, error_type,
-                       error_message
+                       error_message, chunk_timestamps
                 FROM http_exchanges
                 WHERE method = ? AND url = ? AND id > ?
                 ORDER BY id ASC
@@ -274,7 +321,7 @@ class Fixture:
                 SELECT url, method, request_headers, request_body,
                        response_status, response_headers, response_body,
                        recorded_at, sequence_num, duration_ms, error_type,
-                       error_message
+                       error_message, chunk_timestamps
                 FROM http_exchanges
                 ORDER BY sequence_num ASC
                 """

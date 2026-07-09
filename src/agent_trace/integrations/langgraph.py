@@ -23,6 +23,7 @@ import json
 import logging
 import threading
 import uuid
+from collections.abc import AsyncGenerator, AsyncIterable, Generator, Iterable
 from typing import TYPE_CHECKING, Any
 
 from agent_trace.core.span import Span, SpanStatus
@@ -30,7 +31,7 @@ from agent_trace.core.span import Span, SpanStatus
 if TYPE_CHECKING:
     from agent_trace import Trace, Tracer
 
-__all__ = ["LangGraphTracer"]
+__all__ = ["LangGraphTracer", "traced_astream", "traced_stream"]
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,12 @@ _MAX_ATTR_LEN = 8_000
 # yield a brand-new child Mock) that would otherwise recurse indefinitely.
 _MAX_SERIALIZE_DEPTH = 6
 _MAX_COLLECTION_ITEMS = 200
+
+# Cap on the number of llm_stream_delta SpanEvents recorded per LLM span —
+# a long stream (thousands of tokens) would otherwise grow a single span
+# unboundedly. llm.stream_token_count keeps counting past this cap; only
+# new SpanEvents stop being appended.
+_MAX_STREAM_EVENTS_PER_SPAN = 500
 
 
 def _safe_str(value: Any) -> str:
@@ -726,6 +733,68 @@ def _record_llm_end_data(span: Span, response: Any) -> None:
         span.set_attribute("llm.content", _stringify(content))
 
 
+def _extract_tool_call_chunks(chunk: Any) -> Any:
+    """Best-effort extraction of a streaming ChatGenerationChunk's
+    ``message.tool_call_chunks`` (the partial/incremental tool-call-argument
+    fragments LangChain attaches per streamed delta), or None if *chunk* is
+    absent or isn't that shape (e.g. a plain GenerationChunk from a legacy,
+    non-chat LLM)."""
+    message = getattr(chunk, "message", None)
+    if message is None:
+        return None
+    return getattr(message, "tool_call_chunks", None) or None
+
+
+def _get_declared_node_tags(graph: Any, node_name: str) -> list[str] | None:
+    """Best-effort: read a compiled LangGraph graph's node-level *declared*
+    tags — the tags a developer attached to the node's own action/runnable
+    at graph-construction time (e.g. ``builder.add_node("n",
+    my_fn.with_config(tags=["nostream"]))``) — as distinct from the purely
+    LangGraph-internal *runtime* tags (e.g. ``"graph:step:2"``) that
+    ``on_chain_start``'s own ``tags`` kwarg already carries for every node
+    run, which never include a developer-declared tag like ``"nostream"``.
+
+    How this actually works (confirmed by direct inspection of the
+    installed LangGraph, not assumed from docs): the current
+    ``StateGraph.add_node()`` has **no** ``tags=`` keyword argument at all —
+    a node's own declared tags only exist if the developer wrapped the
+    node's action in ``.with_config(tags=[...])`` *before* passing it to
+    ``add_node()``. LangGraph's own ``PregelNode.tags`` field (whose
+    docstring says "Tags to attach to the node for tracing") is never
+    actually populated by ``StateGraph`` for a regular node — it stays
+    ``None`` regardless of what was declared. The tags survive only on the
+    compiled node's own bound Runnable's ``.config`` dict, reachable at
+    ``graph.nodes[node_name].bound.config.get("tags")``.
+
+    Wrapped entirely in try/except: this reaches into private-ish LangGraph
+    attributes (``.nodes``, ``.bound``, ``.config``) that may not exist, or
+    may be shaped differently, on other LangGraph versions — a mismatch
+    degrades to "no declared tags captured" (returns None), never an
+    exception raised into the caller's ``graph.invoke()``/``.stream()``
+    call.
+    """
+    try:
+        nodes = getattr(graph, "nodes", None)
+        if nodes is None:
+            return None
+        node = nodes.get(node_name)
+        if node is None:
+            return None
+        bound = getattr(node, "bound", None)
+        config = getattr(bound, "config", None) or {}
+        tags = config.get("tags")
+        if not tags:
+            return None
+        return [str(t) for t in tags]
+    except Exception:
+        logger.debug(
+            "agent-trace: failed to read declared node tags for node %r",
+            node_name,
+            exc_info=True,
+        )
+        return None
+
+
 def _require_langchain_core() -> Any:
     """Lazy import guard — raises a clear error if langchain_core is absent."""
     try:
@@ -783,12 +852,27 @@ def _get_tracer_class() -> type:
         class _LangGraphTracerImpl(base_cls):  # type: ignore[misc]
             """Concrete implementation — see LangGraphTracer for public docs."""
 
-            def __init__(self, tracer: Tracer, trace: Trace) -> None:
+            def __init__(
+                self, tracer: Tracer, trace: Trace, *, graph: Any = None
+            ) -> None:
                 super().__init__()
                 self._tracer: Tracer = tracer
                 self._trace: Trace = trace
+                # Optional: the compiled graph this tracer instruments.
+                # When supplied, on_chain_start can additionally look up
+                # each node's graph-construction-time *declared* tags (see
+                # _get_declared_node_tags) — information the runtime `tags`
+                # callback kwarg alone never carries. None (the default)
+                # keeps the pre-existing behavior: no declared-tags lookup,
+                # every other capability unaffected.
+                self._graph: Any = graph
                 # Thread-safe span registry: run_id (UUID str) -> open Span
                 self._spans: dict[str, Span] = {}
+                # Per-run streaming-token counters (on_llm_new_token), so
+                # llm.stream_token_count can keep counting past the
+                # per-span SpanEvent cap without holding the events
+                # themselves. Cleared alongside the span on close.
+                self._stream_token_counts: dict[str, int] = {}
                 self._lock: threading.Lock = threading.Lock()
                 # Best-effort: makes this instance discoverable to the
                 # Branch-dispatch patch (see _record_branch_dispatch_error),
@@ -833,6 +917,7 @@ def _get_tracer_class() -> type:
                 run_key = str(run_id)
                 with self._lock:
                     span = self._spans.pop(run_key, None)
+                    self._stream_token_counts.pop(run_key, None)
                 if span is not None and span.end_time is None:
                     span.end(status)
                 return span
@@ -861,6 +946,7 @@ def _get_tracer_class() -> type:
                 run_key = str(run_id)
                 with self._lock:
                     span = self._spans.pop(run_key, None)
+                    self._stream_token_counts.pop(run_key, None)
                 if span is None:
                     return
 
@@ -909,6 +995,12 @@ def _get_tracer_class() -> type:
                 span.set_attribute("langgraph.node", node_name)
                 if tags:
                     span.set_attribute("langgraph.tags", ",".join(tags))
+                if self._graph is not None:
+                    declared_tags = _get_declared_node_tags(self._graph, node_name)
+                    if declared_tags:
+                        span.set_attribute(
+                            "langgraph.declared_tags", ",".join(declared_tags)
+                        )
                 if metadata:
                     span.set_attribute("chain.metadata", _to_attr_string(metadata))
                 if inputs:
@@ -1020,6 +1112,64 @@ def _get_tracer_class() -> type:
                     span.set_attribute("llm.messages", _to_attr_string(messages))
                 if metadata:
                     span.set_attribute("llm.metadata", _to_attr_string(metadata))
+
+            def on_llm_new_token(
+                self,
+                token: str,
+                *,
+                chunk: Any = None,
+                run_id: uuid.UUID,
+                parent_run_id: uuid.UUID | None = None,
+                tags: list[str] | None = None,
+                **kwargs: Any,
+            ) -> None:
+                """Record a per-token/per-delta streaming chunk instead of
+                discarding it.
+
+                This is the one real streaming hook the current
+                ``langchain_core`` ``BaseCallbackHandler`` interface exposes
+                (confirmed via direct inspection of the installed
+                langchain-core): it fires for both legacy ``LLM.stream()``
+                calls and modern chat-model streaming alike — LangChain
+                routes both through this single callback, passing a
+                ``GenerationChunk`` or ``ChatGenerationChunk`` via *chunk*
+                depending on which. There is no separate
+                ``on_chat_model_stream`` method on the base handler to
+                implement.
+
+                Bounded: after _MAX_STREAM_EVENTS_PER_SPAN tokens, further
+                deltas stop generating new SpanEvents (a long stream would
+                otherwise grow the span unboundedly) but
+                ``llm.stream_token_count`` keeps counting every token that
+                arrived.
+                """
+                run_key = str(run_id)
+                with self._lock:
+                    span = self._spans.get(run_key)
+                    count = self._stream_token_counts.get(run_key, 0) + 1
+                    self._stream_token_counts[run_key] = count
+                if span is None:
+                    return
+                try:
+                    span.set_attribute("llm.streamed", True)
+                    span.set_attribute("llm.stream_token_count", count)
+                    if count <= _MAX_STREAM_EVENTS_PER_SPAN:
+                        attrs: dict[str, Any] = {"stream.index": count - 1}
+                        if token:
+                            attrs["token"] = _stringify(token, max_len=2000)
+                        tool_call_chunks = _extract_tool_call_chunks(chunk)
+                        if tool_call_chunks:
+                            attrs["tool_call_chunks"] = _to_attr_string(
+                                tool_call_chunks, max_len=2000
+                            )
+                        span.add_event("llm_stream_delta", attributes=attrs)
+                except Exception:
+                    logger.debug(
+                        "agent-trace: failed to record streaming token for "
+                        "run %r",
+                        str(run_id),
+                        exc_info=True,
+                    )
 
             def on_llm_end(
                 self,
@@ -1134,6 +1284,120 @@ def _get_tracer_class() -> type:
         return _LangGraphTracerClass
 
 
+# ---------------------------------------------------------------------------
+# traced_stream / traced_astream — stream-yield timestamp + content capture
+# ---------------------------------------------------------------------------
+#
+# LangGraphTracer only implements the standard LangChain callback pairs
+# (on_chain_start/end, on_llm_start/end, on_tool_start/end, ...), none of
+# which fire on "a value was actually yielded from the graph's own
+# .stream()/.astream() iterator to the caller's code". That boundary matters:
+# graph.invoke(state, stream_mode=...) fully drains the generator internally
+# before returning (Pregel.invoke() loops `for chunk in self.stream(...)`
+# and only returns once exhausted) while graph.stream(...) yields
+# progressively — two very different externally-observed delivery timings
+# that look identical in a trace with only callback-derived spans, since
+# every chain/llm/tool span closes at the same internal moment either way.
+#
+# traced_stream()/traced_astream() wrap *any* iterable/async-iterable
+# (typically the return value of graph.stream(...)/graph.astream(...), with
+# whatever stream_mode was requested) in a dedicated span, recording a
+# SpanEvent — timestamped on the same clock as every other span
+# (core.clock.get_time(), via Span.add_event) — at the exact moment each
+# item is yielded back to the calling code, plus a bounded, serialized copy
+# of the chunk's own content. This also directly captures stream_mode's
+# actual per-chunk output (messages/updates/values, whichever mode was
+# requested) onto the trace, not just its timing.
+
+
+def _record_stream_yield(span: Span, index: int, item: Any) -> None:
+    """Append one bounded stream_yield SpanEvent, capped at
+    _MAX_STREAM_EVENTS_PER_SPAN so an unbounded stream can't grow a single
+    span's event list without limit."""
+    if index >= _MAX_STREAM_EVENTS_PER_SPAN:
+        return
+    span.add_event(
+        "stream_yield",
+        attributes={
+            "stream.index": index,
+            "stream.chunk": _stringify(item, max_len=2000),
+        },
+    )
+
+
+def traced_stream(
+    tracer: Tracer,
+    stream: Iterable[Any],
+    *,
+    span_name: str = "graph:stream",
+) -> Generator[Any, None, None]:
+    """Wrap a LangGraph graph's ``.stream()`` iterator (or any other
+    iterable) so each item's yield moment — and a bounded copy of its
+    content — lands on the trace timeline.
+
+    Usage::
+
+        for chunk in traced_stream(tracer, graph.stream(state,
+                                                          stream_mode="messages")):
+            ...
+
+    Opens one ``graph:stream`` span (customizable via *span_name*) that
+    stays open for the lifetime of the iteration, closing OK once the
+    source stream is exhausted, ERROR if the source stream itself raises
+    (the exception is recorded onto the span then re-raised unchanged), or
+    CANCELLED if the caller stops iterating early (e.g. a ``break``) and
+    this generator is garbage-collected/closed before exhaustion.
+    """
+    span = tracer.start_span(span_name)
+    index = 0
+    status = SpanStatus.OK
+    try:
+        for item in stream:
+            _record_stream_yield(span, index, item)
+            index += 1
+            yield item
+    except GeneratorExit:
+        status = SpanStatus.CANCELLED
+        raise
+    except Exception as exc:
+        status = SpanStatus.ERROR
+        span.record_exception(exc)
+        raise
+    finally:
+        span.set_attribute("stream.chunk_count", index)
+        if span.end_time is None:
+            span.end(status)
+
+
+async def traced_astream(
+    tracer: Tracer,
+    stream: AsyncIterable[Any],
+    *,
+    span_name: str = "graph:astream",
+) -> AsyncGenerator[Any, None]:
+    """Async equivalent of :func:`traced_stream` — wraps
+    ``graph.astream(...)`` (or any other async iterable) the same way."""
+    span = tracer.start_span(span_name)
+    index = 0
+    status = SpanStatus.OK
+    try:
+        async for item in stream:
+            _record_stream_yield(span, index, item)
+            index += 1
+            yield item
+    except GeneratorExit:
+        status = SpanStatus.CANCELLED
+        raise
+    except Exception as exc:
+        status = SpanStatus.ERROR
+        span.record_exception(exc)
+        raise
+    finally:
+        span.set_attribute("stream.chunk_count", index)
+        if span.end_time is None:
+            span.end(status)
+
+
 class LangGraphTracer:
     """Langchain/LangGraph callback handler that emits agent-trace spans.
 
@@ -1152,18 +1416,28 @@ class LangGraphTracer:
         The active :class:`~agent_trace.Tracer` instance.
     trace:
         The :class:`~agent_trace.Trace` that spans will be registered on.
+    graph:
+        Optional: the compiled LangGraph graph this tracer instruments.
+        When supplied, node spans additionally carry a
+        ``langgraph.declared_tags`` attribute — each node's
+        graph-construction-time declared tags (e.g. from
+        ``.with_config(tags=["nostream"])``), which the runtime callback
+        ``tags`` kwarg alone never exposes. Omit (the default, None) to keep
+        the pre-existing behavior with no declared-tags lookup.
     """
 
-    def __new__(cls, tracer: Tracer, trace: Trace) -> LangGraphTracer:
+    def __new__(
+        cls, tracer: Tracer, trace: Trace, *, graph: Any = None
+    ) -> LangGraphTracer:
         # Construct the concrete impl directly so Python's normal type.__call__
         # runs _LangGraphTracerImpl.__init__ automatically.  We cannot use
         # impl_cls.__new__(impl_cls) + manual __init__ because the returned
         # object would not be an instance of LangGraphTracer, causing Python
         # to skip __init__ entirely — leaving _tracer/_trace/_spans unset.
         impl_cls = _get_tracer_class()
-        return impl_cls(tracer, trace)  # type: ignore[no-any-return]
+        return impl_cls(tracer, trace, graph=graph)  # type: ignore[no-any-return]
 
-    def __init__(self, tracer: Tracer, trace: Trace) -> None:
+    def __init__(self, tracer: Tracer, trace: Trace, *, graph: Any = None) -> None:
         # __init__ is called on the instance whose __class__ is already the
         # concrete impl class (set by __new__).  Delegate to its __init__.
         # This path is only reached if someone subclasses LangGraphTracer

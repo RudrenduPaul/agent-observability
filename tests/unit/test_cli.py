@@ -15,6 +15,8 @@ from agent_trace._cli import (
     _error_classification_rows,
     _print_duplicate_node_spans,
     _print_error_classification,
+    _print_streaming_timing,
+    _streaming_timing_rows,
 )
 
 # ---------------------------------------------------------------------------
@@ -181,3 +183,57 @@ class TestPrintDuplicateNodeSpans:
         assert "node:get_time" in out
         assert "executed 2 times" in out
         assert "Duplicate node spans" in out
+
+
+# ---------------------------------------------------------------------------
+# _streaming_timing_rows() / _print_streaming_timing()
+# ---------------------------------------------------------------------------
+
+
+def _exchange(
+    url: str = "https://api.example.com/v1/chat",
+    method: str = "POST",
+    chunk_timestamps: list[float] | None = None,
+) -> dict[str, object]:
+    return {"url": url, "method": method, "chunk_timestamps": chunk_timestamps}
+
+
+class TestStreamingTimingRows:
+    def test_empty_exchanges_returns_empty(self) -> None:
+        assert _streaming_timing_rows([]) == []
+
+    def test_exchange_without_chunk_timestamps_skipped(self) -> None:
+        assert _streaming_timing_rows([_exchange(chunk_timestamps=None)]) == []
+
+    def test_exchange_with_chunk_timestamps_included(self) -> None:
+        rows = _streaming_timing_rows(
+            [_exchange(chunk_timestamps=[0.0, 0.1, 0.2])]
+        )
+        assert len(rows) == 1
+        assert rows[0]["chunk_count"] == 3
+        assert rows[0]["time_to_first_chunk_ms"] == 0.0
+        assert rows[0]["max_inter_chunk_gap_ms"] == 100.0
+
+    def test_mixed_exchanges_only_streaming_ones_included(self) -> None:
+        rows = _streaming_timing_rows(
+            [
+                _exchange(url="https://a", chunk_timestamps=[0.0, 0.05]),
+                _exchange(url="https://b", chunk_timestamps=None),
+            ]
+        )
+        assert len(rows) == 1
+        assert rows[0]["url"] == "https://a"
+
+
+class TestPrintStreamingTiming:
+    def test_no_output_when_no_streaming_exchanges(self, capsys) -> None:
+        _print_streaming_timing([_exchange(chunk_timestamps=None)])
+        assert capsys.readouterr().out == ""
+
+    def test_prints_timing_line_for_streaming_exchange(self, capsys) -> None:
+        _print_streaming_timing([_exchange(chunk_timestamps=[0.0, 0.02, 0.05])])
+        out = capsys.readouterr().out
+        assert "Streaming timing" in out
+        assert "chunks=" in out
+        assert "first_chunk=" in out
+        assert "max_gap=" in out
