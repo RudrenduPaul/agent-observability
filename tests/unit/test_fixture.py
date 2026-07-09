@@ -229,6 +229,141 @@ class TestAllExchanges:
 
 
 # ---------------------------------------------------------------------------
+# WebSocket frames (ws_frames)
+# ---------------------------------------------------------------------------
+
+
+class TestWsFrames:
+    def test_ws_frame_count_starts_at_zero(self, tmp_path: Path) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            assert f.ws_frame_count() == 0
+
+    def test_record_ws_frame_increments_count(self, tmp_path: Path) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            f.record_ws_frame("conn-1", "wss://x", "send", "hello")
+            assert f.ws_frame_count() == 1
+
+    def test_next_ws_frame_returns_first_recorded(self, tmp_path: Path) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            f.record_ws_frame("conn-1", "wss://x", "recv", "first")
+            frame = f.next_ws_frame("conn-1", "recv")
+            assert frame is not None
+            assert frame["payload"] == "first"
+
+    def test_next_ws_frame_returns_in_order(self, tmp_path: Path) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            f.record_ws_frame("conn-1", "wss://x", "recv", "one")
+            f.record_ws_frame("conn-1", "wss://x", "recv", "two")
+            f.record_ws_frame("conn-1", "wss://x", "recv", "three")
+
+            payloads = [
+                f.next_ws_frame("conn-1", "recv")["payload"]
+                for _ in range(3)  # type: ignore[index]
+            ]
+            assert payloads == ["one", "two", "three"]
+
+    def test_next_ws_frame_returns_none_when_exhausted(self, tmp_path: Path) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            f.record_ws_frame("conn-1", "wss://x", "recv", "only")
+            f.next_ws_frame("conn-1", "recv")
+            assert f.next_ws_frame("conn-1", "recv") is None
+
+    def test_next_ws_frame_returns_none_for_unknown_connection(
+        self, tmp_path: Path
+    ) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            assert f.next_ws_frame("never-recorded", "recv") is None
+
+    def test_send_and_recv_directions_have_independent_cursors(
+        self, tmp_path: Path
+    ) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            f.record_ws_frame("conn-1", "wss://x", "send", "out-1")
+            f.record_ws_frame("conn-1", "wss://x", "recv", "in-1")
+            f.record_ws_frame("conn-1", "wss://x", "send", "out-2")
+
+            assert f.next_ws_frame("conn-1", "send")["payload"] == "out-1"  # type: ignore[index]
+            assert f.next_ws_frame("conn-1", "recv")["payload"] == "in-1"  # type: ignore[index]
+            assert f.next_ws_frame("conn-1", "send")["payload"] == "out-2"  # type: ignore[index]
+
+    def test_different_connections_do_not_interfere(self, tmp_path: Path) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            f.record_ws_frame("conn-A", "wss://x", "recv", "a-frame")
+            f.record_ws_frame("conn-B", "wss://x", "recv", "b-frame")
+
+            assert f.next_ws_frame("conn-A", "recv")["payload"] == "a-frame"  # type: ignore[index]
+            assert f.next_ws_frame("conn-B", "recv")["payload"] == "b-frame"  # type: ignore[index]
+            assert f.next_ws_frame("conn-A", "recv") is None
+
+    def test_reset_ws_read_cursor_allows_replay_from_beginning(
+        self, tmp_path: Path
+    ) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            f.record_ws_frame("conn-1", "wss://x", "recv", "replay-me")
+            f.next_ws_frame("conn-1", "recv")
+            assert f.next_ws_frame("conn-1", "recv") is None
+
+            f.reset_ws_read_cursor()
+            frame = f.next_ws_frame("conn-1", "recv")
+            assert frame is not None
+            assert frame["payload"] == "replay-me"
+
+    def test_all_ws_frames_empty(self, tmp_path: Path) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            assert f.all_ws_frames() == []
+
+    def test_all_ws_frames_in_sequence_order_across_connections(
+        self, tmp_path: Path
+    ) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            f.record_ws_frame("conn-A", "wss://x", "send", "a-out")
+            f.record_ws_frame("conn-B", "wss://x", "send", "b-out")
+            f.record_ws_frame("conn-A", "wss://x", "recv", "a-in")
+
+            frames = f.all_ws_frames()
+            assert [fr["payload"] for fr in frames] == ["a-out", "b-out", "a-in"]
+
+    def test_all_ws_frames_filters_by_connection_id(self, tmp_path: Path) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            f.record_ws_frame("conn-A", "wss://x", "send", "a-out")
+            f.record_ws_frame("conn-B", "wss://x", "send", "b-out")
+
+            frames = f.all_ws_frames(connection_id="conn-A")
+            assert len(frames) == 1
+            assert frames[0]["payload"] == "a-out"
+
+    def test_ws_frame_count_filters_by_connection_id(self, tmp_path: Path) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            f.record_ws_frame("conn-A", "wss://x", "send", "a-out")
+            f.record_ws_frame("conn-A", "wss://x", "recv", "a-in")
+            f.record_ws_frame("conn-B", "wss://x", "send", "b-out")
+
+            assert f.ws_frame_count(connection_id="conn-A") == 2
+            assert f.ws_frame_count(connection_id="conn-B") == 1
+            assert f.ws_frame_count() == 3
+
+    def test_default_frame_type_is_text(self, tmp_path: Path) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            f.record_ws_frame("conn-1", "wss://x", "send", "plain")
+            assert f.all_ws_frames()[0]["frame_type"] == "text"
+
+    def test_binary_frame_type_is_preserved(self, tmp_path: Path) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            f.record_ws_frame(
+                "conn-1", "wss://x", "recv", "audio-bytes", frame_type="binary"
+            )
+            assert f.all_ws_frames()[0]["frame_type"] == "binary"
+
+    def test_ws_frames_do_not_affect_http_exchange_count(self, tmp_path: Path) -> None:
+        """ws_frames and http_exchanges are independent tables/sequences."""
+        with Fixture(tmp_path / "f.db") as f:
+            _record(f)
+            f.record_ws_frame("conn-1", "wss://x", "send", "hello")
+            assert f.exchange_count() == 1
+            assert f.ws_frame_count() == 1
+
+
+# ---------------------------------------------------------------------------
 # Thread safety
 # ---------------------------------------------------------------------------
 
