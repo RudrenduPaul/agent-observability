@@ -171,3 +171,17 @@ If your agents make parallel async calls (via `Runner.run()` instead of
   replayed in the order they were made. The fixture cursor is keyed per URL,
   so if two different tool endpoints are called, their responses are tracked
   independently.
+
+- **Replay cannot simulate a modified request:** `ReplayTransport`/
+  `AsyncReplayTransport` only ever serve back the exact recorded
+  `response_body` for a matching `(method, url)` — they never reconstruct
+  what a request with different parameters would have returned. If you
+  change `model_settings` (e.g. `reasoning_effort`, `verbosity`), swap
+  models, or edit a tool schema and then replay the *old* fixture, you get
+  the *old* response back, not a re-run against your change. This matters
+  specifically for `openai-agents` because `model_settings` differences
+  across model versions are a real failure mode (see the "model_settings"
+  span attributes above) — validating a `model_settings` fix requires a
+  fresh recording, not a replay of the pre-fix run. Record/replay is a tool
+  for reproducing and debugging a *captured* run offline at zero API cost,
+  not a substitute for re-running inference against a changed request.
