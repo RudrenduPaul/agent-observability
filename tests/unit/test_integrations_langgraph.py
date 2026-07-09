@@ -58,11 +58,24 @@ def patched_langchain(monkeypatch):
     original = lg_module._LangGraphTracerClass
     lg_module._LangGraphTracerClass = None
 
+    # _install_runtime_capture_patch() also caches its outcome globally
+    # (success or failure) the first time it ever runs. If *this* test is
+    # the first thing in the whole process to trigger it, the fake
+    # langchain_core above makes the (real) langgraph._internal._runnable
+    # module's own `from langchain_core.runnables import ...` fail — not
+    # because the real patch is broken, but because langchain_core is a
+    # stub here. Save/restore the flag around the fake-module window so
+    # that false negative doesn't permanently poison the patch for the rest
+    # of the test session (e.g. the later, real-langchain_core integration
+    # tests).
+    original_runtime_patch_installed = lg_module._runtime_patch_installed
+
     yield fakes
 
     # Restore the cached class so other tests (real langchain, integration) are
     # not affected by the reset.
     lg_module._LangGraphTracerClass = original
+    lg_module._runtime_patch_installed = original_runtime_patch_installed
 
 
 @pytest.fixture()
@@ -265,6 +278,449 @@ class TestLangGraphCallbacks:
         phantom_id = _run_id()
         handler.on_chain_end({}, run_id=phantom_id)  # must not raise
         handler.on_tool_end("x", run_id=phantom_id)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Previously-discarded data — now captured onto spans
+# ---------------------------------------------------------------------------
+
+
+class TestChainInputsOutputsMetadata:
+    """on_chain_start/on_chain_end: persist inputs/outputs/metadata."""
+
+    def test_chain_start_captures_inputs(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chain_start({"name": "my_node"}, {"x": 1, "y": "hi"}, run_id=run_id)
+        span = handler._spans[str(run_id)]
+        assert span.attributes.get("chain.inputs") == '{"x": 1, "y": "hi"}'
+
+    def test_chain_start_empty_inputs_sets_no_attribute(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chain_start({"name": "my_node"}, {}, run_id=run_id)
+        span = handler._spans[str(run_id)]
+        assert "chain.inputs" not in span.attributes
+
+    def test_chain_end_captures_outputs(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chain_start({"name": "my_node"}, {}, run_id=run_id)
+        span_ref = handler._spans[str(run_id)]
+        handler.on_chain_end({"result": "done"}, run_id=run_id)
+        assert span_ref.attributes.get("chain.outputs") == '{"result": "done"}'
+
+    def test_chain_start_captures_metadata(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chain_start(
+            {"name": "my_node"},
+            {},
+            run_id=run_id,
+            metadata={"user_key": "abc"},
+        )
+        span = handler._spans[str(run_id)]
+        assert span.attributes.get("chain.metadata") == '{"user_key": "abc"}'
+
+    def test_chain_end_unknown_run_id_is_noop(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        handler.on_chain_end({"result": "done"}, run_id=_run_id())  # must not raise
+
+
+class TestChatModelMessagesCapture:
+    """on_chat_model_start: persist the full messages list, not just the model name."""
+
+    def test_chat_model_start_captures_messages(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chat_model_start(
+            {"name": "ChatOpenAI"},
+            [[{"type": "human", "content": "hello"}]],
+            run_id=run_id,
+        )
+        span = handler._spans[str(run_id)]
+        assert "hello" in span.attributes.get("llm.messages", "")
+
+    def test_chat_model_start_serializes_basemessage_like_objects(
+        self, tracer_and_trace
+    ):
+        """Objects exposing model_dump() (BaseMessage's pydantic-v2 shape)
+        must be serialized via model_dump(), not str()."""
+
+        class FakeMessage:
+            def __init__(self, content: str) -> None:
+                self.content = content
+
+            def model_dump(self) -> dict:
+                return {"type": "human", "content": self.content}
+
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chat_model_start(
+            {"name": "ChatOpenAI"}, [[FakeMessage("via model_dump")]], run_id=run_id
+        )
+        span = handler._spans[str(run_id)]
+        assert "via model_dump" in span.attributes.get("llm.messages", "")
+
+    def test_chat_model_start_captures_metadata(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chat_model_start(
+            {"name": "ChatOpenAI"},
+            [[]],
+            run_id=run_id,
+            metadata={"run_id": "corr-123"},
+        )
+        span = handler._spans[str(run_id)]
+        assert "corr-123" in span.attributes.get("llm.metadata", "")
+
+
+class TestLlmEndResponseCapture:
+    """on_llm_end: response content, response_metadata/generation_info,
+    finish_reason, tool-call presence, and the usage_metadata fallback."""
+
+    def test_llm_end_captures_content(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chat_model_start({"name": "gpt-4"}, [[]], run_id=run_id)
+
+        message = MagicMock()
+        message.content = "hello from the model"
+        message.tool_calls = []
+        message.response_metadata = {}
+        gen = MagicMock()
+        gen.message = message
+        gen.generation_info = {}
+        response = MagicMock()
+        response.llm_output = {}
+        response.generations = [[gen]]
+
+        handler.on_llm_end(response, run_id=run_id)
+        assert trace.spans[-1].attributes.get("llm.content") == "hello from the model"
+
+    def test_llm_end_captures_finish_reason(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chat_model_start({"name": "gemini"}, [[]], run_id=run_id)
+
+        message = MagicMock()
+        message.content = ""
+        message.tool_calls = []
+        message.response_metadata = {"finish_reason": "MALFORMED_FUNCTION_CALL"}
+        gen = MagicMock()
+        gen.message = message
+        gen.generation_info = {}
+        response = MagicMock()
+        response.llm_output = {}
+        response.generations = [[gen]]
+
+        handler.on_llm_end(response, run_id=run_id)
+        assert (
+            trace.spans[-1].attributes.get("llm.finish_reason")
+            == "MALFORMED_FUNCTION_CALL"
+        )
+        assert "MALFORMED_FUNCTION_CALL" in trace.spans[-1].attributes.get(
+            "llm.response_metadata", ""
+        )
+
+    def test_llm_end_captures_has_tool_calls_true(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chat_model_start({"name": "gpt-4"}, [[]], run_id=run_id)
+
+        message = MagicMock()
+        message.content = ""
+        message.tool_calls = [{"name": "search", "args": {}, "id": "1"}]
+        message.response_metadata = {}
+        gen = MagicMock()
+        gen.message = message
+        gen.generation_info = {}
+        response = MagicMock()
+        response.llm_output = {}
+        response.generations = [[gen]]
+
+        handler.on_llm_end(response, run_id=run_id)
+        assert trace.spans[-1].attributes.get("llm.has_tool_calls") is True
+
+    def test_llm_end_usage_metadata_fallback(self, tracer_and_trace):
+        """When llm_output carries no usage, fall back to
+        response.generations[0][0].message.usage_metadata."""
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chat_model_start({"name": "gpt-4"}, [[]], run_id=run_id)
+
+        message = MagicMock()
+        message.content = ""
+        message.tool_calls = []
+        message.response_metadata = {}
+        message.usage_metadata = {
+            "input_tokens": 7,
+            "output_tokens": 3,
+            "total_tokens": 10,
+        }
+        gen = MagicMock()
+        gen.message = message
+        gen.generation_info = {}
+        response = MagicMock()
+        response.llm_output = {}  # no token_usage/usage here
+        response.generations = [[gen]]
+
+        handler.on_llm_end(response, run_id=run_id)
+        span = trace.spans[-1]
+        assert span.attributes.get("llm.usage.prompt_tokens") == 7
+        assert span.attributes.get("llm.usage.completion_tokens") == 3
+        assert span.attributes.get("llm.usage.total_tokens") == 10
+
+    def test_llm_end_llm_output_usage_takes_priority_over_fallback(
+        self, tracer_and_trace
+    ):
+        """If llm_output already carries usage, don't overwrite with the
+        usage_metadata fallback."""
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chat_model_start({"name": "gpt-4"}, [[]], run_id=run_id)
+
+        message = MagicMock()
+        message.content = ""
+        message.tool_calls = []
+        message.response_metadata = {}
+        message.usage_metadata = {
+            "input_tokens": 999,
+            "output_tokens": 999,
+            "total_tokens": 999,
+        }
+        gen = MagicMock()
+        gen.message = message
+        gen.generation_info = {}
+        response = MagicMock()
+        response.llm_output = {
+            "token_usage": {
+                "prompt_tokens": 1,
+                "completion_tokens": 2,
+                "total_tokens": 3,
+            }
+        }
+        response.generations = [[gen]]
+
+        handler.on_llm_end(response, run_id=run_id)
+        span = trace.spans[-1]
+        assert span.attributes.get("llm.usage.total_tokens") == 3
+
+    def test_llm_end_malformed_response_does_not_raise(self, tracer_and_trace):
+        """A response missing the expected shape entirely must not crash
+        on_llm_end (defensive serialization / attribute-error guards)."""
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chat_model_start({"name": "gpt-4"}, [[]], run_id=run_id)
+        response = MagicMock()
+        response.llm_output = None
+        response.generations = None
+        handler.on_llm_end(response, run_id=run_id)  # must not raise
+        assert str(run_id) not in handler._spans
+
+
+class TestToolInputOutputMetadataCapture:
+    """on_tool_start/on_tool_end: raw input, output text, metadata,
+    thread name, and event-loop state."""
+
+    def test_tool_start_captures_input_str(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_tool_start({"name": "search"}, "raw query text", run_id=run_id)
+        span = handler._spans[str(run_id)]
+        assert span.attributes.get("tool.input") == "raw query text"
+
+    def test_tool_end_captures_output(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_tool_start({"name": "search"}, "q", run_id=run_id)
+        span_ref = handler._spans[str(run_id)]
+        handler.on_tool_end("the tool's result text", run_id=run_id)
+        assert span_ref.attributes.get("tool.output") == "the tool's result text"
+
+    def test_tool_start_captures_metadata(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_tool_start(
+            {"name": "search"},
+            "q",
+            run_id=run_id,
+            metadata={"user_key": "abc"},
+        )
+        span = handler._spans[str(run_id)]
+        assert span.attributes.get("tool.metadata") == '{"user_key": "abc"}'
+
+    def test_tool_start_captures_thread_name(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_tool_start({"name": "search"}, "q", run_id=run_id)
+        span = handler._spans[str(run_id)]
+        assert (
+            span.attributes.get("tool.thread_name") == threading.current_thread().name
+        )
+
+    def test_tool_start_captures_no_event_loop_in_sync_context(self, tracer_and_trace):
+        """Pytest test functions run synchronously — no event loop running."""
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_tool_start({"name": "search"}, "q", run_id=run_id)
+        span = handler._spans[str(run_id)]
+        assert span.attributes.get("tool.has_event_loop") is False
+
+    def test_tool_end_none_output_sets_no_attribute(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_tool_start({"name": "search"}, "q", run_id=run_id)
+        span_ref = handler._spans[str(run_id)]
+        handler.on_tool_end(None, run_id=run_id)
+        assert "tool.output" not in span_ref.attributes
+
+
+class TestLlmStartMetadataCapture:
+    def test_llm_start_captures_metadata(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_llm_start(
+            {"kwargs": {}},
+            ["hi"],
+            run_id=run_id,
+            metadata={"user_key": "abc"},
+        )
+        span = handler._spans[str(run_id)]
+        assert span.attributes.get("llm.metadata") == '{"user_key": "abc"}'
+
+
+class TestRuntimeContextCapture:
+    """chain.runtime — captured via the ContextVar the RunnableCallable
+    monkeypatch (_install_runtime_capture_patch) populates."""
+
+    def test_chain_start_captures_runtime_when_context_var_set(self, tracer_and_trace):
+        from agent_trace.integrations.langgraph import _current_runtime
+
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+
+        class FakeRuntime:
+            def __repr__(self) -> str:
+                return "FakeRuntime(context=None)"
+
+        token = _current_runtime.set(FakeRuntime())
+        try:
+            handler.on_chain_start({"name": "my_node"}, {}, run_id=run_id)
+        finally:
+            _current_runtime.reset(token)
+
+        span = handler._spans[str(run_id)]
+        assert "FakeRuntime" in span.attributes.get("chain.runtime", "")
+
+    def test_chain_start_no_runtime_attribute_when_unset(self, tracer_and_trace):
+        from agent_trace.integrations.langgraph import _current_runtime
+
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+
+        token = _current_runtime.set(None)
+        try:
+            handler.on_chain_start({"name": "my_node"}, {}, run_id=run_id)
+        finally:
+            _current_runtime.reset(token)
+
+        span = handler._spans[str(run_id)]
+        assert "chain.runtime" not in span.attributes
+
+
+class TestSerializationRobustness:
+    """Regression coverage for the recursive-Mock hang: _deep_serialize must
+    terminate quickly even against objects whose model_dump()/dict()/
+    attribute access always yields a brand-new child object (the exact shape
+    of an unconfigured unittest.mock.MagicMock)."""
+
+    def test_to_attr_string_terminates_on_self_generating_mock(self):
+        import time
+
+        from agent_trace.integrations.langgraph import _to_attr_string
+
+        start = time.monotonic()
+        result = _to_attr_string(MagicMock())
+        elapsed = time.monotonic() - start
+
+        assert isinstance(result, str)
+        assert elapsed < 5.0, f"serialization took {elapsed:.2f}s — recursion regressed"
+
+    def test_to_attr_string_bounds_deeply_nested_dicts(self):
+        nested: dict = {"v": 0}
+        cursor = nested
+        for i in range(1, 50):
+            cursor["next"] = {"v": i}
+            cursor = cursor["next"]
+
+        from agent_trace.integrations.langgraph import _to_attr_string
+
+        result = _to_attr_string(nested)
+        assert isinstance(result, str)
+        assert len(result) < 10_000
+
+    def test_to_attr_string_handles_circular_reference(self):
+        from agent_trace.integrations.langgraph import _to_attr_string
+
+        circular: dict = {"a": 1}
+        circular["self"] = circular
+
+        result = _to_attr_string(circular)
+        assert isinstance(result, str)
+        assert "circular-reference" in result
+
+    def test_llm_end_with_recursive_mock_response_does_not_hang(self, tracer_and_trace):
+        """End-to-end regression test: on_llm_end must not hang when given a
+        bare MagicMock response (no explicit .generations/.message set up)."""
+        import time
+
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chat_model_start({"name": "gpt-4"}, [[]], run_id=run_id)
+
+        response = MagicMock()
+        response.llm_output = {
+            "token_usage": {
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+                "total_tokens": 2,
+            }
+        }
+        # response.generations is left as an auto-generated MagicMock
+        # attribute (not explicitly configured) — this is exactly the shape
+        # that previously caused unbounded recursion in the serializer.
+
+        start = time.monotonic()
+        handler.on_llm_end(response, run_id=run_id)
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 5.0, f"on_llm_end took {elapsed:.2f}s — recursion regressed"
+        assert str(run_id) not in handler._spans
 
 
 # ---------------------------------------------------------------------------
