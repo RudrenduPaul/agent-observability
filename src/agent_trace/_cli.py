@@ -1255,8 +1255,11 @@ def main() -> None:
         "--diff-field",
         dest="diff_field",
         default=None,
-        help="Top-level response field to check for wire-present-but-"
-        "downstream-absent (e.g. usage)",
+        help="Response field to check for wire-present-but-downstream-"
+        "absent — a top-level key (e.g. usage) or a dotted/nested path "
+        "with numeric list-index segments (e.g. "
+        "choices.0.message.reasoning_content, for provider fields nested "
+        "inside the response body like DeepSeek's reasoning_content)",
     )
     inspect_p.add_argument(
         "--diff-get-post-field",

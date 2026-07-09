@@ -231,6 +231,50 @@ class TestCheckNullContentWithToolCalls:
 
 
 # ---------------------------------------------------------------------------
+# check_content_block_missing_type (#1069)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckContentBlockMissingType:
+    def test_well_formed_content_block_not_flagged(self) -> None:
+        body = json.dumps(
+            {"messages": [{"role": "tool", "content": [{"type": "text", "text": "ok"}]}]}
+        )
+        assert ins.check_content_block_missing_type([_exchange(request_body=body)]) == []
+
+    def test_string_content_not_flagged(self) -> None:
+        body = json.dumps({"messages": [{"role": "user", "content": "hi"}]})
+        assert ins.check_content_block_missing_type([_exchange(request_body=body)]) == []
+
+    def test_tavily_style_missing_type_flagged(self) -> None:
+        # The exact #1069 shape: a Tavily tool result forwarded as a raw
+        # list of dicts with no `type` key, at messages[3].content[0].
+        body = json.dumps(
+            {
+                "messages": [
+                    {"role": "user", "content": "search"},
+                    {"role": "assistant", "content": ""},
+                    {"role": "tool", "content": "placeholder"},
+                    {
+                        "role": "tool",
+                        "content": [
+                            {"url": "https://example.com", "content": "result text"}
+                        ],
+                    },
+                ]
+            }
+        )
+        flags = ins.check_content_block_missing_type([_exchange(request_body=body)])
+        assert len(flags) == 1
+        assert flags[0]["message_index"] == 3
+        assert flags[0]["content_index"] == 0
+
+    def test_non_dict_content_items_not_flagged(self) -> None:
+        body = json.dumps({"messages": [{"role": "user", "content": ["plain string item"]}]})
+        assert ins.check_content_block_missing_type([_exchange(request_body=body)]) == []
+
+
+# ---------------------------------------------------------------------------
 # check_endpoint_host_mismatch
 # ---------------------------------------------------------------------------
 
@@ -831,6 +875,132 @@ class TestCheckToolCallingDisabled:
 
 
 # ---------------------------------------------------------------------------
+# check_non_ok_finish_reason (#30924)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckNonOkFinishReason:
+    def test_stop_not_flagged(self) -> None:
+        body = json.dumps({"choices": [{"finish_reason": "stop"}]})
+        assert ins.check_non_ok_finish_reason([_exchange(response_body=body)]) == []
+
+    def test_tool_calls_not_flagged(self) -> None:
+        body = json.dumps({"choices": [{"finish_reason": "tool_calls"}]})
+        assert ins.check_non_ok_finish_reason([_exchange(response_body=body)]) == []
+
+    def test_length_flagged(self) -> None:
+        body = json.dumps({"choices": [{"finish_reason": "length"}]})
+        flags = ins.check_non_ok_finish_reason([_exchange(response_body=body)])
+        assert len(flags) == 1
+        assert flags[0]["finish_reason"] == "length"
+
+    def test_content_filter_flagged(self) -> None:
+        body = json.dumps({"choices": [{"finish_reason": "content_filter"}]})
+        flags = ins.check_non_ok_finish_reason([_exchange(response_body=body)])
+        assert len(flags) == 1
+
+    def test_anthropic_end_turn_not_flagged(self) -> None:
+        body = json.dumps({"stop_reason": "end_turn"})
+        assert ins.check_non_ok_finish_reason([_exchange(response_body=body)]) == []
+
+    def test_anthropic_tool_use_not_flagged(self) -> None:
+        body = json.dumps({"stop_reason": "tool_use"})
+        assert ins.check_non_ok_finish_reason([_exchange(response_body=body)]) == []
+
+    def test_anthropic_max_tokens_flagged(self) -> None:
+        body = json.dumps({"stop_reason": "max_tokens"})
+        flags = ins.check_non_ok_finish_reason([_exchange(response_body=body)])
+        assert len(flags) == 1
+        assert flags[0]["finish_reason"] == "max_tokens"
+
+    def test_malformed_body_not_flagged(self) -> None:
+        assert ins.check_non_ok_finish_reason([_exchange(response_body="not json")]) == []
+
+
+# ---------------------------------------------------------------------------
+# check_forced_tool_call_unfulfilled (#3153)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckForcedToolCallUnfulfilled:
+    def test_forced_openai_style_fulfilled_not_flagged(self) -> None:
+        request_body = json.dumps(
+            {"tool_choice": {"type": "function", "function": {"name": "get_weather"}}}
+        )
+        response_body = json.dumps(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [{"function": {"name": "get_weather"}}]
+                        }
+                    }
+                ]
+            }
+        )
+        exchanges = [_exchange(request_body=request_body, response_body=response_body)]
+        assert ins.check_forced_tool_call_unfulfilled(exchanges) == []
+
+    def test_forced_openai_style_unfulfilled_flagged(self) -> None:
+        # The exact #3153 shape: ChatOllama declares a forced tool_choice
+        # but the model (Ollama) doesn't honor it, so tool_calls is empty.
+        request_body = json.dumps(
+            {"tool_choice": {"type": "function", "function": {"name": "get_weather"}}}
+        )
+        response_body = json.dumps({"choices": [{"message": {"content": "It's sunny."}}]})
+        exchanges = [_exchange(request_body=request_body, response_body=response_body)]
+        flags = ins.check_forced_tool_call_unfulfilled(exchanges)
+        assert len(flags) == 1
+        assert flags[0]["forced_tool_name"] == "get_weather"
+
+    def test_forced_plain_string_unfulfilled_flagged(self) -> None:
+        request_body = json.dumps({"tool_choice": "get_weather"})
+        response_body = json.dumps({"choices": [{"message": {"tool_calls": []}}]})
+        exchanges = [_exchange(request_body=request_body, response_body=response_body)]
+        flags = ins.check_forced_tool_call_unfulfilled(exchanges)
+        assert len(flags) == 1
+        assert flags[0]["forced_tool_name"] == "get_weather"
+
+    def test_generic_tool_choice_keywords_not_forced(self) -> None:
+        for keyword in ("auto", "none", "required", "any"):
+            request_body = json.dumps({"tool_choice": keyword})
+            response_body = json.dumps({"choices": [{"message": {"content": "hi"}}]})
+            exchanges = [_exchange(request_body=request_body, response_body=response_body)]
+            assert ins.check_forced_tool_call_unfulfilled(exchanges) == []
+
+    def test_no_tool_choice_not_flagged(self) -> None:
+        request_body = json.dumps({"tools": [{}]})
+        response_body = json.dumps({"choices": [{"message": {"content": "hi"}}]})
+        exchanges = [_exchange(request_body=request_body, response_body=response_body)]
+        assert ins.check_forced_tool_call_unfulfilled(exchanges) == []
+
+    def test_anthropic_style_dict_unfulfilled_flagged(self) -> None:
+        request_body = json.dumps({"tool_choice": {"type": "tool", "name": "get_weather"}})
+        response_body = json.dumps({"choices": [{"message": {"content": "hi"}}]})
+        exchanges = [_exchange(request_body=request_body, response_body=response_body)]
+        flags = ins.check_forced_tool_call_unfulfilled(exchanges)
+        assert len(flags) == 1
+        assert flags[0]["forced_tool_name"] == "get_weather"
+
+    def test_gemini_any_mode_single_allowed_name_unfulfilled_flagged(self) -> None:
+        request_body = json.dumps(
+            {
+                "tool_config": {
+                    "function_calling_config": {
+                        "mode": "ANY",
+                        "allowed_function_names": ["get_weather"],
+                    }
+                }
+            }
+        )
+        response_body = json.dumps({"choices": [{"message": {"content": "hi"}}]})
+        exchanges = [_exchange(request_body=request_body, response_body=response_body)]
+        flags = ins.check_forced_tool_call_unfulfilled(exchanges)
+        assert len(flags) == 1
+        assert flags[0]["forced_tool_name"] == "get_weather"
+
+
+# ---------------------------------------------------------------------------
 # match_known_error_patterns
 # ---------------------------------------------------------------------------
 
@@ -1020,6 +1190,55 @@ class TestFieldPresentOnWireAbsentDownstream:
         flags = ins.field_present_on_wire_absent_downstream(exchanges, spans, "usage")
         assert len(flags) == 1
 
+    def test_nested_path_present_on_wire_absent_downstream_flagged(self) -> None:
+        # #5526: DeepSeek's reasoning_content lives nested at
+        # choices[0].message.reasoning_content — a top-level `field_name in
+        # body` check can never see it.
+        exchanges = [
+            _exchange(
+                response_body=json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": "answer",
+                                    "reasoning_content": "because...",
+                                }
+                            }
+                        ]
+                    }
+                )
+            )
+        ]
+        spans = [_span("llm:x", attributes={"llm.content": "answer"})]
+        flags = ins.field_present_on_wire_absent_downstream(
+            exchanges, spans, "choices.0.message.reasoning_content"
+        )
+        assert len(flags) == 1
+        assert flags[0]["field"] == "choices.0.message.reasoning_content"
+
+    def test_nested_path_present_on_wire_and_downstream_not_flagged(self) -> None:
+        exchanges = [
+            _exchange(
+                response_body=json.dumps(
+                    {"choices": [{"message": {"reasoning_content": "because..."}}]}
+                )
+            )
+        ]
+        spans = [_span("llm:x", attributes={"llm.reasoning_content": "because..."})]
+        flags = ins.field_present_on_wire_absent_downstream(
+            exchanges, spans, "choices.0.message.reasoning_content"
+        )
+        assert flags == []
+
+    def test_nested_path_absent_from_wire_not_flagged(self) -> None:
+        exchanges = [_exchange(response_body=json.dumps({"choices": [{"message": {}}]}))]
+        spans: list[dict[str, object]] = []
+        flags = ins.field_present_on_wire_absent_downstream(
+            exchanges, spans, "choices.0.message.reasoning_content"
+        )
+        assert flags == []
+
 
 # ---------------------------------------------------------------------------
 # find_near_duplicate_sibling_content
@@ -1100,3 +1319,23 @@ class TestRunAllExchangeChecks:
         results = ins.run_all_exchange_checks(exchanges)
         assert "http_error_status" in results
         assert "orphaned_tool_call_ids" not in results
+
+    def test_non_ok_finish_reason_wired_in(self) -> None:
+        exchanges = [_exchange(response_body=json.dumps({"choices": [{"finish_reason": "length"}]}))]
+        results = ins.run_all_exchange_checks(exchanges)
+        assert "non_ok_finish_reason" in results
+
+    def test_forced_tool_call_unfulfilled_wired_in(self) -> None:
+        request_body = json.dumps(
+            {"tool_choice": {"type": "function", "function": {"name": "get_weather"}}}
+        )
+        response_body = json.dumps({"choices": [{"message": {"content": "hi"}}]})
+        exchanges = [_exchange(request_body=request_body, response_body=response_body)]
+        results = ins.run_all_exchange_checks(exchanges)
+        assert "forced_tool_call_unfulfilled" in results
+
+    def test_content_block_missing_type_wired_in(self) -> None:
+        request_body = json.dumps({"messages": [{"role": "tool", "content": [{"url": "x"}]}]})
+        exchanges = [_exchange(request_body=request_body)]
+        results = ins.run_all_exchange_checks(exchanges)
+        assert "content_block_missing_type" in results
