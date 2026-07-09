@@ -1153,6 +1153,61 @@ class TestInspectSubcommand:
         assert result.returncode == 0, result.stderr
         assert "get_post_field_mismatch" not in result.stdout
 
+    def test_diff_field_nested_path_flags_deepseek_reasoning_content(self, tmp_path) -> None:
+        """#5526: DeepSeek's `reasoning_content` lives nested at
+        `choices[0].message.reasoning_content`, not at the response body's
+        top level — `--diff-field` must accept a dotted/nested path
+        (reusing `_get_path`) to see it at all, and flag that no span
+        attribute reflects it (create_tool_calling_agent drops it)."""
+        import json as _json
+        import os
+
+        env = dict(os.environ)
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
+
+        response_body = _json.dumps(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "final answer",
+                            "reasoning_content": "step-by-step reasoning...",
+                        }
+                    }
+                ]
+            }
+        )
+        _write_run(
+            tmp_path,
+            "run-deepseek",
+            exchanges=[
+                {
+                    "url": "https://api.deepseek.com/chat/completions",
+                    "method": "POST",
+                    "request_headers": {},
+                    "request_body": "{}",
+                    "response_status": 200,
+                    "response_headers": {},
+                    "response_body": response_body,
+                },
+            ],
+            spans=[
+                {
+                    "name": "llm:x",
+                    "status": "OK",
+                    "attributes": {"llm.content": "final answer"},
+                    "events": [],
+                },
+            ],
+        )
+
+        result = _run_cli(
+            ["inspect", "run-deepseek", "--diff-field", "choices.0.message.reasoning_content"],
+            env=env,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "field_present_on_wire_absent_downstream" in result.stdout
+
 
 class TestDiffSubcommand:
     def test_diffs_matching_url_request_bodies(self, tmp_path) -> None:
