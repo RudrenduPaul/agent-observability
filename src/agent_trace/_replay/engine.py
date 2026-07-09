@@ -199,6 +199,29 @@ class ReplayEngine:
             grpc_patch = _build_grpc_replay_patch(fixture)
             grpc_aio_patch = _build_grpc_aio_replay_patch(fixture)
 
+            # --- botocore patch (optional) ----------------------------------
+            # botocore/boto3 is an optional dependency (AWS Bedrock,
+            # SageMaker, ...).  When absent, use nullcontext.  Every service
+            # client's outbound request goes through the single class method
+            # URLLib3Session.send (see interceptor/botocore_hook.py's module
+            # docstring), so patching it here — like requests.get_adapter
+            # above — covers every boto3 client regardless of service.
+            try:
+                import botocore.httpsession as _botocore_httpsession
+
+                from agent_trace.interceptor.botocore_hook import ReplaySession
+
+                def patched_botocore_send(session_self: Any, request: Any) -> Any:
+                    return ReplaySession(fixture, clock=clock).send(request)
+
+                botocore_patch: Any = unittest.mock.patch.object(
+                    _botocore_httpsession.URLLib3Session,
+                    "send",
+                    patched_botocore_send,
+                )
+            except ImportError:
+                botocore_patch = nullcontext()
+
             try:
                 with (
                     unittest.mock.patch.object(
@@ -210,6 +233,7 @@ class ReplayEngine:
                     requests_patch,
                     grpc_patch,
                     grpc_aio_patch,
+                    botocore_patch,
                 ):
                     logger.debug(
                         "agent-trace replay active: fixture=%s exchanges=%d",

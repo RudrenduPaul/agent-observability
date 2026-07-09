@@ -46,6 +46,7 @@ requests = ["requests>=2.31"]
 groq = ["groq>=0.9"]
 grpc = ["grpcio>=1.60"]
 aiohttp = ["aiohttp>=3.9"]
+botocore = ["boto3>=1.34"]
 dev = [
     "pytest>=8.0",
     "pytest-benchmark[histogram]>=4.0",
@@ -63,6 +64,7 @@ dev = [
     "grpcio-tools>=1.60",  # protoc, to compile the test-only echo.proto fixture
     "aiohttp>=3.9",
     "aioresponses>=0.7",  # aiohttp mocking for unit tests
+    "boto3>=1.34",  # AWS SDK — botocore interceptor unit tests
 ]
 
 [project.urls]
@@ -110,7 +112,7 @@ no_implicit_optional = true
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
-module = ["langchain_core.*", "opentelemetry.*", "agents.*", "boto3.*", "google.cloud.*", "crewai.*", "llama_index.*", "pydantic.*", "haystack.*", "grpc.*", "google.protobuf.*"]
+module = ["langchain_core.*", "opentelemetry.*", "agents.*", "boto3.*", "google.cloud.*", "crewai.*", "llama_index.*", "pydantic.*", "haystack.*", "grpc.*", "google.protobuf.*", "botocore.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
