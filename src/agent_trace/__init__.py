@@ -150,6 +150,7 @@ class Tracer:
         self._original_grpc_aio_channel_fns: tuple[Any, Any] | None = None
         self._original_aiohttp_request: Any = None
         self._original_botocore_session_send: Any = None
+        self._original_websockets_connect: Any = None
         # Registered plugins — called on span and trace lifecycle events.
         self._plugins: list[Plugin] = []
         # Set by start_auto_record()/AGENT_TRACE_AUTO_RECORD when this
@@ -634,6 +635,7 @@ class Tracer:
         self._patch_grpc()
         self._patch_aiohttp()
         self._patch_botocore()
+        self._patch_websockets()
 
     def _uninstall_recording_transport(self) -> None:
         """Restore the original patched methods.
@@ -648,6 +650,7 @@ class Tracer:
         self._unpatch_grpc()
         self._unpatch_aiohttp()
         self._unpatch_botocore()
+        self._unpatch_websockets()
 
     def _patch_httpx(self) -> None:
         try:
@@ -997,6 +1000,47 @@ class Tracer:
         except ImportError:
             pass
         self._original_botocore_session_send = None
+
+    def _patch_websockets(self) -> None:
+        """Monkey-patch websockets.connect to record every WS session.
+
+        Like _patch_httpx/_patch_requests/_patch_grpc/_patch_aiohttp/
+        _patch_botocore, the fixture is resolved from
+        self._active_fixture_var at call time (not closed over at patch-
+        install time) so concurrently active start_trace(record=True)
+        contexts each record into their own fixture. When no trace is
+        actively recording, the real connect is called unwrapped.
+        """
+        active_fixture_var = self._active_fixture_var
+        try:
+            import websockets
+
+            from agent_trace.interceptor.websocket_hook import RecordingConnect
+
+            orig_connect = websockets.connect
+
+            def _patched_connect(uri: str, *args: Any, **kwargs: Any) -> Any:
+                fixture = active_fixture_var.get()
+                if fixture is None:
+                    return orig_connect(uri, *args, **kwargs)
+                return RecordingConnect(orig_connect, fixture, uri, *args, **kwargs)
+
+            self._original_websockets_connect = orig_connect
+            setattr(websockets, "connect", _patched_connect)
+        except ImportError:
+            pass
+
+    def _unpatch_websockets(self) -> None:
+        orig = self._original_websockets_connect
+        if orig is None:
+            return
+        try:
+            import websockets
+
+            setattr(websockets, "connect", orig)
+        except ImportError:
+            pass
+        self._original_websockets_connect = None
 
 
 # ---------------------------------------------------------------------------
