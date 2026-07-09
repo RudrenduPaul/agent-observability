@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "check_action_name_not_registered",
+    "check_all_tool_calls_no_terminal_response",
     "check_anthropic_thinking_in_tool_result",
     "check_duplicate_concurrent_tool_calls",
     "check_duplicate_json_blocks",
@@ -41,6 +42,7 @@ __all__ = [
     "check_get_post_field_mismatch",
     "check_json_schema_lookaround_or_anyof",
     "check_malformed_tool_call_arguments",
+    "check_markdown_fenced_json_response",
     "check_missing_extra_kwarg",
     "check_missing_tool_call_id",
     "check_null_content_with_tool_calls",
@@ -867,6 +869,132 @@ def check_duplicate_concurrent_tool_calls(
 
 
 # ---------------------------------------------------------------------------
+# 18. A whole run consisting of nothing but tool-call-only responses, with
+#     no terminal (final, human-readable) response ever emitted — the
+#     infinite-tool-call-loop shape #3097 asked to auto-flag after the
+#     fact, distinct from RecordingTransport's live loop_guard_threshold
+#     (which only fires *during* an active recording session).
+# ---------------------------------------------------------------------------
+
+
+def check_all_tool_calls_no_terminal_response(
+    exchanges: list[dict[str, Any]],
+    min_exchanges: int = 2,
+) -> list[dict[str, Any]]:
+    """Flag a run where every captured chat-completion exchange is a
+    tool-call-only response (per the same heuristic RecordingTransport's
+    live loop guard uses) and none ever produced a terminal, non-tool-call
+    response — i.e. the run's own recorded evidence shows it never
+    resolved. Requires at least *min_exchanges* qualifying exchanges (a
+    single in-flight turn isn't a loop)."""
+    from agent_trace.interceptor.httpx_hook import _is_tool_call_only_response
+
+    tool_call_only_flags: list[bool] = []
+    last_exchange: dict[str, Any] | None = None
+    for exchange in exchanges:
+        response_body = exchange.get("response_body")
+        if not response_body:
+            continue
+        body = _loads(response_body)
+        if not isinstance(body, dict):
+            continue
+        # Only consider exchanges that look like an LLM completion response
+        # (has "choices" or an Anthropic-shaped "content"/"stop_reason").
+        if "choices" not in body and "stop_reason" not in body:
+            continue
+        tool_call_only_flags.append(_is_tool_call_only_response(response_body))
+        last_exchange = exchange
+
+    if len(tool_call_only_flags) < min_exchanges or last_exchange is None:
+        return []
+
+    if all(tool_call_only_flags):
+        return [
+            _flag(
+                "all_tool_calls_no_terminal_response",
+                last_exchange,
+                f"all {len(tool_call_only_flags)} captured LLM completion "
+                f"exchange(s) in this run are tool-call-only responses — "
+                f"no terminal (final, non-tool-call) response was ever "
+                f"recorded, a candidate infinite-tool-call-loop shape",
+                tool_call_only_exchange_count=len(tool_call_only_flags),
+            )
+        ]
+    return []
+
+
+# ---------------------------------------------------------------------------
+# 19. A captured response's text content is wrapped in a markdown code
+#     fence (e.g. "```json\n{...}\n```") when the calling code expects to
+#     json.loads() that content directly — a naive parse breaks on the
+#     fence markers. Seen on Gemini/google-genai even when a pure-JSON
+#     response was requested, but not provider-specific (#4509).
+# ---------------------------------------------------------------------------
+
+_MARKDOWN_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*\n")
+
+
+def _texts_from_response_body(body: dict[str, Any]) -> list[str]:
+    """Extract every assistant-message text field worth checking for a
+    markdown fence, across the two response shapes this check cares
+    about: OpenAI/Groq-style `choices[].message.content` and
+    Gemini-style `candidates[].content.parts[].text`."""
+    texts: list[str] = []
+
+    for choice in body.get("choices") or []:
+        if not isinstance(choice, dict):
+            continue
+        message = choice.get("message")
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, str):
+                texts.append(content)
+
+    for candidate in body.get("candidates") or []:
+        if not isinstance(candidate, dict):
+            continue
+        content = candidate.get("content")
+        if not isinstance(content, dict):
+            continue
+        for part in content.get("parts") or []:
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                texts.append(part["text"])
+
+    return texts
+
+
+def check_markdown_fenced_json_response(
+    exchanges: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Flag a captured response whose assistant-message text content
+    starts with a markdown code fence (```` ``` ```` or ```` ```json ````)
+    — a shape that breaks a naive `json.loads(content)` downstream even
+    though the *HTTP response envelope itself* is valid JSON. Not
+    provider-specific: seen on Gemini/google-genai even when a pure-JSON
+    response was explicitly requested (#4509), but the same fencing habit
+    shows up from other providers/prompted models too."""
+    flags: list[dict[str, Any]] = []
+    for exchange in exchanges:
+        body = _loads(exchange.get("response_body"))
+        if not isinstance(body, dict):
+            continue
+        for text in _texts_from_response_body(body):
+            if _MARKDOWN_FENCE_RE.match(text):
+                flags.append(
+                    _flag(
+                        "markdown_fenced_json_response",
+                        exchange,
+                        "response content is wrapped in a markdown code "
+                        "fence (```/```json) — a naive json.loads() on "
+                        "this content will fail even though the HTTP "
+                        "response envelope itself is valid JSON",
+                    )
+                )
+                break  # one flag per exchange is enough
+    return flags
+
+
+# ---------------------------------------------------------------------------
 # Companion diagnostics (distinct backlog items, same "raw capture with zero
 # automated diagnosis" gap that motivates the big `inspect` cluster above).
 # ---------------------------------------------------------------------------
@@ -1260,6 +1388,8 @@ def run_all_exchange_checks(
         "duplicate_concurrent_tool_calls": check_duplicate_concurrent_tool_calls,
         "missing_tool_call_id": check_missing_tool_call_id,
         "http_error_status": flag_4xx_5xx_exchanges,
+        "all_tool_calls_no_terminal_response": check_all_tool_calls_no_terminal_response,
+        "markdown_fenced_json_response": check_markdown_fenced_json_response,
         "tool_calling_disabled": check_tool_calling_disabled,
         "multi_block_response": multi_block_llm_responses,
         "stream_merge_invalid_json": check_stream_merge_validity,

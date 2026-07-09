@@ -211,6 +211,26 @@ class TracedAgentRun:
         parts = list(getattr(request, "parts", []) or [])
         span.set_attribute("llm.request_message_count", len(parts))
 
+        # Which ModelRequestPart types were actually sent — specifically
+        # whether a SystemPromptPart was included vs. silently dropped
+        # (#3277: a developer had no way to tell, from a captured run,
+        # whether their system prompt/instructions actually made it into a
+        # given request without manually diffing two runs by hand).
+        part_kinds = sorted({type(p).__name__ for p in parts})
+        if part_kinds:
+            span.set_attribute("llm.request_part_kinds", ",".join(part_kinds))
+        system_prompt_parts = [
+            p for p in parts if type(p).__name__ == "SystemPromptPart"
+        ]
+        span.set_attribute("llm.has_system_prompt_part", bool(system_prompt_parts))
+        if system_prompt_parts:
+            resolved = getattr(system_prompt_parts[0], "content", None)
+            if isinstance(resolved, str) and resolved:
+                span.set_attribute(
+                    "llm.system_prompt_content",
+                    resolved[:2000] + ("...<truncated>" if len(resolved) > 2000 else ""),
+                )
+
         retry_parts = [p for p in parts if type(p).__name__ == "RetryPromptPart"]
         if retry_parts:
             self._retry_count += 1

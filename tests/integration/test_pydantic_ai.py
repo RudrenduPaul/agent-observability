@@ -269,3 +269,50 @@ class TestPydanticAIIntegration:
             "Expected at least 1 recorded HTTP exchange from the "
             "OpenAI-backed pydantic-ai model call"
         )
+
+
+@pytest.mark.integration
+class TestSystemPromptPartCapture:
+    """#3277: a developer had no way to tell, from a captured run, whether
+    their system prompt/instructions actually made it into a given
+    request without manually diffing two runs by hand — which
+    ModelRequestPart types were sent (specifically SystemPromptPart
+    presence/absence) and the resolved instructions value are now
+    persisted onto the llm: span."""
+
+    async def test_system_prompt_present_recorded_on_span(
+        self, tmp_path: Path
+    ) -> None:
+        agent: Agent[None, str] = Agent(
+            TestModel(),
+            name="sys-agent",
+            system_prompt="You are a helpful assistant.",
+        )
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("sys-prompt-present") as trace:
+            await run_traced(agent, "hi", tracer=t, trace=trace)
+
+        llm_span = next(s for s in trace.spans if s.name.startswith("llm:"))
+        assert llm_span.attributes["llm.has_system_prompt_part"] is True
+        assert (
+            llm_span.attributes["llm.system_prompt_content"]
+            == "You are a helpful assistant."
+        )
+        part_kinds = llm_span.attributes["llm.request_part_kinds"]
+        assert "SystemPromptPart" in part_kinds
+
+    async def test_system_prompt_absent_recorded_on_span(
+        self, tmp_path: Path
+    ) -> None:
+        agent: Agent[None, str] = Agent(TestModel(), name="no-sys-agent")
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("sys-prompt-absent") as trace:
+            await run_traced(agent, "hi", tracer=t, trace=trace)
+
+        llm_span = next(s for s in trace.spans if s.name.startswith("llm:"))
+        assert llm_span.attributes["llm.has_system_prompt_part"] is False
+        assert "llm.system_prompt_content" not in llm_span.attributes
+        part_kinds = llm_span.attributes.get("llm.request_part_kinds", "")
+        assert "SystemPromptPart" not in part_kinds
