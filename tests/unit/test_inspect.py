@@ -646,6 +646,142 @@ class TestCheckDuplicateConcurrentToolCalls:
 
 
 # ---------------------------------------------------------------------------
+# check_all_tool_calls_no_terminal_response (#3097)
+# ---------------------------------------------------------------------------
+
+
+def _tool_call_only_body() -> str:
+    return json.dumps(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": None,
+                        "tool_calls": [{"id": "c1", "function": {"name": "search"}}],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        }
+    )
+
+
+def _terminal_body(text: str = "done") -> str:
+    return json.dumps(
+        {"choices": [{"message": {"content": text}, "finish_reason": "stop"}]}
+    )
+
+
+class TestCheckAllToolCallsNoTerminalResponse:
+    def test_below_min_exchanges_not_flagged(self) -> None:
+        exchanges = [_exchange(response_body=_tool_call_only_body())]
+        assert ins.check_all_tool_calls_no_terminal_response(exchanges) == []
+
+    def test_all_tool_call_only_flagged(self) -> None:
+        """The exact #3097 shape: an infinite tool-call loop that never
+        resolved, no terminal response ever recorded."""
+        exchanges = [
+            _exchange(response_body=_tool_call_only_body()),
+            _exchange(response_body=_tool_call_only_body()),
+            _exchange(response_body=_tool_call_only_body()),
+        ]
+        flags = ins.check_all_tool_calls_no_terminal_response(exchanges)
+        assert len(flags) == 1
+        assert flags[0]["tool_call_only_exchange_count"] == 3
+
+    def test_terminal_response_present_not_flagged(self) -> None:
+        exchanges = [
+            _exchange(response_body=_tool_call_only_body()),
+            _exchange(response_body=_tool_call_only_body()),
+            _exchange(response_body=_terminal_body()),
+        ]
+        assert ins.check_all_tool_calls_no_terminal_response(exchanges) == []
+
+    def test_non_llm_exchanges_ignored(self) -> None:
+        exchanges = [
+            _exchange(response_body=json.dumps({"result": "ok"})),
+            _exchange(response_body=json.dumps({"result": "ok"})),
+        ]
+        assert ins.check_all_tool_calls_no_terminal_response(exchanges) == []
+
+    def test_custom_min_exchanges_threshold(self) -> None:
+        exchanges = [
+            _exchange(response_body=_tool_call_only_body()),
+            _exchange(response_body=_tool_call_only_body()),
+        ]
+        assert (
+            ins.check_all_tool_calls_no_terminal_response(exchanges, min_exchanges=5)
+            == []
+        )
+
+    def test_malformed_body_ignored_not_raised(self) -> None:
+        exchanges = [
+            _exchange(response_body="not json"),
+            _exchange(response_body=_tool_call_only_body()),
+        ]
+        # Only one qualifying exchange after the malformed one is skipped —
+        # below the default min_exchanges=2 threshold.
+        assert ins.check_all_tool_calls_no_terminal_response(exchanges) == []
+
+
+# ---------------------------------------------------------------------------
+# check_markdown_fenced_json_response (#4509)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckMarkdownFencedJsonResponse:
+    def test_plain_content_not_flagged(self) -> None:
+        body = json.dumps({"choices": [{"message": {"content": '{"a": 1}'}}]})
+        assert ins.check_markdown_fenced_json_response([_exchange(response_body=body)]) == []
+
+    def test_openai_shape_json_fence_flagged(self) -> None:
+        body = json.dumps(
+            {"choices": [{"message": {"content": '```json\n{"a": 1}\n```'}}]}
+        )
+        flags = ins.check_markdown_fenced_json_response([_exchange(response_body=body)])
+        assert len(flags) == 1
+        assert flags[0]["check"] == "markdown_fenced_json_response"
+
+    def test_openai_shape_bare_fence_flagged(self) -> None:
+        body = json.dumps({"choices": [{"message": {"content": '```\n{"a": 1}\n```'}}]})
+        flags = ins.check_markdown_fenced_json_response([_exchange(response_body=body)])
+        assert len(flags) == 1
+
+    def test_gemini_shape_json_fence_flagged(self) -> None:
+        """The exact #4509 shape: Gemini wraps structured JSON output in a
+        markdown code fence even when a pure-JSON response was requested."""
+        body = json.dumps(
+            {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [{"text": '```json\n{"result": "ok"}\n```'}]
+                        }
+                    }
+                ]
+            }
+        )
+        flags = ins.check_markdown_fenced_json_response([_exchange(response_body=body)])
+        assert len(flags) == 1
+
+    def test_gemini_shape_plain_text_not_flagged(self) -> None:
+        body = json.dumps(
+            {"candidates": [{"content": {"parts": [{"text": '{"result": "ok"}'}]}}]}
+        )
+        assert ins.check_markdown_fenced_json_response([_exchange(response_body=body)]) == []
+
+    def test_no_content_not_flagged(self) -> None:
+        body = json.dumps({"choices": [{"message": {}}]})
+        assert ins.check_markdown_fenced_json_response([_exchange(response_body=body)]) == []
+
+    def test_malformed_body_not_raised(self) -> None:
+        assert (
+            ins.check_markdown_fenced_json_response([_exchange(response_body="not json")])
+            == []
+        )
+
+
+# ---------------------------------------------------------------------------
 # flag_4xx_5xx_exchanges
 # ---------------------------------------------------------------------------
 
