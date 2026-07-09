@@ -96,8 +96,19 @@ no_implicit_optional = true
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
-module = ["langchain_core.*", "opentelemetry.*"]
+module = ["langchain_core.*", "opentelemetry.*", "agents.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# AgentTraceHook subclasses agents.lifecycle.RunHooksBase (required at
+# runtime -- Runner.run() does an isinstance() check).  Whether that import
+# resolves to a real class or to Any (via ignore_missing_imports above)
+# depends on whether the openai-agents extra is installed in the mypy run;
+# the `# type: ignore[misc]` this needs in the "not installed" case reports
+# as unused in the "installed" case.  Disable that specific warning for just
+# this module rather than for the whole codebase.
+module = ["agent_trace.integrations.openai_agents"]
+warn_unused_ignores = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

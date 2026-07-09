@@ -106,6 +106,18 @@ class RecordingTransport(httpx.BaseTransport):
 class ReplayTransport(httpx.BaseTransport):
     """httpx transport that serves responses from a Fixture without network I/O.
 
+    Limitation — replay cannot simulate a *modified* request: this transport
+    only ever serves back the exact recorded ``response_body`` for a matching
+    ``(method, url)`` pair (see ``handle_request`` below). It never re-derives
+    what a request with different parameters would have returned — a
+    different model, a different ``model_settings.reasoning_effort``/
+    ``verbosity``, a different tool schema, a different prompt, etc. all
+    still replay the *original* recorded response verbatim. If the change
+    you're validating is itself a request parameter (e.g. switching
+    ``reasoning_effort`` to fix a tool-calling regression), record a fresh
+    run after making that change — replay only re-serves history, it does
+    not re-run inference.
+
     Parameters
     ----------
     fixture:
@@ -232,6 +244,11 @@ class AsyncReplayTransport(httpx.AsyncBaseTransport):
     Use this with ``httpx.AsyncClient`` — the sync ``ReplayTransport`` cannot
     be used with async clients because ``AsyncClient`` requires
     ``handle_async_request``.
+
+    Same limitation as ``ReplayTransport``: it replays the exact recorded
+    bytes for a matching ``(method, url)`` and cannot simulate what a
+    *modified* request (different model, ``model_settings``, tool schema,
+    prompt, ...) would have returned. See ``ReplayTransport``'s docstring.
 
     Parameters
     ----------
