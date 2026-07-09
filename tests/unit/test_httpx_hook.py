@@ -178,6 +178,121 @@ class TestRecordingTransport:
         fixture.close()
 
 
+class TestRecordingTransportDurationAndFailure:
+    """duration_ms capture + failed-before-response persistence."""
+
+    @respx.mock
+    def test_records_duration_ms(self, tmp_path) -> None:
+        url = "https://api.example.com/duration-test"
+        respx.get(url).mock(return_value=httpx.Response(200, json={"ok": True}))
+
+        fixture = _make_fixture(tmp_path)
+        client = httpx.Client(
+            transport=RecordingTransport(
+                fixture, inner=httpx.MockTransport(respx.mock.handler)
+            )
+        )
+        with client:
+            client.get(url)
+
+        ex = fixture.all_exchanges()[0]
+        assert ex["duration_ms"] is not None
+        assert ex["duration_ms"] >= 0
+        fixture.close()
+
+    def test_persists_failed_attempt_before_raising(self, tmp_path) -> None:
+        """A pre-response exception (connection refused, DNS failure, ...)
+        must still be persisted — as a failed-before-response exchange, not
+        silently lost — and the original exception must still propagate."""
+
+        def _raising_handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("Connection refused", request=request)
+
+        fixture = _make_fixture(tmp_path)
+        url = "https://bad-host.invalid/x"
+        client = httpx.Client(
+            transport=RecordingTransport(
+                fixture, inner=httpx.MockTransport(_raising_handler)
+            )
+        )
+        with client:
+            with pytest.raises(httpx.ConnectError):
+                client.post(url, json={"model": "gpt-4o"})
+
+        assert fixture.exchange_count() == 1
+        assert fixture.failed_exchange_count() == 1
+        ex = fixture.all_exchanges()[0]
+        assert ex["response_status"] is None
+        assert ex["error_type"] == "ConnectError"
+        assert "Connection refused" in ex["error_message"]
+        assert ex["method"] == "POST"
+        assert "gpt-4o" in ex["request_body"]
+        fixture.close()
+
+    def test_failed_attempt_records_duration_ms_too(self, tmp_path) -> None:
+        def _raising_handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectTimeout("timed out", request=request)
+
+        fixture = _make_fixture(tmp_path)
+        client = httpx.Client(
+            transport=RecordingTransport(
+                fixture, inner=httpx.MockTransport(_raising_handler)
+            )
+        )
+        with client:
+            with pytest.raises(httpx.ConnectTimeout):
+                client.get("https://bad-host.invalid/x")
+
+        ex = fixture.all_exchanges()[0]
+        assert ex["duration_ms"] is not None
+        assert ex["duration_ms"] >= 0
+        fixture.close()
+
+
+class TestAsyncRecordingTransportDurationAndFailure:
+    """Async equivalents of TestRecordingTransportDurationAndFailure."""
+
+    @respx.mock
+    async def test_records_duration_ms(self, tmp_path) -> None:
+        url = "https://api.example.com/async-duration-test"
+        respx.get(url).mock(return_value=httpx.Response(200, json={"ok": True}))
+
+        fixture = _make_fixture(tmp_path)
+        async with httpx.AsyncClient(
+            transport=AsyncRecordingTransport(
+                fixture, inner=httpx.MockTransport(respx.mock.handler)
+            )
+        ) as client:
+            await client.get(url)
+
+        ex = fixture.all_exchanges()[0]
+        assert ex["duration_ms"] is not None
+        assert ex["duration_ms"] >= 0
+        fixture.close()
+
+    async def test_persists_failed_attempt_before_raising(self, tmp_path) -> None:
+        async def _raising_handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("Connection refused", request=request)
+
+        fixture = _make_fixture(tmp_path)
+        url = "https://bad-host.invalid/async-x"
+        async with httpx.AsyncClient(
+            transport=AsyncRecordingTransport(
+                fixture, inner=httpx.MockTransport(_raising_handler)
+            )
+        ) as client:
+            with pytest.raises(httpx.ConnectError):
+                await client.post(url, json={"model": "gpt-4o"})
+
+        assert fixture.exchange_count() == 1
+        assert fixture.failed_exchange_count() == 1
+        ex = fixture.all_exchanges()[0]
+        assert ex["response_status"] is None
+        assert ex["error_type"] == "ConnectError"
+        assert "Connection refused" in ex["error_message"]
+        fixture.close()
+
+
 # ---------------------------------------------------------------------------
 # RecordingTransport nesting / double-wrap safety
 # ---------------------------------------------------------------------------

@@ -241,9 +241,67 @@ with replay("<run_id>") as ctx:
   node outputs are deterministic during replay, conditional edges route the
   same way they did during recording.
 
+- **Conditional-edge dispatch exceptions (`trace=False`):** LangGraph
+  deliberately builds a conditional edge's routing dispatch
+  (`add_conditional_edges`) as an internal component with `trace=False` —
+  it never fires `on_chain_start`/`on_chain_error`, so by default an
+  exception raised inside the routing function itself (e.g. a `KeyError`
+  when a router's return value doesn't match a registered destination) is
+  invisible to any callback-based tool. `LangGraphTracer` patches around
+  this specific gap (best-effort — it touches a LangGraph internal module,
+  `langgraph._internal._runnable.RunnableCallable`, and degrades silently
+  to "not captured" if that internal shape changes on a future LangGraph
+  version) and records a `branch:dispatch` span with `status=ERROR` when
+  this happens. This does **not** mean every `trace=False` component in
+  LangGraph is now traced — only the conditional-edge dispatch case
+  specifically; other internal `trace=False` components (channel writes,
+  `ToolNode`'s own dispatch, etc.) remain outside agent-trace's callback
+  coverage.
+
 ---
 
-## 7. Troubleshooting
+## 7. Error classification and LangGraph-internal control-flow signals
+
+- **`error.origin`/`error.known_pattern`:** every span that closes `ERROR`
+  is tagged with `error.origin` (`"provider"` for an LLM-SDK exception,
+  `"chain"` for LangGraph/LangChain framework code, `"application"`
+  otherwise) and, when the exception message matches a previously
+  root-caused failure signature (e.g. LangGraph's
+  `ErrorCode.INVALID_CHAT_HISTORY`), `error.known_pattern`. `agent-trace
+  show <run_id>` prints an "Error classification" summary using these
+  attributes so you don't have to read raw `trace.json` to spot the pattern.
+
+- **`Command`/`ParentCommand`/`GraphInterrupt` are not application errors:**
+  LangGraph raises these internally to implement multi-agent handoff jumps
+  (`Command(graph=Command.PARENT, ...)`) and `interrupt()` pauses — not real
+  failures. `LangGraphTracer` special-cases them: the span closes `OK` with
+  `langgraph.handoff=true` (a handoff) or `langgraph.interrupted=true` (a
+  pause) instead of `ERROR`, so they don't drown out genuine failures when
+  scanning a trace. See `examples/06-langgraph-handoff-parallel-tools/` for
+  a worked example.
+
+- **`CANCELLED` is distinct from `ERROR`:** a span ended by
+  `asyncio.CancelledError` closes with `status=CANCELLED`, not `ERROR` — a
+  cancelled run and a genuine crash are different things when you're
+  diagnosing why a checkpoint didn't get written.
+
+## 8. Per-superstep state-merge diagnostics (parallel `Command.PARENT` routing)
+
+`agent_trace.integrations.langgraph_state_diff.wrap_checkpointer()` wraps
+any `BaseCheckpointSaver` to detect when N>1 parallel tasks in the same
+Pregel superstep propose a write to the same channel but fewer than N
+survive in the persisted checkpoint — the shape behind
+[langgraph#7129](https://github.com/langchain-ai/langgraph/issues/7129).
+When it happens, a `checkpoint:superstep_merge` span records the exact
+count: how many were proposed, how many survived, and which task IDs lost
+their update. See `examples/05-parallel-command-parent-routing/` for a
+worked example and the module's own docstring for the heuristic's scope
+(it diffs proposed-vs-persisted channel values; it does not re-implement
+Pregel's channel-merge algorithm).
+
+---
+
+## 9. Troubleshooting
 
 ### Spans not appearing in the trace
 

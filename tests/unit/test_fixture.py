@@ -229,6 +229,250 @@ class TestAllExchanges:
 
 
 # ---------------------------------------------------------------------------
+# duration_ms — per-HTTP-exchange latency
+# ---------------------------------------------------------------------------
+
+
+class TestDurationMs:
+    def test_duration_ms_stored_and_returned(self, tmp_path: Path) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            f.record_exchange(
+                url="https://api.example.com/timed",
+                method="POST",
+                request_headers={},
+                request_body="{}",
+                response_status=200,
+                response_headers={},
+                response_body="{}",
+                duration_ms=123.45,
+            )
+            ex = f.all_exchanges()[0]
+            assert ex["duration_ms"] == pytest.approx(123.45)
+
+    def test_duration_ms_defaults_to_none_when_not_provided(
+        self, tmp_path: Path
+    ) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            _record(f)
+            ex = f.all_exchanges()[0]
+            assert ex["duration_ms"] is None
+
+    def test_duration_ms_returned_via_next_exchange_too(self, tmp_path: Path) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            f.record_exchange(
+                url="https://api.example.com/timed2",
+                method="GET",
+                request_headers={},
+                request_body="",
+                response_status=200,
+                response_headers={},
+                response_body="ok",
+                duration_ms=42.0,
+            )
+            ex = f.next_exchange("https://api.example.com/timed2", "GET")
+            assert ex is not None
+            assert ex["duration_ms"] == pytest.approx(42.0)
+
+
+# ---------------------------------------------------------------------------
+# Failed-before-response exchanges — error_type/error_message, nullable
+# response_status
+# ---------------------------------------------------------------------------
+
+
+class TestFailedExchanges:
+    def test_record_failed_exchange_with_no_response_status(
+        self, tmp_path: Path
+    ) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            f.record_exchange(
+                url="https://bad-host.invalid/x",
+                method="POST",
+                request_headers={"content-type": "application/json"},
+                request_body='{"model": "gpt-4o"}',
+                error_type="ConnectError",
+                error_message="Connection refused",
+            )
+            ex = f.all_exchanges()[0]
+            assert ex["response_status"] is None
+            assert ex["error_type"] == "ConnectError"
+            assert ex["error_message"] == "Connection refused"
+
+    def test_failed_exchange_preserves_request_data(self, tmp_path: Path) -> None:
+        """Request headers/body are always available even though the call
+        never got a response — they were constructed before the failure."""
+        with Fixture(tmp_path / "f.db") as f:
+            f.record_exchange(
+                url="https://bad-host.invalid/x",
+                method="POST",
+                request_headers={"authorization": "Bearer sk-test"},
+                request_body='{"prompt": "hello"}',
+                error_type="ConnectTimeout",
+                error_message="timed out after 30s",
+            )
+            ex = f.all_exchanges()[0]
+            assert ex["request_headers"] == {"authorization": "Bearer sk-test"}
+            assert ex["request_body"] == '{"prompt": "hello"}'
+
+    def test_failed_exchange_response_headers_and_body_default_empty(
+        self, tmp_path: Path
+    ) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            f.record_exchange(
+                url="https://bad-host.invalid/x",
+                method="GET",
+                request_headers={},
+                request_body="",
+                error_type="DNSError",
+                error_message="could not resolve host",
+            )
+            ex = f.all_exchanges()[0]
+            assert ex["response_headers"] == {}
+            assert ex["response_body"] == ""
+
+    def test_record_exchange_raises_without_status_or_error(
+        self, tmp_path: Path
+    ) -> None:
+        """Neither a response nor an error is a malformed call — must raise,
+        not silently write a garbage row."""
+        with Fixture(tmp_path / "f.db") as f:
+            with pytest.raises(ValueError):
+                f.record_exchange(
+                    url="https://api.example.com/x",
+                    method="GET",
+                    request_headers={},
+                    request_body="",
+                )
+
+    def test_failed_exchange_counted_in_exchange_count(self, tmp_path: Path) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            _record(f)
+            f.record_exchange(
+                url="https://bad-host.invalid/x",
+                method="GET",
+                request_headers={},
+                request_body="",
+                error_type="ConnectError",
+                error_message="refused",
+            )
+            assert f.exchange_count() == 2
+
+    def test_failed_exchange_count_helper(self, tmp_path: Path) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            _record(f)
+            _record(f)
+            f.record_exchange(
+                url="https://bad-host.invalid/x",
+                method="GET",
+                request_headers={},
+                request_body="",
+                error_type="ConnectError",
+                error_message="refused",
+            )
+            assert f.failed_exchange_count() == 1
+            assert f.exchange_count() == 3
+
+    def test_failed_exchange_count_zero_when_none_recorded(
+        self, tmp_path: Path
+    ) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            _record(f)
+            assert f.failed_exchange_count() == 0
+
+    def test_genuine_error_response_not_counted_as_failed_exchange(
+        self, tmp_path: Path
+    ) -> None:
+        """A real HTTP 500 has a response_status — it's a provider error,
+        not a failed-before-response attempt. Must not be double-counted."""
+        with Fixture(tmp_path / "f.db") as f:
+            _record(f, status=500, body='{"error": "server error"}')
+            assert f.failed_exchange_count() == 0
+            assert f.exchange_count() == 1
+
+
+# ---------------------------------------------------------------------------
+# Schema migration — pre-existing databases gain the new columns
+# ---------------------------------------------------------------------------
+
+
+class TestSchemaMigration:
+    def test_opening_pre_migration_database_adds_new_columns(
+        self, tmp_path: Path
+    ) -> None:
+        """A fixture.db created under the pre-migration schema (no
+        duration_ms/error_type/error_message columns, response_status
+        NOT NULL) must still open cleanly, and gains the new columns."""
+        import sqlite3
+
+        db_path = tmp_path / "old.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript(
+            """\
+            CREATE TABLE http_exchanges (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                trace_id         TEXT NOT NULL,
+                url              TEXT NOT NULL,
+                method           TEXT NOT NULL,
+                request_headers  TEXT NOT NULL DEFAULT '{}',
+                request_body     TEXT NOT NULL DEFAULT '',
+                response_status  INTEGER NOT NULL,
+                response_headers TEXT NOT NULL DEFAULT '{}',
+                response_body    TEXT NOT NULL DEFAULT '',
+                recorded_at      REAL NOT NULL,
+                sequence_num     INTEGER NOT NULL
+            );
+            CREATE TABLE metadata (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO http_exchanges "
+            "(trace_id, url, method, request_headers, request_body, "
+            " response_status, response_headers, response_body, "
+            " recorded_at, sequence_num) "
+            "VALUES ('t', 'https://x/y', 'GET', '{}', '', 200, '{}', 'ok', 1.0, 0)"
+        )
+        conn.commit()
+        conn.close()
+
+        # Opening via Fixture must not raise, and the old row must still be
+        # readable with the new columns defaulting to None.
+        with Fixture(db_path) as f:
+            exchanges = f.all_exchanges()
+            assert len(exchanges) == 1
+            assert exchanges[0]["response_status"] == 200
+            assert exchanges[0]["duration_ms"] is None
+            assert exchanges[0]["error_type"] is None
+
+            # And new rows recorded after migration work normally.
+            f.record_exchange(
+                url="https://x/new",
+                method="GET",
+                request_headers={},
+                request_body="",
+                response_status=200,
+                response_headers={},
+                response_body="ok",
+                duration_ms=10.0,
+            )
+            assert f.exchange_count() == 2
+
+    def test_migration_is_idempotent_across_multiple_opens(
+        self, tmp_path: Path
+    ) -> None:
+        """Opening the same fixture.db twice (e.g. two Fixture instances in
+        sequence) must not raise on the second migration attempt."""
+        db_path = tmp_path / "f.db"
+        with Fixture(db_path) as f:
+            _record(f)
+        # Second open — columns already exist, ALTER TABLE must no-op.
+        with Fixture(db_path) as f:
+            assert f.exchange_count() == 1
+
+
+# ---------------------------------------------------------------------------
 # Thread safety
 # ---------------------------------------------------------------------------
 

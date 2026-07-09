@@ -36,14 +36,16 @@ class TestSpanStatus:
         assert SpanStatus.UNSET.value == "UNSET"
         assert SpanStatus.OK.value == "OK"
         assert SpanStatus.ERROR.value == "ERROR"
+        assert SpanStatus.CANCELLED.value == "CANCELLED"
 
     def test_is_str_subclass(self) -> None:
         # SpanStatus(str, Enum) — each member IS a str
         assert isinstance(SpanStatus.OK, str)
         assert isinstance(SpanStatus.ERROR, str)
+        assert isinstance(SpanStatus.CANCELLED, str)
 
-    def test_three_values_only(self) -> None:
-        assert len(SpanStatus) == 3
+    def test_four_values_only(self) -> None:
+        assert len(SpanStatus) == 4
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +321,28 @@ class TestRecordException:
         attrs = span.events[0].attributes
         assert "exception.stacktrace" in attrs
         assert len(attrs["exception.stacktrace"]) > 0
+
+    def test_record_exception_status_defaults_to_error(self) -> None:
+        span = Span()
+        span.record_exception(RuntimeError("boom"))
+        assert span.status == SpanStatus.ERROR
+
+    def test_record_exception_accepts_cancelled_status(self) -> None:
+        span = Span()
+        exc = RuntimeError("run was cancelled")
+        span.record_exception(exc, status=SpanStatus.CANCELLED)
+        assert span.status == SpanStatus.CANCELLED
+        # Event is still recorded the same way regardless of status.
+        assert span.events[0].attributes["exception.type"] == "RuntimeError"
+
+    def test_record_exception_cancelled_distinct_from_error(self) -> None:
+        span_error = Span()
+        span_error.record_exception(RuntimeError("real failure"))
+        span_cancelled = Span()
+        span_cancelled.record_exception(
+            RuntimeError("cut off"), status=SpanStatus.CANCELLED
+        )
+        assert span_error.status != span_cancelled.status
 
 
 # ---------------------------------------------------------------------------

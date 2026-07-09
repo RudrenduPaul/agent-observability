@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import io
 import logging
+import time
 import warnings
 from typing import TYPE_CHECKING, Any
 
@@ -63,12 +64,14 @@ class RecordingAdapter(HTTPAdapter):
         *args: Any,
         **kwargs: Any,
     ) -> Response:
-        """Send the request, record the exchange, return the response."""
-        if self._inner is not None:
-            response: Response = self._inner.send(request, *args, **kwargs)
-        else:
-            response = super().send(request, *args, **kwargs)
+        """Send the request, record the exchange, return the response.
 
+        A pre-response exception (connection refused, DNS failure, TLS
+        failure, ...) is recorded too — as a failed-before-response exchange
+        (error_type/error_message, no response_status) — instead of being
+        silently lost, then re-raised unchanged so the caller sees the exact
+        same failure it would without recording active.
+        """
         url = str(request.url or "")
         method = str(request.method or "GET").upper()
         req_headers = dict(request.headers or {})
@@ -81,6 +84,26 @@ class RecordingAdapter(HTTPAdapter):
         else:
             req_body = ""
 
+        start = time.monotonic()
+        try:
+            if self._inner is not None:
+                response: Response = self._inner.send(request, *args, **kwargs)
+            else:
+                response = super().send(request, *args, **kwargs)
+        except Exception as exc:
+            duration_ms = (time.monotonic() - start) * 1000
+            self._fixture.record_exchange(
+                url=url,
+                method=method,
+                request_headers=req_headers,
+                request_body=req_body,
+                duration_ms=duration_ms,
+                error_type=type(exc).__qualname__,
+                error_message=str(exc),
+            )
+            raise
+        duration_ms = (time.monotonic() - start) * 1000
+
         resp_headers = dict(response.headers)
         resp_body = response.text  # reads and caches the body
 
@@ -92,6 +115,7 @@ class RecordingAdapter(HTTPAdapter):
             response_status=response.status_code,
             response_headers=resp_headers,
             response_body=resp_body,
+            duration_ms=duration_ms,
         )
 
         return response
