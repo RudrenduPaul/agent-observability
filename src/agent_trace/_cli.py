@@ -276,6 +276,124 @@ def _print_streaming_timing(exchanges: list[dict[str, object]]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Checkpoint durability diagnostic — correlates checkpoint:put/put_writes
+# spans (recorded by TracingCheckpointSaver,
+# agent_trace.integrations.langgraph_checkpoint) against the rest of the
+# trace, surfacing a terminal durable|partial|abandoned status per the shape
+# independently proposed in the #5672 thread (cancellation_requested,
+# writes_enqueued_count, writes_flushed_count, checkpoint_status) instead of
+# requiring a developer to manually diff two span sets by hand to answer
+# "did what the user saw actually get durably persisted before the run
+# ended".
+# ---------------------------------------------------------------------------
+
+_CHECKPOINT_WRITE_SPAN_NAMES = frozenset(
+    {
+        "checkpoint:put",
+        "checkpoint:aput",
+        "checkpoint:put_writes",
+        "checkpoint:aput_writes",
+    }
+)
+
+
+def _checkpoint_durability_summary(
+    spans: list[dict[str, object]],
+) -> dict[str, object] | None:
+    """Return the durability summary for *spans*, or None if no
+    checkpoint-write spans were recorded in this trace at all (the
+    TracingCheckpointSaver wrapper wasn't wired in — nothing to report,
+    distinct from "wired in but zero writes flushed")."""
+    write_spans = [s for s in spans if s.get("name") in _CHECKPOINT_WRITE_SPAN_NAMES]
+    if not write_spans:
+        return None
+
+    enqueued = len(write_spans)
+    flushed = 0
+    for span in write_spans:
+        attrs = span.get("attributes") or {}
+        if isinstance(attrs, dict) and attrs.get("checkpoint.completed") is True:
+            flushed += 1
+
+    cancellation_requested = any(s.get("status") == "CANCELLED" for s in spans)
+
+    if flushed == enqueued and not cancellation_requested:
+        status = "durable"
+    elif flushed == 0:
+        status = "abandoned"
+    else:
+        status = "partial"
+
+    return {
+        "cancellation_requested": cancellation_requested,
+        "writes_enqueued_count": enqueued,
+        "writes_flushed_count": flushed,
+        "checkpoint_status": status,
+    }
+
+
+def _print_checkpoint_durability(spans: list[dict[str, object]]) -> None:
+    summary = _checkpoint_durability_summary(spans)
+    if summary is None:
+        return
+    print()
+    print("Checkpoint durability:")
+    print(f"  checkpoint_status:        {summary['checkpoint_status']}")
+    print(f"  writes_enqueued_count:    {summary['writes_enqueued_count']}")
+    print(f"  writes_flushed_count:     {summary['writes_flushed_count']}")
+    print(f"  cancellation_requested:   {summary['cancellation_requested']}")
+    if summary["checkpoint_status"] != "durable":
+        print(
+            "  (Not every checkpoint write span closed checkpoint.completed=True "
+            "before the run ended — state observed during the run may not "
+            "match what was actually persisted. See issue #5672.)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Zero-tasks-scheduled diagnostic — flags a checkpoint:update_state span
+# (recorded by traced_update_state()/traced_aupdate_state(),
+# agent_trace.integrations.langgraph_checkpoint) whose post-write task
+# schedule came back empty, the exact silent-no-op-resume shape behind issue
+# #4217 (a missing/incorrect as_node on an external state write).
+# ---------------------------------------------------------------------------
+
+
+def _zero_task_update_rows(spans: list[dict[str, object]]) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for span in spans:
+        if span.get("name") != "checkpoint:update_state":
+            continue
+        attrs = span.get("attributes") or {}
+        if not isinstance(attrs, dict):
+            continue
+        if attrs.get("checkpoint.zero_tasks_scheduled") is True:
+            rows.append(
+                {
+                    "as_node": attrs.get("checkpoint.as_node", "<not provided>"),
+                    "as_node_provided": attrs.get("checkpoint.as_node_provided", False),
+                }
+            )
+    return rows
+
+
+def _print_zero_task_updates(spans: list[dict[str, object]]) -> None:
+    rows = _zero_task_update_rows(spans)
+    if not rows:
+        return
+    print()
+    print("Zero tasks scheduled after a state update (likely misattributed write):")
+    for row in rows:
+        provided = "yes" if row["as_node_provided"] else "no"
+        print(f"  as_node={row['as_node']}  (explicitly provided: {provided})")
+    print(
+        "  (An update_state() call was followed by an empty scheduled-task "
+        "list — the graph will not advance from this state. Usually a "
+        "missing/incorrect as_node. See issue #4217.)"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Subcommand: show
 # ---------------------------------------------------------------------------
 
@@ -321,6 +439,8 @@ def cmd_show(args: argparse.Namespace) -> None:
     print(f"Spans: {len(spans)}")
     _print_error_classification(spans)
     _print_duplicate_node_spans(spans)
+    _print_checkpoint_durability(spans)
+    _print_zero_task_updates(spans)
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +513,8 @@ def cmd_replay(args: argparse.Namespace) -> None:
             StdoutExporter().export(trace_obj)
             _print_error_classification(trace_data.get("spans", []))
             _print_duplicate_node_spans(trace_data.get("spans", []))
+            _print_checkpoint_durability(trace_data.get("spans", []))
+            _print_zero_task_updates(trace_data.get("spans", []))
         except Exception as exc:
             print(f"Could not render span tree: {exc}")
     else:

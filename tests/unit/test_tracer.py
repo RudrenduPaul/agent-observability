@@ -119,6 +119,92 @@ class TestStartTrace:
             # trace_id and run_id must be independent
             assert trace.trace_id != trace.run_id
 
+    def test_start_trace_explicit_trace_id_override(self, tmp_path: Path) -> None:
+        """trace_id=... overrides the default random uuid4 — the mechanism
+        for cross-worker run correlation (issue #7417)."""
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("explicit-id", trace_id="deadbeef" * 4) as trace:
+            assert trace.trace_id == "deadbeef" * 4
+
+    def test_start_trace_no_trace_id_still_random(self, tmp_path: Path) -> None:
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("a") as trace_a:
+            id_a = trace_a.trace_id
+        with t.start_trace("b") as trace_b:
+            id_b = trace_b.trace_id
+        assert id_a != id_b
+
+
+# ---------------------------------------------------------------------------
+# Tracer.start_trace(remote_backend=...) — durable/remote fixture sync
+# (issue #7417)
+# ---------------------------------------------------------------------------
+
+
+class TestStartTraceRemoteBackend:
+    def test_remote_backend_receives_synced_exchanges_during_recording(
+        self, tmp_path: Path
+    ) -> None:
+        from agent_trace.exporters.remote_fixture import LocalDirRemoteFixtureBackend
+
+        backend = LocalDirRemoteFixtureBackend(tmp_path / "remote")
+        t = Tracer(trace_dir=tmp_path / "local")
+        with t.start_trace("remote-test", record=True, remote_backend=backend) as trace:
+            run_id = trace.run_id
+            fixture = t._active_fixture_var.get()
+            fixture.record_exchange(
+                url="https://api.example.com",
+                method="POST",
+                request_headers={},
+                request_body="",
+                response_status=200,
+                response_headers={},
+                response_body="ok",
+            )
+        synced = backend.list_keys(f"{run_id}/exchanges/")
+        assert len(synced) == 1
+
+    def test_remote_backend_syncs_trace_json_and_fixture_on_exit(
+        self, tmp_path: Path
+    ) -> None:
+        from agent_trace.exporters.remote_fixture import LocalDirRemoteFixtureBackend
+
+        backend = LocalDirRemoteFixtureBackend(tmp_path / "remote")
+        t = Tracer(trace_dir=tmp_path / "local")
+        with t.start_trace("remote-test-2", record=True, remote_backend=backend) as trace:
+            run_id = trace.run_id
+        assert backend.get_bytes(f"{run_id}/trace.json") is not None
+        assert backend.get_bytes(f"{run_id}/fixture.db") is not None
+
+    def test_no_remote_backend_is_unaffected(self, tmp_path: Path) -> None:
+        """Omitting remote_backend (the default) behaves exactly as before."""
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("no-remote", record=True) as trace:
+            run_id = trace.run_id
+        assert (tmp_path / run_id / "fixture.db").exists()
+
+    def test_remote_backend_failure_does_not_break_local_trace(
+        self, tmp_path: Path
+    ) -> None:
+        class _BoomBackend:
+            def put_bytes(self, key: str, data: bytes) -> None:
+                raise RuntimeError("remote store unreachable")
+
+            def get_bytes(self, key: str) -> bytes | None:
+                return None
+
+            def list_keys(self, prefix: str) -> list[str]:
+                return []
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace(
+            "remote-failure", record=True, remote_backend=_BoomBackend()
+        ) as trace:
+            run_id = trace.run_id
+        # Local trace.json/fixture.db still written despite remote failure.
+        assert (tmp_path / run_id / "trace.json").exists()
+        assert (tmp_path / run_id / "fixture.db").exists()
+
 
 # ---------------------------------------------------------------------------
 # Tracer.span()

@@ -1310,3 +1310,132 @@ class TestTracedAstream:
                 pass
         span = next(s for s in trace.spans if s.name == "graph:astream")
         assert span.status.value == "ERROR"
+
+
+# ---------------------------------------------------------------------------
+# derive_trace_id — deterministic trace_id from LangGraph thread_id/checkpoint
+# identity (issue #7417). Pure function, no langchain_core/langgraph needed.
+# ---------------------------------------------------------------------------
+
+
+class TestDeriveTraceId:
+    def test_deterministic_for_same_thread_id(self):
+        from agent_trace.integrations.langgraph import derive_trace_id
+
+        assert derive_trace_id("thread-1") == derive_trace_id("thread-1")
+
+    def test_different_thread_ids_produce_different_ids(self):
+        from agent_trace.integrations.langgraph import derive_trace_id
+
+        assert derive_trace_id("thread-1") != derive_trace_id("thread-2")
+
+    def test_checkpoint_id_changes_the_result(self):
+        from agent_trace.integrations.langgraph import derive_trace_id
+
+        assert derive_trace_id("t1", "cp1") == derive_trace_id("t1", "cp1")
+        assert derive_trace_id("t1", "cp1") != derive_trace_id("t1", "cp2")
+        assert derive_trace_id("t1") != derive_trace_id("t1", "cp1")
+
+    def test_returns_32_char_hex_string(self):
+        from agent_trace.integrations.langgraph import derive_trace_id
+
+        value = derive_trace_id("thread-1")
+        assert len(value) == 32
+        int(value, 16)  # raises ValueError if not valid hex
+
+    def test_wired_into_start_trace_trace_id_param(self, tmp_path: Path):
+        """Tracer.start_trace(trace_id=...) actually uses the derived id."""
+        from agent_trace.integrations.langgraph import derive_trace_id
+
+        derived = derive_trace_id("thread-42")
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("derived-trace-id-test", trace_id=derived) as trace:
+            assert trace.trace_id == derived
+
+
+# ---------------------------------------------------------------------------
+# long_span_threshold_secs — flags a span at close time once its measured
+# open duration crosses a configurable threshold (issue #7417). Uses
+# FixtureClock for deterministic elapsed-time control instead of real sleeps.
+# ---------------------------------------------------------------------------
+
+
+class TestLongRunningSpanThreshold:
+    def test_span_under_threshold_not_flagged(self, tracer_and_trace):
+        from agent_trace.core.clock import FixtureClock, restore_clock, set_clock
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        t, trace = tracer_and_trace
+        handler = LangGraphTracer(
+            tracer=t, trace=trace, long_span_threshold_secs=180
+        )
+        clock = FixtureClock(initial=1_000.0)
+        token = set_clock(clock)
+        try:
+            run_id = _run_id()
+            handler.on_chain_start({"name": "n"}, {}, run_id=run_id)
+            span_ref = handler._spans[str(run_id)]
+            clock.advance(1_010.0)  # 10s elapsed — well under 180s
+            handler.on_chain_end({}, run_id=run_id)
+        finally:
+            restore_clock(token)
+        assert "span.exceeded_long_running_threshold" not in span_ref.attributes
+
+    def test_span_over_threshold_is_flagged(self, tracer_and_trace):
+        from agent_trace.core.clock import FixtureClock, restore_clock, set_clock
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        t, trace = tracer_and_trace
+        handler = LangGraphTracer(
+            tracer=t, trace=trace, long_span_threshold_secs=180
+        )
+        clock = FixtureClock(initial=1_000.0)
+        token = set_clock(clock)
+        try:
+            run_id = _run_id()
+            handler.on_chain_start({"name": "n"}, {}, run_id=run_id)
+            span_ref = handler._spans[str(run_id)]
+            clock.advance(1_200.0)  # 200s elapsed — over the 180s threshold
+            handler.on_chain_end({}, run_id=run_id)
+        finally:
+            restore_clock(token)
+        assert span_ref.attributes.get("span.exceeded_long_running_threshold") is True
+        assert span_ref.attributes.get("span.long_running_threshold_secs") == 180
+        assert span_ref.attributes.get("span.duration_secs_at_close") == 200.0
+
+    def test_disabled_by_default(self, tracer_and_trace):
+        from agent_trace.core.clock import FixtureClock, restore_clock, set_clock
+
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)  # no long_span_threshold_secs
+        clock = FixtureClock(initial=1_000.0)
+        token = set_clock(clock)
+        try:
+            run_id = _run_id()
+            handler.on_chain_start({"name": "n"}, {}, run_id=run_id)
+            span_ref = handler._spans[str(run_id)]
+            clock.advance(10_000.0)  # huge elapsed — still not flagged
+            handler.on_chain_end({}, run_id=run_id)
+        finally:
+            restore_clock(token)
+        assert "span.exceeded_long_running_threshold" not in span_ref.attributes
+
+    def test_error_span_also_checked(self, tracer_and_trace):
+        from agent_trace.core.clock import FixtureClock, restore_clock, set_clock
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        t, trace = tracer_and_trace
+        handler = LangGraphTracer(
+            tracer=t, trace=trace, long_span_threshold_secs=180
+        )
+        clock = FixtureClock(initial=1_000.0)
+        token = set_clock(clock)
+        try:
+            run_id = _run_id()
+            handler.on_chain_start({"name": "n"}, {}, run_id=run_id)
+            span_ref = handler._spans[str(run_id)]
+            clock.advance(1_200.0)
+            handler.on_chain_error(ValueError("boom"), run_id=run_id)
+        finally:
+            restore_clock(token)
+        assert span_ref.attributes.get("span.exceeded_long_running_threshold") is True

@@ -114,6 +114,8 @@ class Tracer:
         name: str,
         record: bool = False,
         run_id: str | None = None,
+        trace_id: str | None = None,
+        remote_backend: Any = None,
     ) -> Generator[Trace, None, None]:
         """Start a trace, yield it, then save trace.json on exit.
 
@@ -121,6 +123,26 @@ class Tracer:
         one in ``_active_trace_var``.  If *record* is True, all outbound HTTP
         calls during the context are captured into a SQLite fixture at
         ``run_dir/fixture.db``.
+
+        *trace_id*, when supplied, overrides the default random
+        ``uuid.uuid4().hex``. Pass a value derived from a stable external
+        identity — e.g. a LangGraph run's ``thread_id``/checkpoint id via
+        ``agent_trace.integrations.langgraph.derive_trace_id()`` — so that
+        two worker processes independently recording "the same" logical
+        operation (e.g. an original long-running tool call and its
+        checkpoint-swept re-dispatch on a managed platform) produce
+        traces sharing one ``trace_id`` and can be recognized/diffed as the
+        same logical run after the fact, instead of two unrelated,
+        un-linkable random UUIDs.
+
+        *remote_backend*, when supplied (a
+        ``agent_trace.exporters.remote_fixture.RemoteFixtureBackend``,
+        requires *record* to also be True), durably uploads each HTTP
+        exchange to remote storage as it's recorded, and syncs the final
+        ``trace.json``/``fixture.db`` on exit — so a worker killed or swept
+        mid-run on a managed platform (issue #7417) still has its recording
+        recoverable from remote storage, instead of only the worker's own
+        ephemeral, developer-inaccessible local filesystem.
         """
         effective_run_id = run_id or f"run_{uuid.uuid4().hex[:12]}"
         base = self._trace_dir.resolve()
@@ -134,17 +156,26 @@ class Tracer:
         run_dir.mkdir(parents=True, exist_ok=True)
 
         # trace_id must be 128-bit hex for OTLP; run_id is the human-readable
-        # directory name ("run_abc123").  Always generate them independently.
-        trace = Trace(trace_id=uuid.uuid4().hex, run_id=effective_run_id)
+        # directory name ("run_abc123").  Always generate them independently
+        # unless the caller supplied a deterministic trace_id explicitly.
+        trace = Trace(trace_id=trace_id or uuid.uuid4().hex, run_id=effective_run_id)
         trace.metadata["name"] = name
         token: Token[Trace | None] = self._active_trace_var.set(trace)
 
         self._call_plugin("on_trace_start", trace)
 
+        on_exchange_recorded = self._remote_exchange_callback(
+            record, remote_backend, effective_run_id
+        )
+
         # Use Fixture as a context manager when recording; nullcontext() when
         # not, so fixture lifecycle and transport patching are always balanced.
         fixture_ctx: Any = (
-            Fixture(run_dir / "fixture.db", trace_id=trace.trace_id)
+            Fixture(
+                run_dir / "fixture.db",
+                trace_id=trace.trace_id,
+                on_exchange_recorded=on_exchange_recorded,
+            )
             if record
             else nullcontext()
         )
@@ -184,8 +215,42 @@ class Tracer:
                     trace_json_path,
                     _write_err,
                 )
+            self._sync_run_to_remote(remote_backend, run_dir, effective_run_id)
             self._call_plugin("on_trace_end", trace)
             self._active_trace_var.reset(token)
+
+    @staticmethod
+    def _remote_exchange_callback(
+        record: bool, remote_backend: Any, run_id: str
+    ) -> Any:
+        """Return an on_exchange_recorded callback wired to *remote_backend*
+        (durably uploading each exchange as it's recorded — see
+        agent_trace.exporters.remote_fixture), or None when recording isn't
+        active or no remote backend was supplied. Split out of start_trace()
+        purely to keep that method's own branch/statement count low."""
+        if not record or remote_backend is None:
+            return None
+        from agent_trace.exporters.remote_fixture import remote_sync_callback
+
+        return remote_sync_callback(remote_backend, run_id)
+
+    @staticmethod
+    def _sync_run_to_remote(remote_backend: Any, run_dir: Path, run_id: str) -> None:
+        """Best-effort final sync of trace.json/fixture.db to *remote_backend*
+        on start_trace() exit. Split out purely to keep start_trace()'s own
+        branch/statement count low."""
+        if remote_backend is None:
+            return
+        try:
+            from agent_trace.exporters.remote_fixture import sync_run_to_remote
+
+            sync_run_to_remote(run_dir, remote_backend, run_id)
+        except Exception:
+            logger.warning(
+                "agent-trace: failed to sync run %s to remote backend",
+                run_id,
+                exc_info=True,
+            )
 
     # ------------------------------------------------------------------
     # Decorator
