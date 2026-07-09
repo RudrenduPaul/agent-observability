@@ -1212,3 +1212,219 @@ class TestBranchDispatchExceptionCapture:
         assert result["x"] == 1
         branch_spans = [s for s in trace.spans if s.name == "branch:dispatch"]
         assert branch_spans == []
+
+
+@pytest.mark.integration
+class TestStreamingCallbackHooksAgainstRealLangGraph:
+    """on_llm_new_token, exercised via a real streaming BaseChatModel run
+    through a real LangGraph node."""
+
+    def test_streaming_chat_model_call_records_deltas(self, tmp_path: Path) -> None:
+        from typing import Any
+
+        from langchain_core.language_models.chat_models import BaseChatModel
+        from langchain_core.messages import AIMessage, HumanMessage
+        from langchain_core.messages.ai import AIMessageChunk
+        from langchain_core.outputs import ChatGenerationChunk, ChatResult
+        from langgraph.graph import END, START, MessagesState, StateGraph
+
+        from agent_trace import Tracer
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        class FakeStreamingModel(BaseChatModel):
+            @property
+            def _llm_type(self) -> str:
+                return "fake-streaming"
+
+            def _generate(
+                self, messages: Any, stop: Any = None, run_manager: Any = None, **kwargs: Any
+            ) -> ChatResult:
+                raise AssertionError("expected _stream, not _generate, to be used")
+
+            def _stream(self, messages: Any, stop: Any = None, run_manager: Any = None, **kwargs: Any):
+                for tok in ["hel", "lo"]:
+                    chunk = ChatGenerationChunk(message=AIMessageChunk(content=tok))
+                    if run_manager:
+                        run_manager.on_llm_new_token(tok, chunk=chunk)
+                    yield chunk
+
+        def call_model(state: MessagesState) -> dict[str, Any]:
+            chunks = list(FakeStreamingModel().stream(state["messages"]))
+            full = chunks[0]
+            for c in chunks[1:]:
+                full = full + c
+            return {"messages": [AIMessage(content=full.content)]}
+
+        builder = StateGraph(MessagesState)
+        builder.add_node("n1", call_model)
+        builder.add_edge(START, "n1")
+        builder.add_edge("n1", END)
+        graph = builder.compile()
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("streaming-callback-test") as trace:
+            cb = LangGraphTracer(tracer=t, trace=trace)
+            result = graph.invoke(
+                {"messages": [HumanMessage(content="hi")]}, config={"callbacks": [cb]}
+            )
+
+        assert result["messages"][-1].content == "hello"
+
+        llm_span = next(s for s in trace.spans if s.name.startswith("llm:"))
+        assert llm_span.attributes.get("llm.streamed") is True
+        assert llm_span.attributes.get("llm.stream_token_count", 0) >= 2
+        delta_events = [e for e in llm_span.events if e.name == "llm_stream_delta"]
+        tokens = [e.attributes.get("token") for e in delta_events if "token" in e.attributes]
+        assert "hel" in tokens
+        assert "lo" in tokens
+
+
+@pytest.mark.integration
+class TestDeclaredNodeTagsAgainstRealLangGraph:
+    """on_chain_start: a compiled graph's node-level declared tags (set via
+    .with_config(tags=[...]) on the node's own action, the only mechanism
+    the installed LangGraph version actually supports — confirmed via direct
+    inspection, since StateGraph.add_node() has no tags= kwarg) land on the
+    node span when graph= is supplied."""
+
+    def test_declared_tags_captured_from_with_config(self, tmp_path: Path) -> None:
+        from typing import TypedDict
+
+        from langchain_core.runnables import RunnableLambda
+        from langgraph.graph import END, START, StateGraph
+
+        from agent_trace import Tracer
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        class S(TypedDict):
+            x: int
+
+        def n1(state: S) -> S:
+            return {"x": state["x"] + 1}
+
+        builder = StateGraph(S)
+        builder.add_node("n1", RunnableLambda(n1).with_config(tags=["nostream"]))
+        builder.add_edge(START, "n1")
+        builder.add_edge("n1", END)
+        graph = builder.compile()
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("declared-tags-test") as trace:
+            cb = LangGraphTracer(tracer=t, trace=trace, graph=graph)
+            graph.invoke({"x": 0}, config={"callbacks": [cb]})
+
+        node_span = next(s for s in trace.spans if s.name == "node:n1")
+        assert node_span.attributes.get("langgraph.declared_tags") == "nostream"
+        # The runtime `tags` kwarg on_chain_start receives never carries it —
+        # confirming this is genuinely new information, not a duplicate of
+        # what langgraph.tags already captured.
+        assert "nostream" not in node_span.attributes.get("langgraph.tags", "")
+
+    def test_no_declared_tags_when_node_not_configured(self, tmp_path: Path) -> None:
+        from typing import TypedDict
+
+        from langgraph.graph import END, START, StateGraph
+
+        from agent_trace import Tracer
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        class S(TypedDict):
+            x: int
+
+        def n1(state: S) -> S:
+            return {"x": state["x"] + 1}
+
+        builder = StateGraph(S)
+        builder.add_node("n1", n1)
+        builder.add_edge(START, "n1")
+        builder.add_edge("n1", END)
+        graph = builder.compile()
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("no-declared-tags-test") as trace:
+            cb = LangGraphTracer(tracer=t, trace=trace, graph=graph)
+            graph.invoke({"x": 0}, config={"callbacks": [cb]})
+
+        node_span = next(s for s in trace.spans if s.name == "node:n1")
+        assert "langgraph.declared_tags" not in node_span.attributes
+
+
+@pytest.mark.integration
+class TestTracedStreamAgainstRealLangGraph:
+    """traced_stream(): wraps graph.stream() against a real LangGraph graph,
+    recording one stream_yield SpanEvent per item actually delivered to the
+    caller."""
+
+    def test_wraps_real_graph_stream(self, tmp_path: Path) -> None:
+        from typing import TypedDict
+
+        from langgraph.graph import END, START, StateGraph
+
+        from agent_trace import Tracer
+        from agent_trace.integrations.langgraph import traced_stream
+
+        class S(TypedDict):
+            x: int
+
+        def n1(state: S) -> S:
+            return {"x": state["x"] + 1}
+
+        def n2(state: S) -> S:
+            return {"x": state["x"] + 10}
+
+        builder = StateGraph(S)
+        builder.add_node("n1", n1)
+        builder.add_node("n2", n2)
+        builder.add_edge(START, "n1")
+        builder.add_edge("n1", "n2")
+        builder.add_edge("n2", END)
+        graph = builder.compile()
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("traced-stream-test") as trace:
+            results = list(
+                traced_stream(t, graph.stream({"x": 0}, stream_mode="updates"))
+            )
+
+        assert results == [{"n1": {"x": 1}}, {"n2": {"x": 11}}]
+        stream_span = next(s for s in trace.spans if s.name == "graph:stream")
+        assert stream_span.attributes.get("stream.chunk_count") == 2
+        assert stream_span.status.value == "OK"
+        yield_events = [e for e in stream_span.events if e.name == "stream_yield"]
+        assert len(yield_events) == 2
+        assert "n1" in yield_events[0].attributes["stream.chunk"]
+        assert "n2" in yield_events[1].attributes["stream.chunk"]
+
+    def test_invoke_vs_stream_have_different_span_shapes(self, tmp_path: Path) -> None:
+        """graph.invoke() produces no graph:stream span at all (it drains
+        internally, never yielding progressively to caller code); wrapping
+        graph.stream() in traced_stream() does. This is the exact delivery-
+        timing distinction #4653 is about — the two must be observably
+        different at the span-tree level, not just at the Python-API level."""
+        from typing import TypedDict
+
+        from langgraph.graph import END, START, StateGraph
+
+        from agent_trace import Tracer
+        from agent_trace.integrations.langgraph import traced_stream
+
+        class S(TypedDict):
+            x: int
+
+        def n1(state: S) -> S:
+            return {"x": state["x"] + 1}
+
+        builder = StateGraph(S)
+        builder.add_node("n1", n1)
+        builder.add_edge(START, "n1")
+        builder.add_edge("n1", END)
+        graph = builder.compile()
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("invoke-test") as trace:
+            graph.invoke({"x": 0})
+        assert not any(s.name == "graph:stream" for s in trace.spans)
+
+        with t.start_trace("stream-test") as trace:
+            list(traced_stream(t, graph.stream({"x": 0}, stream_mode="updates")))
+        assert any(s.name == "graph:stream" for s in trace.spans)

@@ -223,6 +223,59 @@ def _print_duplicate_node_spans(spans: list[dict[str, object]]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Streaming timing diagnostic — surfaces time-to-first-chunk and max
+# inter-chunk gap for any exchange recorded via a pass-through streaming
+# transport (RecordingTransport(..., stream=True) /
+# AsyncRecordingTransport(..., stream=True)). Exchanges recorded the default
+# (eager-buffering) way carry no chunk_timestamps and are silently skipped —
+# absence means "not captured this way", not "instant delivery".
+# ---------------------------------------------------------------------------
+
+
+def _streaming_timing_rows(
+    exchanges: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """One row per exchange with recorded per-chunk timestamps."""
+    from agent_trace._replay.fixture import (
+        max_inter_chunk_gap_ms,
+        time_to_first_chunk_ms,
+    )
+
+    rows: list[dict[str, object]] = []
+    for exchange in exchanges:
+        if not exchange.get("chunk_timestamps"):
+            continue
+        rows.append(
+            {
+                "url": exchange.get("url", "?"),
+                "method": exchange.get("method", "?"),
+                "chunk_count": len(exchange["chunk_timestamps"]),  # type: ignore[arg-type]
+                "time_to_first_chunk_ms": time_to_first_chunk_ms(exchange),
+                "max_inter_chunk_gap_ms": max_inter_chunk_gap_ms(exchange),
+            }
+        )
+    return rows
+
+
+def _print_streaming_timing(exchanges: list[dict[str, object]]) -> None:
+    rows = _streaming_timing_rows(exchanges)
+    if not rows:
+        return
+    print()
+    print("Streaming timing (time-to-first-chunk / max inter-chunk gap):")
+    for row in rows:
+        ttfc = row["time_to_first_chunk_ms"]
+        gap = row["max_inter_chunk_gap_ms"]
+        ttfc_str = f"{ttfc:.1f}ms" if isinstance(ttfc, (int, float)) else "?"
+        gap_str = f"{gap:.1f}ms" if isinstance(gap, (int, float)) else "?"
+        print(
+            f"  {row['method']:<6} {row['url']:<50}  "
+            f"chunks={row['chunk_count']:>4}  "
+            f"first_chunk={ttfc_str:>10}  max_gap={gap_str:>10}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Subcommand: show
 # ---------------------------------------------------------------------------
 
@@ -311,10 +364,13 @@ def cmd_replay(args: argparse.Namespace) -> None:
     try:
         with Fixture(fixture) as f:
             exchange_count = f.exchange_count()
+            all_exchanges = f.all_exchanges()
     except Exception:
         exchange_count = 0
+        all_exchanges = []
 
     print(f"Recorded exchanges: {exchange_count}")
+    _print_streaming_timing(all_exchanges)
     print()
 
     # Enter replay mode

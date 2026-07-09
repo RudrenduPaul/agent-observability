@@ -471,6 +471,144 @@ class TestSchemaMigration:
         with Fixture(db_path) as f:
             assert f.exchange_count() == 1
 
+    def test_pre_chunk_timestamps_database_migrates_cleanly(
+        self, tmp_path: Path
+    ) -> None:
+        """A fixture.db created before chunk_timestamps existed (but with
+        duration_ms/error_type/error_message already present) must still
+        open cleanly, with the old row's chunk_timestamps defaulting to
+        None."""
+        import sqlite3
+
+        db_path = tmp_path / "pre_chunk_ts.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript(
+            """\
+            CREATE TABLE http_exchanges (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                trace_id         TEXT NOT NULL,
+                url              TEXT NOT NULL,
+                method           TEXT NOT NULL,
+                request_headers  TEXT NOT NULL DEFAULT '{}',
+                request_body     TEXT NOT NULL DEFAULT '',
+                response_status  INTEGER,
+                response_headers TEXT NOT NULL DEFAULT '{}',
+                response_body    TEXT NOT NULL DEFAULT '',
+                recorded_at      REAL NOT NULL,
+                sequence_num     INTEGER NOT NULL,
+                duration_ms      REAL,
+                error_type       TEXT,
+                error_message    TEXT
+            );
+            CREATE TABLE metadata (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO http_exchanges "
+            "(trace_id, url, method, request_headers, request_body, "
+            " response_status, response_headers, response_body, "
+            " recorded_at, sequence_num) "
+            "VALUES ('t', 'https://x/y', 'GET', '{}', '', 200, '{}', 'ok', 1.0, 0)"
+        )
+        conn.commit()
+        conn.close()
+
+        with Fixture(db_path) as f:
+            exchanges = f.all_exchanges()
+            assert len(exchanges) == 1
+            assert exchanges[0]["chunk_timestamps"] is None
+
+            f.record_exchange(
+                url="https://x/new",
+                method="GET",
+                request_headers={},
+                request_body="",
+                response_status=200,
+                response_headers={},
+                response_body="ok",
+                chunk_timestamps=[0.01, 0.03],
+            )
+            assert f.exchange_count() == 2
+
+
+# ---------------------------------------------------------------------------
+# chunk_timestamps — per-chunk arrival timestamps for streamed responses
+# ---------------------------------------------------------------------------
+
+
+class TestChunkTimestamps:
+    def test_stored_and_round_tripped(self, tmp_path: Path) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            f.record_exchange(
+                url="https://api.example.com/stream",
+                method="POST",
+                request_headers={},
+                request_body="",
+                response_status=200,
+                response_headers={},
+                response_body="data: hi\n\n",
+                chunk_timestamps=[0.0, 0.05, 0.12],
+            )
+            exchange = f.all_exchanges()[0]
+            assert exchange["chunk_timestamps"] == [0.0, 0.05, 0.12]
+
+    def test_absent_by_default(self, tmp_path: Path) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            _record(f)
+            assert f.all_exchanges()[0]["chunk_timestamps"] is None
+
+    def test_next_exchange_also_carries_chunk_timestamps(
+        self, tmp_path: Path
+    ) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            f.record_exchange(
+                url="https://api.example.com/stream",
+                method="GET",
+                request_headers={},
+                request_body="",
+                response_status=200,
+                response_headers={},
+                response_body="ok",
+                chunk_timestamps=[0.02],
+            )
+            exchange = f.next_exchange("https://api.example.com/stream", "GET")
+            assert exchange is not None
+            assert exchange["chunk_timestamps"] == [0.02]
+
+
+class TestStreamingTimingHelpers:
+    def test_time_to_first_chunk_ms(self) -> None:
+        from agent_trace._replay.fixture import time_to_first_chunk_ms
+
+        assert time_to_first_chunk_ms({"chunk_timestamps": [0.25, 0.4]}) == 250.0
+
+    def test_time_to_first_chunk_ms_none_when_absent(self) -> None:
+        from agent_trace._replay.fixture import time_to_first_chunk_ms
+
+        assert time_to_first_chunk_ms({"chunk_timestamps": None}) is None
+        assert time_to_first_chunk_ms({}) is None
+
+    def test_max_inter_chunk_gap_ms(self) -> None:
+        from agent_trace._replay.fixture import max_inter_chunk_gap_ms
+
+        # gaps: 0.1, 0.05, 0.3 seconds -> max is 300ms
+        assert max_inter_chunk_gap_ms(
+            {"chunk_timestamps": [0.0, 0.1, 0.15, 0.45]}
+        ) == pytest.approx(300.0)
+
+    def test_max_inter_chunk_gap_ms_single_chunk_is_zero(self) -> None:
+        from agent_trace._replay.fixture import max_inter_chunk_gap_ms
+
+        assert max_inter_chunk_gap_ms({"chunk_timestamps": [0.1]}) == 0.0
+
+    def test_max_inter_chunk_gap_ms_none_when_absent(self) -> None:
+        from agent_trace._replay.fixture import max_inter_chunk_gap_ms
+
+        assert max_inter_chunk_gap_ms({"chunk_timestamps": None}) is None
+
 
 # ---------------------------------------------------------------------------
 # Thread safety
