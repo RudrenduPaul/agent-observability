@@ -5,6 +5,7 @@ Falls back to plain text if rich is not installed.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -28,6 +29,41 @@ _STATUS_SYMBOL: dict[str, str] = {
     "ERROR": "[ERR]",
     "UNSET": "[---]",
 }
+
+
+# Span attributes worth surfacing inline in the tree view — the two numbers
+# needed to check "did latency grow along with prompt size across turns"
+# (#2920) are otherwise only reachable by manually opening trace.json and
+# cross-referencing two separate JSON keys per span.
+_INLINE_ATTRIBUTE_KEYS: tuple[str, ...] = (
+    "llm.model",
+    "llm.usage.prompt_tokens",
+    "llm.usage.completion_tokens",
+    "llm.usage.total_tokens",
+)
+
+
+def _inline_attributes_suffix(attributes: Mapping[str, object]) -> str:
+    """Render a compact ``key=value`` suffix for the subset of *attributes*
+    worth showing inline, or "" if none of them are present."""
+    parts = [
+        f"{key}={attributes[key]}"
+        for key in _INLINE_ATTRIBUTE_KEYS
+        if key in attributes
+    ]
+    return f"  ({', '.join(parts)})" if parts else ""
+
+
+def _exception_message(span: Span) -> str | None:
+    """Return the exception.message text captured on *span* via
+    Span.record_exception(), or None if it has no recorded exception event
+    — the data Span.record_exception() (core/span.py) already captures on
+    every ERROR span, but which was previously invisible in this tree view
+    (a developer saw "[ERR] llm:<model>" with no indication of why)."""
+    for event in span.events:
+        if event.name == "exception" and "exception.message" in event.attributes:
+            return str(event.attributes["exception.message"])
+    return None
 
 
 def _trace_header_info(trace: Trace) -> tuple[str, str]:
@@ -61,7 +97,12 @@ class StdoutExporter:
         indent = "  " * depth
         sym = _STATUS_SYMBOL.get(span.status.value, "[---]")
         dur = f" ({span.duration_ms:.1f} ms)" if span.duration_ms is not None else ""
-        print(f"{indent}{sym} {span.name}{dur}")
+        attrs_suffix = _inline_attributes_suffix(span.attributes)
+        print(f"{indent}{sym} {span.name}{dur}{attrs_suffix}")
+        if span.status.value == "ERROR":
+            message = _exception_message(span)
+            if message:
+                print(f"{indent}      ! {message}")
 
     # ------------------------------------------------------------------
     # Rich implementation
@@ -94,11 +135,19 @@ class StdoutExporter:
                     if span.duration_ms is not None
                     else ""
                 )
+                attrs_suffix = _inline_attributes_suffix(span.attributes)
+                dim_attrs = (
+                    f"  [dim]{attrs_suffix.strip()}[/dim]" if attrs_suffix else ""
+                )
                 label = (
                     f"[{colour}]{span.name}[/{colour}]"
                     f"  [{colour}]{span.status.value}[/{colour}]"
-                    f"{dur}"
+                    f"{dur}{dim_attrs}"
                 )
+                if span.status.value == "ERROR":
+                    message = _exception_message(span)
+                    if message:
+                        label += f"\n  [red]! {message}[/red]"
                 node = parent_node.add(label)
                 _add_children(node, span.span_id)
 

@@ -25,6 +25,8 @@ from agent_trace.interceptor.httpx_hook import (
     RecordingTransport,
     ReplayTransport,
     _is_tool_call_only_response,
+    correlation_context,
+    current_correlation_id,
     raise_on_loop_detected,
 )
 
@@ -991,3 +993,100 @@ class TestAsyncRecordingTransportLoopGuard:
                 await client.get("https://api.example.com/chat")
 
         assert fixture.exchange_count() == 2
+
+
+# ---------------------------------------------------------------------------
+# correlation_context() / current_correlation_id() — ties a recorded
+# exchange back to the concurrent batch input or graph node that produced
+# it (#30924, #6037).
+# ---------------------------------------------------------------------------
+
+
+def _ok_handler(request: httpx.Request) -> httpx.Response:
+    return httpx.Response(200, json={"ok": True})
+
+
+class TestCorrelationContext:
+    def test_no_active_context_returns_none(self) -> None:
+        assert current_correlation_id() is None
+
+    def test_inside_context_returns_set_value(self) -> None:
+        with correlation_context("batch-0"):
+            assert current_correlation_id() == "batch-0"
+        assert current_correlation_id() is None
+
+    def test_nested_context_restores_outer_value_on_exit(self) -> None:
+        with correlation_context("outer"):
+            with correlation_context("inner"):
+                assert current_correlation_id() == "inner"
+            assert current_correlation_id() == "outer"
+        assert current_correlation_id() is None
+
+    def test_exception_inside_context_still_restores(self) -> None:
+        with pytest.raises(ValueError, match="boom"):
+            with correlation_context("batch-0"):
+                raise ValueError("boom")
+        assert current_correlation_id() is None
+
+
+class TestRecordingTransportCorrelationId:
+    @respx.mock
+    def test_correlation_id_persisted_when_context_active(self, tmp_path) -> None:
+        fixture = _make_fixture(tmp_path)
+        respx.get("https://api.example.com/a").mock(
+            return_value=httpx.Response(200, json={"ok": True})
+        )
+        client = httpx.Client(transport=RecordingTransport(fixture))
+        with correlation_context("batch-item-0"):
+            client.get("https://api.example.com/a")
+
+        exchange = fixture.all_exchanges()[0]
+        assert exchange["correlation_id"] == "batch-item-0"
+
+    @respx.mock
+    def test_no_correlation_id_when_no_context_active(self, tmp_path) -> None:
+        fixture = _make_fixture(tmp_path)
+        respx.get("https://api.example.com/a").mock(
+            return_value=httpx.Response(200, json={"ok": True})
+        )
+        client = httpx.Client(transport=RecordingTransport(fixture))
+        client.get("https://api.example.com/a")
+
+        exchange = fixture.all_exchanges()[0]
+        assert exchange["correlation_id"] is None
+
+    def test_correlation_id_persisted_via_mock_transport(self, tmp_path) -> None:
+        fixture = _make_fixture(tmp_path)
+        client = httpx.Client(
+            transport=RecordingTransport(fixture, inner=httpx.MockTransport(_ok_handler))
+        )
+        with correlation_context("batch-item-1"):
+            client.get("https://api.example.com/b")
+
+        exchange = fixture.all_exchanges()[0]
+        assert exchange["correlation_id"] == "batch-item-1"
+
+
+class TestAsyncRecordingTransportCorrelationId:
+    async def test_correlation_id_isolated_per_concurrent_task(self, tmp_path) -> None:
+        import asyncio
+
+        fixture = _make_fixture(tmp_path)
+        client = httpx.AsyncClient(
+            transport=AsyncRecordingTransport(fixture, inner=httpx.MockTransport(_ok_handler))
+        )
+
+        async def _call(correlation_id: str, url: str) -> None:
+            with correlation_context(correlation_id):
+                await asyncio.sleep(0)  # yield control, prove isolation across tasks
+                await client.get(url)
+
+        async with client:
+            await asyncio.gather(
+                _call("batch-0", "https://api.example.com/x"),
+                _call("batch-1", "https://api.example.com/y"),
+            )
+
+        by_url = {e["url"]: e["correlation_id"] for e in fixture.all_exchanges()}
+        assert by_url["https://api.example.com/x"] == "batch-0"
+        assert by_url["https://api.example.com/y"] == "batch-1"

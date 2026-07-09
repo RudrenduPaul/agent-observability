@@ -18,6 +18,7 @@ Why SQLite and not JSON files?
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
 import logging
@@ -30,6 +31,9 @@ from types import TracebackType
 from typing import Any
 
 __all__ = ["Fixture", "max_inter_chunk_gap_ms", "time_to_first_chunk_ms"]
+# Note: Fixture's diff_response_shapes()/retry_groups()/
+# exchanges_for_correlation_id()/correlation_ids() are public methods on the
+# already-exported Fixture class, not separate module-level names.
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +89,18 @@ _MIGRATION_COLUMNS: tuple[tuple[str, str], ...] = (
     # every exchange recorded the historical eager-buffering way — absence
     # means "not captured", not "arrived instantly".
     ("chunk_timestamps", "TEXT"),
+    # Caller-supplied correlation identifier (e.g. propagated via
+    # agent_trace.interceptor.httpx_hook.correlation_context()) tying this
+    # exchange back to the concurrent batch input or graph node that
+    # produced it. NULL when the caller didn't set one.
+    ("correlation_id", "TEXT"),
+    # Content-hash of (method, url, request_body) — always computed at
+    # write time (see _inspect.content_hash), regardless of caller input.
+    # Rows sharing the same attempt_group are attempts of one logical
+    # request (e.g. an SDK's own automatic retry-on-5xx), letting a
+    # developer see "this logical call took N retries before a 200"
+    # without manually sequencing same-URL rows by eye.
+    ("attempt_group", "TEXT"),
 )
 
 
@@ -100,6 +116,25 @@ def _migrate(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError as exc:
             if "duplicate column name" not in str(exc).lower():
                 raise
+
+
+def _content_hash(method: str, url: str, request_body: str) -> str:
+    """Stable identity for "this is the same logical request" — rows
+    sharing this hash are attempts of one logical call (see
+    ``Fixture.retry_groups()``). Mirrors
+    ``agent_trace._inspect.content_hash`` (duplicated rather than imported
+    to keep this module import-cycle-free of the CLI-facing package).
+
+    sha1 here is a content-identity fingerprint, not a security boundary —
+    usedforsecurity=False documents that and avoids FIPS-mode failures.
+    """
+    digest = hashlib.sha1(usedforsecurity=False)
+    digest.update(method.upper().encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(url.encode("utf-8"))
+    digest.update(b"\0")
+    digest.update((request_body or "").encode("utf-8"))
+    return digest.hexdigest()
 
 
 def _row_to_exchange(row: sqlite3.Row) -> dict[str, Any]:
@@ -124,6 +159,8 @@ def _row_to_exchange(row: sqlite3.Row) -> dict[str, Any]:
             if "chunk_timestamps" in keys and row["chunk_timestamps"]
             else None
         ),
+        "correlation_id": row["correlation_id"] if "correlation_id" in keys else None,
+        "attempt_group": row["attempt_group"] if "attempt_group" in keys else None,
     }
 
 
@@ -218,9 +255,21 @@ class Fixture:
         error_type: str | None = None,
         error_message: str | None = None,
         chunk_timestamps: list[float] | None = None,
+        correlation_id: str | None = None,
     ) -> None:
         """Persist one HTTP round-trip — or one failed-before-response
         attempt — to the fixture database.
+
+        ``correlation_id``, when provided by the caller (e.g. via
+        ``agent_trace.interceptor.httpx_hook.correlation_context()``), ties
+        this exchange back to the concurrent batch input or graph node that
+        produced it — see ``exchanges_for_correlation_id()`` below.
+        ``attempt_group`` is *not* a parameter: it's always computed from
+        ``(method, url, request_body)`` at write time (see
+        ``agent_trace._inspect.content_hash``) so that repeated calls with
+        an identical request signature — the shape an SDK's own automatic
+        retry-on-5xx logic produces — are grouped as attempts of one logical
+        request with zero caller wiring required. See ``retry_groups()``.
 
         Two mutually-exclusive shapes:
 
@@ -263,6 +312,7 @@ class Fixture:
             )
             row = cur.fetchone()
             next_seq: int = int(row[0])
+            attempt_group = _content_hash(method, url, request_body)
 
             self._conn.execute(
                 """\
@@ -270,8 +320,9 @@ class Fixture:
                     (trace_id, url, method, request_headers, request_body,
                      response_status, response_headers, response_body,
                      recorded_at, sequence_num, duration_ms, error_type,
-                     error_message, chunk_timestamps)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     error_message, chunk_timestamps, correlation_id,
+                     attempt_group)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     self._trace_id,
@@ -292,6 +343,8 @@ class Fixture:
                         if chunk_timestamps is not None
                         else None
                     ),
+                    correlation_id,
+                    attempt_group,
                 ),
             )
             self._conn.commit()
@@ -315,6 +368,8 @@ class Fixture:
                     "error_type": error_type,
                     "error_message": error_message,
                     "chunk_timestamps": chunk_timestamps,
+                    "correlation_id": correlation_id,
+                    "attempt_group": attempt_group,
                 }
                 self._on_exchange_recorded(exchange)
             except Exception:
@@ -346,7 +401,8 @@ class Fixture:
                 SELECT id, url, method, request_headers, request_body,
                        response_status, response_headers, response_body,
                        recorded_at, sequence_num, duration_ms, error_type,
-                       error_message, chunk_timestamps
+                       error_message, chunk_timestamps, correlation_id,
+                       attempt_group
                 FROM http_exchanges
                 WHERE method = ? AND url = ? AND id > ?
                 ORDER BY id ASC
@@ -373,7 +429,8 @@ class Fixture:
                 SELECT url, method, request_headers, request_body,
                        response_status, response_headers, response_body,
                        recorded_at, sequence_num, duration_ms, error_type,
-                       error_message, chunk_timestamps
+                       error_message, chunk_timestamps, correlation_id,
+                       attempt_group
                 FROM http_exchanges
                 ORDER BY sequence_num ASC
                 """
@@ -381,6 +438,73 @@ class Fixture:
             rows = cur.fetchall()
 
         return [_row_to_exchange(row) for row in rows]
+
+    def diff_response_shapes(self, url: str) -> list[set[str]]:
+        """Return the distinct sets of top-level JSON response keys seen
+        across every recorded exchange to *url*, so a developer can spot
+        "this endpoint sometimes returns shape A, sometimes shape B"
+        without manually looping over ``all_exchanges()`` and diffing
+        ``dict.keys()`` by hand (#3994).
+
+        Only exchanges whose ``response_body`` is a JSON object are
+        considered — a non-JSON or non-dict body is silently skipped rather
+        than raised on. Returns an empty list if *url* was never called, or
+        if every response for it failed to parse as a JSON object.
+        """
+        shapes: list[set[str]] = []
+        seen: list[frozenset[str]] = []
+        for exchange in self.all_exchanges():
+            if exchange["url"] != url:
+                continue
+            try:
+                body = json.loads(exchange["response_body"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(body, dict):
+                continue
+            key_set = frozenset(body.keys())
+            if key_set not in seen:
+                seen.append(key_set)
+                shapes.append(set(key_set))
+        return shapes
+
+    def retry_groups(self) -> dict[str, list[dict[str, Any]]]:
+        """Return ``{attempt_group: [exchanges]}`` for every attempt_group
+        with more than one recorded exchange — i.e. every logical request
+        that was attempted more than once (typically an SDK's own automatic
+        retry-on-5xx logic), each list ordered by sequence_num.
+
+        ``attempt_group`` is a content-hash of ``(method, url,
+        request_body)`` computed automatically at record time — this
+        requires no caller wiring; identical repeated requests are grouped
+        for free. See #5508.
+        """
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for exchange in self.all_exchanges():
+            group = exchange.get("attempt_group")
+            if not group:
+                continue
+            groups.setdefault(group, []).append(exchange)
+        return {group: rows for group, rows in groups.items() if len(rows) > 1}
+
+    def exchanges_for_correlation_id(self, correlation_id: str) -> list[dict[str, Any]]:
+        """Return every recorded exchange tagged with *correlation_id* (see
+        ``agent_trace.interceptor.httpx_hook.correlation_context()``), in
+        sequence_num order — the exchanges that belong to one concurrent
+        batch input or graph node (#30924, #6037)."""
+        return [
+            e for e in self.all_exchanges() if e.get("correlation_id") == correlation_id
+        ]
+
+    def correlation_ids(self) -> list[str]:
+        """Return the distinct, non-null correlation_ids recorded in this
+        fixture, in first-seen (sequence_num) order."""
+        seen: list[str] = []
+        for exchange in self.all_exchanges():
+            cid = exchange.get("correlation_id")
+            if cid and cid not in seen:
+                seen.append(cid)
+        return seen
 
     def reset_read_cursor(self) -> None:
         """Reset all per-(method:url) read offsets to 0.
