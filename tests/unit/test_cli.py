@@ -22,6 +22,7 @@ from agent_trace._cli import (
     _error_classification_rows,
     _error_spans,
     _exchanges_by_url,
+    _http_sequence_confirms,
     _misattributed_span_rows,
     _print_checkpoint_durability,
     _print_duplicate_node_spans,
@@ -738,6 +739,105 @@ class TestPrintMisattributedSpans:
         assert "Possibly misattributed spans" in out
         assert "llm:gpt-4" in out
         assert "langgraph#3975" in out
+
+
+# ---------------------------------------------------------------------------
+# _http_sequence_confirms() — reconciling callback-derived span attribution
+# against fixture.db's sequence_num-ordered HTTP capture.
+# ---------------------------------------------------------------------------
+
+
+_SEQ_PARENT = {"name": "node:a", "start_time": 0.0, "end_time": 2.0}
+_SEQ_SUSPECT = {"name": "llm:gpt-4", "start_time": 0.5, "end_time": 1.0}
+
+
+class TestHttpSequenceConfirms:
+    def test_confirms_when_http_sequence_agrees(self) -> None:
+        exchanges = [
+            {"recorded_at": 0.1, "sequence_num": 1},  # inside parent's window
+            {"recorded_at": 0.7, "sequence_num": 2},  # inside suspect's window
+        ]
+        assert (
+            _http_sequence_confirms(_SEQ_SUSPECT, _SEQ_PARENT, exchanges) is True
+        )
+
+    def test_contradicts_when_http_sequence_disagrees(self) -> None:
+        exchanges = [
+            # Suspect's own HTTP call was recorded (lower sequence_num)
+            # *before* the exchange inside the guessed parent's window —
+            # the HTTP layer disagrees with the wall-clock-timestamp guess.
+            {"recorded_at": 0.7, "sequence_num": 1},
+            {"recorded_at": 0.1, "sequence_num": 2},
+        ]
+        assert (
+            _http_sequence_confirms(_SEQ_SUSPECT, _SEQ_PARENT, exchanges) is False
+        )
+
+    def test_none_when_no_exchanges_in_either_window(self) -> None:
+        exchanges = [{"recorded_at": 10.0, "sequence_num": 1}]
+        assert _http_sequence_confirms(_SEQ_SUSPECT, _SEQ_PARENT, exchanges) is None
+
+    def test_none_when_no_exchanges_at_all(self) -> None:
+        assert _http_sequence_confirms(_SEQ_SUSPECT, _SEQ_PARENT, []) is None
+
+    def test_ignores_malformed_exchange_rows(self) -> None:
+        exchanges = [
+            {"recorded_at": None, "sequence_num": 1},
+            {"recorded_at": 0.1, "sequence_num": "not-an-int"},
+        ]
+        assert _http_sequence_confirms(_SEQ_SUSPECT, _SEQ_PARENT, exchanges) is None
+
+
+class TestMisattributedSpanRowsWithExchanges:
+    def test_row_carries_confirmed_flag_when_exchanges_agree(self) -> None:
+        spans = [
+            {"span_id": "s1", "parent_id": None, "name": "node:a", "start_time": 0.0, "end_time": 2.0},
+            {"span_id": "s2", "parent_id": None, "name": "llm:gpt-4", "start_time": 0.5, "end_time": 1.0},
+        ]
+        exchanges = [
+            {"recorded_at": 0.1, "sequence_num": 1},
+            {"recorded_at": 0.7, "sequence_num": 2},
+        ]
+        rows = _misattributed_span_rows(spans, exchanges)
+        assert len(rows) == 1
+        assert rows[0]["http_sequence_confirmed"] is True
+
+    def test_row_omits_confirmed_flag_when_no_exchanges_passed(self) -> None:
+        spans = [
+            {"span_id": "s1", "parent_id": None, "name": "node:a", "start_time": 0.0, "end_time": 2.0},
+            {"span_id": "s2", "parent_id": None, "name": "llm:gpt-4", "start_time": 0.5, "end_time": 1.0},
+        ]
+        rows = _misattributed_span_rows(spans)
+        assert "http_sequence_confirmed" not in rows[0]
+
+
+class TestPrintMisattributedSpansWithExchanges:
+    def test_prints_confirmation_suffix(self, capsys) -> None:
+        spans = [
+            {"span_id": "s1", "parent_id": None, "name": "node:a", "start_time": 0.0, "end_time": 2.0},
+            {"span_id": "s2", "parent_id": None, "name": "llm:gpt-4", "start_time": 0.5, "end_time": 1.0},
+        ]
+        exchanges = [
+            {"recorded_at": 0.1, "sequence_num": 1},
+            {"recorded_at": 0.7, "sequence_num": 2},
+        ]
+        _print_misattributed_spans(spans, exchanges)
+        out = capsys.readouterr().out
+        assert "confirmed via HTTP sequence_num ordering" in out
+        assert "sequence_num-ordered HTTP capture" in out
+
+    def test_prints_contradiction_suffix(self, capsys) -> None:
+        spans = [
+            {"span_id": "s1", "parent_id": None, "name": "node:a", "start_time": 0.0, "end_time": 2.0},
+            {"span_id": "s2", "parent_id": None, "name": "llm:gpt-4", "start_time": 0.5, "end_time": 1.0},
+        ]
+        exchanges = [
+            {"recorded_at": 0.7, "sequence_num": 1},
+            {"recorded_at": 0.1, "sequence_num": 2},
+        ]
+        _print_misattributed_spans(spans, exchanges)
+        out = capsys.readouterr().out
+        assert "does NOT confirm" in out
 
 
 # ---------------------------------------------------------------------------
