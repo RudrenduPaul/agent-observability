@@ -17,13 +17,23 @@ from __future__ import annotations
 
 from agent_trace._cli import (
     _checkpoint_durability_summary,
+    _diff_text,
     _duplicate_node_span_counts,
     _error_classification_rows,
+    _error_spans,
+    _exchanges_by_url,
+    _misattributed_span_rows,
     _print_checkpoint_durability,
     _print_duplicate_node_spans,
     _print_error_classification,
+    _print_errors_only,
+    _print_http_error_exchanges,
+    _print_misattributed_spans,
+    _print_retry_storms,
     _print_streaming_timing,
     _print_zero_task_updates,
+    _retry_storm_rows,
+    _span_exception_message,
     _streaming_timing_rows,
     _strip_leading_separator,
     _zero_task_update_rows,
@@ -514,3 +524,472 @@ class TestRunSubcommand:
         run_dirs = [d for d in tmp_path.iterdir() if d.is_dir()]
         assert len(run_dirs) == 1
         assert run_dirs[0].name.startswith("run_")
+
+
+# ---------------------------------------------------------------------------
+# _span_exception_message() / _error_spans() / _print_errors_only()
+# ---------------------------------------------------------------------------
+
+
+def _error_span_with_exception(name: str, message: str) -> dict[str, object]:
+    return {
+        "name": name,
+        "status": "ERROR",
+        "attributes": {},
+        "events": [
+            {
+                "name": "exception",
+                "attributes": {"exception.type": "ValueError", "exception.message": message},
+            }
+        ],
+    }
+
+
+class TestSpanExceptionMessage:
+    def test_no_exception_event_returns_none(self) -> None:
+        assert _span_exception_message(_span("node:a")) is None
+
+    def test_exception_event_returns_message(self) -> None:
+        span = _error_span_with_exception("node:a", "boom")
+        assert _span_exception_message(span) == "boom"
+
+    def test_ignores_non_exception_events(self) -> None:
+        span = {
+            "name": "node:a",
+            "status": "OK",
+            "attributes": {},
+            "events": [{"name": "other_event", "attributes": {}}],
+        }
+        assert _span_exception_message(span) is None
+
+
+class TestErrorSpans:
+    def test_filters_to_error_status_only(self) -> None:
+        spans = [_span("node:a", status="OK"), _span("node:b", status="ERROR")]
+        result = _error_spans(spans)
+        assert [s["name"] for s in result] == ["node:b"]
+
+    def test_empty_input_returns_empty(self) -> None:
+        assert _error_spans([]) == []
+
+
+class TestPrintErrorsOnly:
+    def test_no_errors_prints_zero_count(self, capsys) -> None:
+        _print_errors_only([_span("node:a", status="OK")])
+        out = capsys.readouterr().out
+        assert "Error spans: 0 of 1 total" in out
+
+    def test_error_span_prints_name_and_message(self, capsys) -> None:
+        spans = [_error_span_with_exception("llm:gpt-4", "rate limit exceeded")]
+        _print_errors_only(spans)
+        out = capsys.readouterr().out
+        assert "Error spans: 1 of 1 total" in out
+        assert "[ERR] llm:gpt-4" in out
+        assert "rate limit exceeded" in out
+
+    def test_non_error_span_excluded_from_detail(self, capsys) -> None:
+        spans = [
+            _span("node:a", status="OK"),
+            _error_span_with_exception("llm:gpt-4", "boom"),
+        ]
+        _print_errors_only(spans)
+        out = capsys.readouterr().out
+        assert "[ERR] node:a" not in out
+        assert "[ERR] llm:gpt-4" in out
+
+
+# ---------------------------------------------------------------------------
+# _print_http_error_exchanges()
+# ---------------------------------------------------------------------------
+
+
+class TestPrintHttpErrorExchanges:
+    def test_no_output_when_all_2xx(self, capsys) -> None:
+        exchanges = [{"url": "https://a", "method": "GET", "response_status": 200}]
+        _print_http_error_exchanges(exchanges)
+        assert capsys.readouterr().out == ""
+
+    def test_prints_4xx_5xx_exchanges(self, capsys) -> None:
+        exchanges = [
+            {"url": "https://a", "method": "GET", "response_status": 200},
+            {"url": "https://b", "method": "POST", "response_status": 500},
+        ]
+        _print_http_error_exchanges(exchanges)
+        out = capsys.readouterr().out
+        assert "HTTP error exchanges (1):" in out
+        assert "https://b" in out
+        assert "HTTP 500" in out
+        assert "https://a" not in out
+
+
+# ---------------------------------------------------------------------------
+# _retry_storm_rows() / _print_retry_storms()
+# ---------------------------------------------------------------------------
+
+
+def _node_span(span_id: str, name: str = "node:a") -> dict[str, object]:
+    return {"span_id": span_id, "parent_id": None, "name": name, "status": "OK"}
+
+
+def _llm_child_span(span_id: str, parent_id: str) -> dict[str, object]:
+    return {"span_id": span_id, "parent_id": parent_id, "name": "llm:gpt-4", "status": "OK"}
+
+
+class TestRetryStormRows:
+    def test_single_llm_child_not_flagged(self) -> None:
+        spans = [_node_span("n1"), _llm_child_span("l1", "n1")]
+        assert _retry_storm_rows(spans) == []
+
+    def test_multiple_llm_children_flagged(self) -> None:
+        spans = [
+            _node_span("n1"),
+            _llm_child_span("l1", "n1"),
+            _llm_child_span("l2", "n1"),
+            _llm_child_span("l3", "n1"),
+        ]
+        rows = _retry_storm_rows(spans)
+        assert len(rows) == 1
+        assert rows[0]["node"] == "node:a"
+        assert rows[0]["llm_child_count"] == 3
+
+    def test_non_node_span_ignored(self) -> None:
+        spans = [
+            {"span_id": "t1", "parent_id": None, "name": "tool:x", "status": "OK"},
+            _llm_child_span("l1", "t1"),
+            _llm_child_span("l2", "t1"),
+        ]
+        assert _retry_storm_rows(spans) == []
+
+    def test_tool_child_spans_not_counted(self) -> None:
+        spans = [
+            _node_span("n1"),
+            {"span_id": "t1", "parent_id": "n1", "name": "tool:x", "status": "OK"},
+            {"span_id": "t2", "parent_id": "n1", "name": "tool:y", "status": "OK"},
+        ]
+        assert _retry_storm_rows(spans) == []
+
+
+class TestPrintRetryStorms:
+    def test_no_output_when_no_storms(self, capsys) -> None:
+        _print_retry_storms([_node_span("n1"), _llm_child_span("l1", "n1")])
+        assert capsys.readouterr().out == ""
+
+    def test_prints_storm_summary(self, capsys) -> None:
+        spans = [
+            _node_span("n1"),
+            _llm_child_span("l1", "n1"),
+            _llm_child_span("l2", "n1"),
+        ]
+        _print_retry_storms(spans)
+        out = capsys.readouterr().out
+        assert "Repeated LLM calls" in out
+        assert "node:a" in out
+        assert "issue #2920" in out
+
+
+# ---------------------------------------------------------------------------
+# _misattributed_span_rows() / _print_misattributed_spans()
+# ---------------------------------------------------------------------------
+
+
+class TestMisattributedSpanRows:
+    def test_single_root_not_flagged(self) -> None:
+        spans = [
+            {"span_id": "s1", "parent_id": None, "name": "node:a", "start_time": 0.0, "end_time": 1.0}
+        ]
+        assert _misattributed_span_rows(spans) == []
+
+    def test_sequential_non_overlapping_roots_not_flagged(self) -> None:
+        spans = [
+            {"span_id": "s1", "parent_id": None, "name": "node:a", "start_time": 0.0, "end_time": 1.0},
+            {"span_id": "s2", "parent_id": None, "name": "node:b", "start_time": 2.0, "end_time": 3.0},
+        ]
+        assert _misattributed_span_rows(spans) == []
+
+    def test_overlapping_root_flagged_with_likely_parent(self) -> None:
+        spans = [
+            {"span_id": "s1", "parent_id": None, "name": "node:a", "start_time": 0.0, "end_time": 2.0},
+            {"span_id": "s2", "parent_id": None, "name": "llm:gpt-4", "start_time": 0.5, "end_time": 1.0},
+        ]
+        rows = _misattributed_span_rows(spans)
+        assert len(rows) == 1
+        assert rows[0]["span"] == "llm:gpt-4"
+        assert rows[0]["likely_parent"] == "node:a"
+
+    def test_empty_spans_returns_empty(self) -> None:
+        assert _misattributed_span_rows([]) == []
+
+
+class TestPrintMisattributedSpans:
+    def test_no_output_when_none_flagged(self, capsys) -> None:
+        spans = [
+            {"span_id": "s1", "parent_id": None, "name": "node:a", "start_time": 0.0, "end_time": 1.0}
+        ]
+        _print_misattributed_spans(spans)
+        assert capsys.readouterr().out == ""
+
+    def test_prints_flagged_span(self, capsys) -> None:
+        spans = [
+            {"span_id": "s1", "parent_id": None, "name": "node:a", "start_time": 0.0, "end_time": 2.0},
+            {"span_id": "s2", "parent_id": None, "name": "llm:gpt-4", "start_time": 0.5, "end_time": 1.0},
+        ]
+        _print_misattributed_spans(spans)
+        out = capsys.readouterr().out
+        assert "Possibly misattributed spans" in out
+        assert "llm:gpt-4" in out
+        assert "langgraph#3975" in out
+
+
+# ---------------------------------------------------------------------------
+# _exchanges_by_url() / _diff_text()
+# ---------------------------------------------------------------------------
+
+
+class TestExchangesByUrl:
+    def test_groups_by_url(self) -> None:
+        exchanges = [
+            {"url": "https://a", "request_body": "1"},
+            {"url": "https://b", "request_body": "2"},
+            {"url": "https://a", "request_body": "3"},
+        ]
+        result = _exchanges_by_url(exchanges)
+        assert len(result["https://a"]) == 2
+        assert len(result["https://b"]) == 1
+
+    def test_empty_list_returns_empty_dict(self) -> None:
+        assert _exchanges_by_url([]) == {}
+
+
+class TestDiffText:
+    def test_identical_text_produces_no_diff_lines(self) -> None:
+        lines = _diff_text("a", "same\n", "b", "same\n")
+        assert lines == []
+
+    def test_different_text_produces_diff_lines(self) -> None:
+        lines = _diff_text("a", "line1\n", "b", "line2\n")
+        assert any("line1" in line for line in lines)
+        assert any("line2" in line for line in lines)
+
+
+# ---------------------------------------------------------------------------
+# `agent-trace inspect` / `agent-trace diff` / `agent-trace show --errors-only`
+# — exercised as real subprocesses against a real Fixture/trace.json, the
+# same style TestRunSubcommand already uses for `agent-trace run`.
+# ---------------------------------------------------------------------------
+
+
+def _write_run(
+    trace_dir,
+    run_id: str,
+    *,
+    exchanges: list[dict[str, object]] | None = None,
+    spans: list[dict[str, object]] | None = None,
+) -> None:
+    import json as _json
+
+    from agent_trace._replay.fixture import Fixture
+
+    run_dir = trace_dir / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    if exchanges:
+        with Fixture(run_dir / "fixture.db") as fixture:
+            for exchange in exchanges:
+                fixture.record_exchange(**exchange)
+
+    trace_data = {
+        "trace_id": "t1",
+        "run_id": run_id,
+        "metadata": {"name": "test"},
+        "spans": spans or [],
+    }
+    (run_dir / "trace.json").write_text(_json.dumps(trace_data), encoding="utf-8")
+
+
+class TestInspectSubcommand:
+    def test_flags_orphaned_tool_call_id_and_http_error(self, tmp_path) -> None:
+        import json as _json
+        import os
+
+        env = dict(os.environ)
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
+
+        request_body = _json.dumps(
+            {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "tool_calls": [{"id": "call_1", "function": {"name": "x"}}],
+                    }
+                ]
+            }
+        )
+        _write_run(
+            tmp_path,
+            "run1",
+            exchanges=[
+                {
+                    "url": "https://api.openai.com/v1/chat/completions",
+                    "method": "POST",
+                    "request_headers": {},
+                    "request_body": request_body,
+                    "response_status": 500,
+                    "response_headers": {},
+                    "response_body": "server error",
+                }
+            ],
+        )
+
+        result = _run_cli(["inspect", "run1"], env=env)
+        assert result.returncode == 0, result.stderr
+        assert "orphaned_tool_call_ids" in result.stdout
+        assert "http_error_status" in result.stdout
+
+    def test_no_run_directory_exits_nonzero(self, tmp_path) -> None:
+        import os
+
+        env = dict(os.environ)
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
+
+        result = _run_cli(["inspect", "does-not-exist"], env=env)
+        assert result.returncode != 0
+
+    def test_no_anomalies_reports_clean(self, tmp_path) -> None:
+        import os
+
+        env = dict(os.environ)
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
+        _write_run(tmp_path, "run-clean")
+
+        result = _run_cli(["inspect", "run-clean"], env=env)
+        assert result.returncode == 0, result.stderr
+        assert "No anomalies flagged" in result.stdout
+
+
+class TestDiffSubcommand:
+    def test_diffs_matching_url_request_bodies(self, tmp_path) -> None:
+        import os
+
+        env = dict(os.environ)
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
+
+        common_kwargs = {
+            "url": "https://api.openai.com/v1/chat/completions",
+            "method": "POST",
+            "request_headers": {},
+            "response_status": 200,
+            "response_headers": {},
+            "response_body": "{}",
+        }
+        _write_run(
+            tmp_path,
+            "run-a",
+            exchanges=[{**common_kwargs, "request_body": '{"prompt": "hello"}'}],
+        )
+        _write_run(
+            tmp_path,
+            "run-b",
+            exchanges=[{**common_kwargs, "request_body": '{"prompt": "goodbye"}'}],
+        )
+
+        result = _run_cli(["diff", "run-a", "run-b"], env=env)
+        assert result.returncode == 0, result.stderr
+        assert "hello" in result.stdout
+        assert "goodbye" in result.stdout
+
+    def test_identical_runs_report_no_differences(self, tmp_path) -> None:
+        import os
+
+        env = dict(os.environ)
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
+
+        common_kwargs = {
+            "url": "https://api.openai.com/v1/chat/completions",
+            "method": "POST",
+            "request_headers": {},
+            "request_body": "{}",
+            "response_status": 200,
+            "response_headers": {},
+            "response_body": "{}",
+        }
+        _write_run(tmp_path, "run-a", exchanges=[dict(common_kwargs)])
+        _write_run(tmp_path, "run-b", exchanges=[dict(common_kwargs)])
+
+        result = _run_cli(["diff", "run-a", "run-b"], env=env)
+        assert result.returncode == 0, result.stderr
+        assert "No differences found" in result.stdout
+
+    def test_url_only_in_one_run_reported(self, tmp_path) -> None:
+        import os
+
+        env = dict(os.environ)
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
+
+        _write_run(
+            tmp_path,
+            "run-a",
+            exchanges=[
+                {
+                    "url": "https://only-in-a.example.com",
+                    "method": "GET",
+                    "request_headers": {},
+                    "request_body": "",
+                    "response_status": 200,
+                    "response_headers": {},
+                    "response_body": "{}",
+                }
+            ],
+        )
+        _write_run(tmp_path, "run-b")
+
+        result = _run_cli(["diff", "run-a", "run-b"], env=env)
+        assert result.returncode == 0, result.stderr
+        assert "only present in run-a" in result.stdout
+
+
+class TestShowErrorsOnlyFlag:
+    def test_errors_only_filters_output(self, tmp_path) -> None:
+        import os
+
+        env = dict(os.environ)
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
+
+        spans = [
+            {
+                "span_id": "s1",
+                "trace_id": "t1",
+                "parent_id": None,
+                "name": "node:a",
+                "start_time": 0.0,
+                "end_time": 1.0,
+                "status": "ERROR",
+                "attributes": {},
+                "events": [
+                    {
+                        "name": "exception",
+                        "timestamp": 0.5,
+                        "attributes": {
+                            "exception.type": "ValueError",
+                            "exception.message": "boom-details",
+                        },
+                    }
+                ],
+            },
+            {
+                "span_id": "s2",
+                "trace_id": "t1",
+                "parent_id": None,
+                "name": "node:b",
+                "start_time": 2.0,
+                "end_time": 3.0,
+                "status": "OK",
+                "attributes": {},
+                "events": [],
+            },
+        ]
+        _write_run(tmp_path, "run1", spans=spans)
+
+        result = _run_cli(["show", "run1", "--errors-only"], env=env)
+        assert result.returncode == 0, result.stderr
+        assert "boom-details" in result.stdout
+        assert "Error spans: 1 of 2 total" in result.stdout

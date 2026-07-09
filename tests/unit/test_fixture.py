@@ -732,3 +732,173 @@ class TestOnExchangeRecordedCallback:
             )
         assert len(seen) == 1
         assert seen[0]["error_type"] == "ConnectionError"
+
+
+# ---------------------------------------------------------------------------
+# diff_response_shapes()
+# ---------------------------------------------------------------------------
+
+
+class TestDiffResponseShapes:
+    def test_never_called_url_returns_empty(self, tmp_path: Path) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            assert f.diff_response_shapes("https://never-called.example.com") == []
+
+    def test_consistent_shape_returns_one_entry(self, tmp_path: Path) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            _record(f, body='{"id": "1", "choices": []}')
+            _record(f, body='{"id": "2", "choices": []}')
+            shapes = f.diff_response_shapes("https://api.example.com/v1/test")
+        assert shapes == [{"id", "choices"}]
+
+    def test_inconsistent_shape_returns_multiple_entries(self, tmp_path: Path) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            _record(f, body='{"id": "1", "choices": []}')
+            _record(f, body='{"id": "1", "provider": {"name": "x"}}')
+            shapes = f.diff_response_shapes("https://api.example.com/v1/test")
+        assert len(shapes) == 2
+
+    def test_non_json_body_skipped(self, tmp_path: Path) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            _record(f, body="not json")
+            assert f.diff_response_shapes("https://api.example.com/v1/test") == []
+
+    def test_other_urls_not_included(self, tmp_path: Path) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            _record(f, url="https://a", body='{"x": 1}')
+            _record(f, url="https://b", body='{"y": 2}')
+            assert f.diff_response_shapes("https://a") == [{"x"}]
+
+
+# ---------------------------------------------------------------------------
+# retry_groups() / attempt_group
+# ---------------------------------------------------------------------------
+
+
+class TestRetryGroups:
+    def test_single_exchange_not_in_retry_groups(self, tmp_path: Path) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            _record(f)
+            assert f.retry_groups() == {}
+
+    def test_repeated_identical_request_grouped(self, tmp_path: Path) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            f.record_exchange(
+                url="https://api.example.com/v1/test",
+                method="POST",
+                request_headers={},
+                request_body='{"q": "x"}',
+                response_status=500,
+                response_headers={},
+                response_body="error",
+            )
+            f.record_exchange(
+                url="https://api.example.com/v1/test",
+                method="POST",
+                request_headers={},
+                request_body='{"q": "x"}',
+                response_status=200,
+                response_headers={},
+                response_body="{}",
+            )
+            groups = f.retry_groups()
+        assert len(groups) == 1
+        (rows,) = groups.values()
+        assert len(rows) == 2
+        assert rows[0]["response_status"] == 500
+        assert rows[1]["response_status"] == 200
+
+    def test_different_request_bodies_not_grouped(self, tmp_path: Path) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            f.record_exchange(
+                url="https://api.example.com/v1/test",
+                method="POST",
+                request_headers={},
+                request_body='{"q": "x"}',
+                response_status=200,
+                response_headers={},
+                response_body="{}",
+            )
+            f.record_exchange(
+                url="https://api.example.com/v1/test",
+                method="POST",
+                request_headers={},
+                request_body='{"q": "y"}',
+                response_status=200,
+                response_headers={},
+                response_body="{}",
+            )
+            assert f.retry_groups() == {}
+
+    def test_attempt_group_always_computed(self, tmp_path: Path) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            _record(f)
+            exchange = f.all_exchanges()[0]
+        assert exchange["attempt_group"] is not None
+        assert len(exchange["attempt_group"]) == 40  # sha1 hexdigest length
+
+
+# ---------------------------------------------------------------------------
+# correlation_id / exchanges_for_correlation_id() / correlation_ids()
+# ---------------------------------------------------------------------------
+
+
+class TestCorrelationId:
+    def test_default_correlation_id_is_none(self, tmp_path: Path) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            _record(f)
+            assert f.all_exchanges()[0]["correlation_id"] is None
+
+    def test_explicit_correlation_id_persisted(self, tmp_path: Path) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            f.record_exchange(
+                url="https://api.example.com/v1/test",
+                method="POST",
+                request_headers={},
+                request_body="{}",
+                response_status=200,
+                response_headers={},
+                response_body="{}",
+                correlation_id="batch-item-0",
+            )
+            assert f.all_exchanges()[0]["correlation_id"] == "batch-item-0"
+
+    def test_exchanges_for_correlation_id_filters_correctly(self, tmp_path: Path) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            f.record_exchange(
+                url="https://a",
+                method="GET",
+                request_headers={},
+                request_body="",
+                response_status=200,
+                response_headers={},
+                response_body="{}",
+                correlation_id="batch-0",
+            )
+            f.record_exchange(
+                url="https://b",
+                method="GET",
+                request_headers={},
+                request_body="",
+                response_status=200,
+                response_headers={},
+                response_body="{}",
+                correlation_id="batch-1",
+            )
+            batch0 = f.exchanges_for_correlation_id("batch-0")
+        assert [e["url"] for e in batch0] == ["https://a"]
+
+    def test_correlation_ids_returns_distinct_first_seen_order(self, tmp_path: Path) -> None:
+        with Fixture(tmp_path / "f.db") as f:
+            for cid, url in [("b", "https://1"), ("a", "https://2"), ("b", "https://3")]:
+                f.record_exchange(
+                    url=url,
+                    method="GET",
+                    request_headers={},
+                    request_body="",
+                    response_status=200,
+                    response_headers={},
+                    response_body="{}",
+                    correlation_id=cid,
+                )
+            assert f.correlation_ids() == ["b", "a"]

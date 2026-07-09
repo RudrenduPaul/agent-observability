@@ -19,16 +19,20 @@ AttributeError on the first request.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import time
 import warnings
 from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 import httpx
 
 if TYPE_CHECKING:
+    from collections.abc import Generator
+
     from agent_trace._replay.fixture import Fixture
 
 from agent_trace.core.exceptions import (
@@ -44,11 +48,68 @@ __all__ = [
     "RecordingTransport",
     "ReplayTransport",
     "RunawayToolCallLoopError",
+    "correlation_context",
+    "current_correlation_id",
     "raise_on_loop_detected",
     "warn_on_loop_detected",
 ]
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Batch-input / graph-node correlation — ties a recorded HTTP exchange back
+# to whichever concurrent batch input (e.g. LangChain's abatch(config={
+# "max_concurrency": N})) or graph node it originated from, instead of
+# leaving N interleaved exchanges with no way to tell them apart short of
+# manually diffing recorded request bodies against the original input list
+# (#30924, #6037, #13449).
+#
+# A plain contextvars.ContextVar rather than thread-local state: each
+# asyncio.Task created via asyncio.create_task()/asyncio.gather() gets its
+# own copy of the current Context at creation time, so setting a distinct
+# correlation id per concurrently-scheduled coroutine correctly isolates
+# each batch input's exchanges from its siblings' — the same isolation
+# mechanism Tracer._active_trace_var/_active_fixture_var already rely on
+# elsewhere in this codebase for overlapping start_trace() contexts.
+# ---------------------------------------------------------------------------
+
+_correlation_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "agent_trace_correlation_id", default=None
+)
+
+
+@contextmanager
+def correlation_context(correlation_id: str) -> Generator[None, None, None]:
+    """Tag every HTTP exchange recorded while this context is active with
+    *correlation_id*.
+
+    Usage — tagging each item of a concurrent batch call so its recorded
+    exchanges are distinguishable afterwards::
+
+        async def _call_one(i, item):
+            with correlation_context(f"batch-item-{i}"):
+                return await chain.ainvoke(item)
+
+        await asyncio.gather(*(_call_one(i, x) for i, x in enumerate(items)))
+
+    Recover the grouped exchanges afterwards via
+    ``Fixture.exchanges_for_correlation_id(correlation_id)`` or
+    ``Fixture.correlation_ids()``. Nesting is supported — the innermost
+    active context wins, and the previous value (possibly None) is restored
+    on exit.
+    """
+    token = _correlation_id_var.set(correlation_id)
+    try:
+        yield
+    finally:
+        _correlation_id_var.reset(token)
+
+
+def current_correlation_id() -> str | None:
+    """Return the correlation id set by the innermost active
+    ``correlation_context()``, or None if none is active."""
+    return _correlation_id_var.get()
 
 
 # ---------------------------------------------------------------------------
@@ -375,6 +436,7 @@ class RecordingTransport(httpx.BaseTransport, _LoopGuardMixin):
                 duration_ms=duration_ms,
                 error_type=type(exc).__qualname__,
                 error_message=str(exc),
+                correlation_id=current_correlation_id(),
             )
             raise
 
@@ -402,6 +464,7 @@ class RecordingTransport(httpx.BaseTransport, _LoopGuardMixin):
             response_headers=resp_headers,
             response_body=resp_body,
             duration_ms=duration_ms,
+            correlation_id=current_correlation_id(),
         )
         self._check_loop_guard(url, resp_body)
 
@@ -442,6 +505,7 @@ class RecordingTransport(httpx.BaseTransport, _LoopGuardMixin):
                 response_body=decoded_body,
                 duration_ms=duration_ms,
                 chunk_timestamps=chunk_offsets_s,
+                correlation_id=current_correlation_id(),
             )
             self._check_loop_guard(url, decoded_body)
 
@@ -597,6 +661,7 @@ class AsyncRecordingTransport(httpx.AsyncBaseTransport, _LoopGuardMixin):
                 duration_ms=duration_ms,
                 error_type=type(exc).__qualname__,
                 error_message=str(exc),
+                correlation_id=current_correlation_id(),
             )
             raise
 
@@ -621,6 +686,7 @@ class AsyncRecordingTransport(httpx.AsyncBaseTransport, _LoopGuardMixin):
             response_headers=resp_headers,
             response_body=resp_body,
             duration_ms=duration_ms,
+            correlation_id=current_correlation_id(),
         )
         self._check_loop_guard(url, resp_body)
 
@@ -659,6 +725,7 @@ class AsyncRecordingTransport(httpx.AsyncBaseTransport, _LoopGuardMixin):
                 response_body=decoded_body,
                 duration_ms=duration_ms,
                 chunk_timestamps=chunk_offsets_s,
+                correlation_id=current_correlation_id(),
             )
             self._check_loop_guard(url, decoded_body)
 
