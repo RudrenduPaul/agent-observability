@@ -89,6 +89,12 @@ class Tracer:
         # Stored as a (sync_init, async_init) tuple when patched; None otherwise.
         self._original_httpx_init: tuple[Any, Any] | None = None
         self._original_requests_get_adapter: Any = None
+        # Stored as a (insecure, secure) tuple when patched; None otherwise.
+        # aio variants are stored separately since grpc.aio is a lazy import
+        # (importing it eagerly would force asyncio C-extension loading for
+        # every agent-trace user, even ones who never touch gRPC).
+        self._original_grpc_channel_fns: tuple[Any, Any] | None = None
+        self._original_grpc_aio_channel_fns: tuple[Any, Any] | None = None
         # Registered plugins — called on span and trace lifecycle events.
         self._plugins: list[Plugin] = []
 
@@ -333,6 +339,7 @@ class Tracer:
             return
         self._patch_httpx(fixture)
         self._patch_requests(fixture)
+        self._patch_grpc(fixture)
 
     def _uninstall_recording_transport(self) -> None:
         """Restore the original ``__init__`` / ``get_adapter`` methods.
@@ -344,6 +351,7 @@ class Tracer:
             return
         self._unpatch_httpx()
         self._unpatch_requests()
+        self._unpatch_grpc()
 
     def _patch_httpx(self, fixture: Any) -> None:
         try:
@@ -415,6 +423,105 @@ class Tracer:
         except ImportError:
             pass
         self._original_requests_get_adapter = None
+
+    def _patch_grpc(self, fixture: Any) -> None:
+        """Monkey-patch grpc's channel factories to record every RPC.
+
+        grpc.insecure_channel/secure_channel are plain module-level
+        functions (not a shared base-class method the way httpx.Client is),
+        so we patch the module attribute itself. See
+        agent_trace/interceptor/grpc_hook.py's module docstring for why this
+        is the correct interception point for google-api-core-backed SDKs.
+        """
+        try:
+            import grpc
+
+            from agent_trace.interceptor.grpc_hook import GRPCRecordingInterceptor
+
+            orig_insecure = grpc.insecure_channel
+            orig_secure = grpc.secure_channel
+
+            def _patched_insecure(
+                target: str, options: Any = None, compression: Any = None
+            ) -> Any:
+                channel = orig_insecure(
+                    target, options=options, compression=compression
+                )
+                return grpc.intercept_channel(
+                    channel, GRPCRecordingInterceptor(fixture, target)
+                )
+
+            def _patched_secure(
+                target: str,
+                credentials: Any,
+                options: Any = None,
+                compression: Any = None,
+            ) -> Any:
+                channel = orig_secure(
+                    target, credentials, options=options, compression=compression
+                )
+                return grpc.intercept_channel(
+                    channel, GRPCRecordingInterceptor(fixture, target)
+                )
+
+            self._original_grpc_channel_fns = (orig_insecure, orig_secure)
+            grpc.insecure_channel = _patched_insecure
+            grpc.secure_channel = _patched_secure
+        except ImportError:
+            pass
+
+        try:
+            from grpc import aio
+
+            from agent_trace.interceptor.grpc_hook import AsyncGRPCRecordingInterceptor
+
+            orig_aio_insecure = aio.insecure_channel
+            orig_aio_secure = aio.secure_channel
+
+            def _patched_aio_insecure(target: str, **kwargs: Any) -> Any:
+                interceptors = list(kwargs.pop("interceptors", None) or [])
+                interceptors.append(AsyncGRPCRecordingInterceptor(fixture, target))
+                return orig_aio_insecure(target, interceptors=interceptors, **kwargs)
+
+            def _patched_aio_secure(
+                target: str, credentials: Any, **kwargs: Any
+            ) -> Any:
+                interceptors = list(kwargs.pop("interceptors", None) or [])
+                interceptors.append(AsyncGRPCRecordingInterceptor(fixture, target))
+                return orig_aio_secure(
+                    target, credentials, interceptors=interceptors, **kwargs
+                )
+
+            self._original_grpc_aio_channel_fns = (orig_aio_insecure, orig_aio_secure)
+            aio.insecure_channel = _patched_aio_insecure
+            aio.secure_channel = _patched_aio_secure
+        except ImportError:
+            pass
+
+    def _unpatch_grpc(self) -> None:
+        orig = self._original_grpc_channel_fns
+        if orig is not None:
+            try:
+                import grpc
+
+                orig_insecure, orig_secure = orig
+                grpc.insecure_channel = orig_insecure
+                grpc.secure_channel = orig_secure
+            except ImportError:
+                pass
+            self._original_grpc_channel_fns = None
+
+        orig_aio = self._original_grpc_aio_channel_fns
+        if orig_aio is not None:
+            try:
+                from grpc import aio
+
+                orig_aio_insecure, orig_aio_secure = orig_aio
+                aio.insecure_channel = orig_aio_insecure
+                aio.secure_channel = orig_aio_secure
+            except ImportError:
+                pass
+            self._original_grpc_aio_channel_fns = None
 
 
 # ---------------------------------------------------------------------------
