@@ -287,3 +287,46 @@ class TestLlamaIndexIntegration:
             result = tool.call(a=2, b=3)
 
         assert result.raw_output == 5
+
+    # ------------------------------------------------------------------
+    # HTTP-exchange-to-originating-span correlation (#13449)
+    # ------------------------------------------------------------------
+
+    def test_tool_http_call_tagged_with_originating_span_id(
+        self, tmp_path: Path
+    ) -> None:
+        """A FunctionTool making a real HTTP call must have that exchange
+        recoverable via Fixture.exchanges_for_correlation_id(span_id) — the
+        exact "attribute this HTTP exchange to the tool/step that made it"
+        gap #13449 flagged (no span_id/node column on http_exchanges)."""
+        import httpx
+        from llama_index.core.tools import FunctionTool
+
+        from agent_trace import Tracer
+        from agent_trace._replay.fixture import Fixture
+        from agent_trace.integrations.llama_index import LlamaIndexTracer
+
+        def _call_api(city: str) -> str:
+            client = httpx.Client(
+                transport=httpx.MockTransport(
+                    lambda request: httpx.Response(200, json={"city": city})
+                )
+            )
+            response = client.get(f"https://api.example.com/weather/{city}")
+            return response.text
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace(
+            "li-correlation-test", record=True, run_id="li-correlation-run"
+        ) as trace:
+            with LlamaIndexTracer(tracer=t, trace=trace):
+                tool = FunctionTool.from_defaults(fn=_call_api)
+                tool.call(city="Boston")
+
+        tool_span = next(s for s in trace.spans if "FunctionTool" in s.name)
+
+        with Fixture(tmp_path / "li-correlation-run" / "fixture.db") as fixture:
+            exchanges = fixture.exchanges_for_correlation_id(tool_span.span_id)
+
+        assert len(exchanges) == 1
+        assert exchanges[0]["url"] == "https://api.example.com/weather/Boston"

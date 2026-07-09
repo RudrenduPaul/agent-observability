@@ -9,6 +9,7 @@ Run with: uv run pytest tests/integration/ -m integration
 
 from __future__ import annotations
 
+import operator
 from pathlib import Path
 from typing import Annotated
 
@@ -1806,3 +1807,346 @@ class TestPerRequestTraceLifecycleAgainstRealGraph:
         assert len(set(all_trace_ids)) == 5
         assert len(set(all_span_ids)) == len(all_span_ids)
         assert startup_trace.spans == []
+
+
+# ---------------------------------------------------------------------------
+# Compiled-graph-piped-into-lambda topology (#3975 regression coverage)
+#
+# `Agent = graph | (lambda x: ...)` — a compiled LangGraph graph piped into
+# a raw Python callable — is auto-coerced by langchain-core into a
+# RunnableSequence. This is the exact topology that broke LangSmith/
+# Langfuse trace nesting in langgraph#3975 (a parent_run_id misattribution
+# that flattened the graph's own spans to the trace root). Since
+# LangGraphTracer uses the identical BaseCallbackHandler mechanism those
+# other tools use, a future langchain-core change could silently
+# reintroduce the same misattribution here with nothing in the test suite
+# to catch it — this test is that regression guard.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestCompiledGraphPipedIntoLambdaTopology:
+    def _build_agent(self):
+        from typing import TypedDict
+
+        from langgraph.graph import END, StateGraph
+
+        class S(TypedDict):
+            x: int
+
+        def node_a(state: S) -> S:
+            return {"x": state["x"] + 1}
+
+        builder = StateGraph(S)
+        builder.add_node("a", node_a)
+        builder.set_entry_point("a")
+        builder.add_edge("a", END)
+        graph = builder.compile()
+
+        # Auto-coerced by langchain-core into a RunnableSequence — the
+        # exact langgraph#3975 topology.
+        return graph | (lambda result: {"x": result["x"] * 2})
+
+    def test_graph_piped_into_lambda_produces_correctly_nested_spans(
+        self, tmp_path: Path
+    ) -> None:
+        from agent_trace import Tracer
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        agent = self._build_agent()
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("graph-piped-into-lambda") as trace:
+            cb = LangGraphTracer(tracer=t, trace=trace)
+            result = agent.invoke({"x": 1}, config={"callbacks": [cb]})
+
+        assert result == {"x": 4}  # (1 + 1) * 2
+
+        names = [s.name for s in trace.spans]
+        assert "node:LangGraph" in names, (
+            f"the compiled graph's own root span must still appear when "
+            f"invoked as a RunnableSequence step, not get swallowed. Got: {names}"
+        )
+        assert "node:a" in names
+
+        # The graph's internal node span must nest under the graph's own
+        # root span (node:LangGraph), not get flattened to the trace root
+        # or attributed as a sibling of the lambda step — the exact
+        # #3975 misattribution shape.
+        graph_root = next(s for s in trace.spans if s.name == "node:LangGraph")
+        node_a_span = next(s for s in trace.spans if s.name == "node:a")
+        assert node_a_span.parent_id == graph_root.span_id, (
+            "node:a must be nested directly under node:LangGraph, not "
+            "flattened to the trace root or misattributed elsewhere"
+        )
+
+    def test_graph_piped_into_lambda_no_misattributed_spans_detected(
+        self, tmp_path: Path
+    ) -> None:
+        """Cross-check with agent-trace's own misattributed-span detector
+        (src/agent_trace/_cli.py::_misattributed_span_rows, the #3975
+        diagnostic added for cases where this *does* happen) — it must
+        find nothing to flag for this topology, confirming
+        LangGraphTracer's own parent/child wiring stays correct here."""
+        from agent_trace import Tracer
+        from agent_trace._cli import _misattributed_span_rows
+        from agent_trace.integrations.langgraph import LangGraphTracer
+
+        agent = self._build_agent()
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace("graph-piped-into-lambda-2") as trace:
+            cb = LangGraphTracer(tracer=t, trace=trace)
+            agent.invoke({"x": 5}, config={"callbacks": [cb]})
+
+        spans_as_dicts = trace.to_dict()["spans"]
+        assert _misattributed_span_rows(spans_as_dicts, []) == []
+
+
+# ---------------------------------------------------------------------------
+# HTTP-exchange-to-originating-span correlation (#6037, #30924's schema
+# used from the LangGraph integration side).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestHttpExchangeCorrelationToOriginatingSpan:
+    def test_node_http_call_tagged_with_originating_node_span_id(
+        self, tmp_path: Path
+    ) -> None:
+        """A supervisor-topology-style graph with two sibling nodes each
+        making their own real HTTP call — each recorded exchange must be
+        recoverable via Fixture.exchanges_for_correlation_id(node_span_id),
+        the exact "which node produced this HTTP call" gap #6037 flagged."""
+        from typing import TypedDict
+
+        import httpx
+
+        from agent_trace import Tracer
+        from agent_trace._replay.fixture import Fixture
+        from agent_trace.integrations.langgraph import LangGraphTracer
+        from langgraph.graph import END, StateGraph
+
+        class S(TypedDict):
+            log: list[str]
+
+        def _make_node(name: str):
+            def node(state: S) -> S:
+                client = httpx.Client(
+                    transport=httpx.MockTransport(
+                        lambda request: httpx.Response(200, json={"from": name})
+                    )
+                )
+                client.get(f"https://api.example.com/{name}")
+                return {"log": state["log"] + [name]}
+
+            return node
+
+        builder = StateGraph(S)
+        builder.add_node("node_alpha", _make_node("alpha"))
+        builder.add_node("node_beta", _make_node("beta"))
+        builder.set_entry_point("node_alpha")
+        builder.add_edge("node_alpha", "node_beta")
+        builder.add_edge("node_beta", END)
+        graph = builder.compile()
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace(
+            "correlation-test", record=True, run_id="lg-correlation-run"
+        ) as trace:
+            cb = LangGraphTracer(tracer=t, trace=trace)
+            graph.invoke({"log": []}, config={"callbacks": [cb]})
+
+        alpha_span = next(s for s in trace.spans if s.name == "node:node_alpha")
+        beta_span = next(s for s in trace.spans if s.name == "node:node_beta")
+        assert alpha_span.span_id != beta_span.span_id
+
+        with Fixture(tmp_path / "lg-correlation-run" / "fixture.db") as fixture:
+            alpha_exchanges = fixture.exchanges_for_correlation_id(alpha_span.span_id)
+            beta_exchanges = fixture.exchanges_for_correlation_id(beta_span.span_id)
+
+        assert len(alpha_exchanges) == 1
+        assert alpha_exchanges[0]["url"] == "https://api.example.com/alpha"
+        assert len(beta_exchanges) == 1
+        assert beta_exchanges[0]["url"] == "https://api.example.com/beta"
+
+    def test_sequential_supervisor_style_handoff_correlates_correctly(
+        self, tmp_path: Path
+    ) -> None:
+        """#6037's actual topology: a supervisor sequentially routing to
+        named sub-agent nodes (agent1 -> agent2, one at a time — not a
+        concurrent Send() fan-out). Each sub-agent's HTTP call correlates
+        to its own node span under the synchronous graph.invoke()
+        entrypoint (see the known-limitation test below for why this uses
+        invoke(), not ainvoke())."""
+        from typing import TypedDict
+
+        import httpx
+
+        from agent_trace import Tracer
+        from agent_trace._replay.fixture import Fixture
+        from agent_trace.integrations.langgraph import LangGraphTracer
+        from langgraph.graph import END, StateGraph
+
+        class S(TypedDict):
+            log: list[str]
+
+        def _make_agent(name: str):
+            def agent(state: S) -> S:
+                client = httpx.Client(
+                    transport=httpx.MockTransport(
+                        lambda request: httpx.Response(200, json={"from": name})
+                    )
+                )
+                client.get(f"https://api.example.com/{name}")
+                return {"log": state["log"] + [name]}
+
+            return agent
+
+        builder = StateGraph(S)
+        builder.add_node("agent1", _make_agent("agent1"))
+        builder.add_node("agent2", _make_agent("agent2"))
+        builder.set_entry_point("agent1")
+        builder.add_edge("agent1", "agent2")
+        builder.add_edge("agent2", END)
+        graph = builder.compile()
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace(
+            "supervisor-correlation", record=True, run_id="lg-supervisor-run"
+        ) as trace:
+            cb = LangGraphTracer(tracer=t, trace=trace)
+            graph.invoke({"log": []}, config={"callbacks": [cb]})
+
+        agent1_span = next(s for s in trace.spans if s.name == "node:agent1")
+        agent2_span = next(s for s in trace.spans if s.name == "node:agent2")
+
+        with Fixture(tmp_path / "lg-supervisor-run" / "fixture.db") as fixture:
+            agent1_exchanges = fixture.exchanges_for_correlation_id(agent1_span.span_id)
+            agent2_exchanges = fixture.exchanges_for_correlation_id(agent2_span.span_id)
+
+        assert len(agent1_exchanges) == 1
+        assert agent1_exchanges[0]["url"] == "https://api.example.com/agent1"
+        assert len(agent2_exchanges) == 1
+        assert agent2_exchanges[0]["url"] == "https://api.example.com/agent2"
+
+    async def test_known_limitation_sequential_ainvoke_not_correlated(
+        self, tmp_path: Path
+    ) -> None:
+        """Documented limitation (see the comment in LangGraphTracer._open_span,
+        src/agent_trace/integrations/langgraph.py): correlation does NOT
+        propagate under the *asynchronous* graph.ainvoke() entrypoint, even
+        for two purely sequential sync nodes with no concurrency at all —
+        LangGraph's async runtime dispatches node execution in a way that
+        doesn't inherit the contextvar pushed by on_chain_start. Pins this
+        so a future fix (or regression) is visible rather than silently
+        assumed away."""
+        from typing import TypedDict
+
+        import httpx
+
+        from agent_trace import Tracer
+        from agent_trace._replay.fixture import Fixture
+        from agent_trace.integrations.langgraph import LangGraphTracer
+        from langgraph.graph import END, StateGraph
+
+        class S(TypedDict):
+            log: list[str]
+
+        def _make_node(name: str):
+            def node(state: S) -> S:
+                client = httpx.Client(
+                    transport=httpx.MockTransport(
+                        lambda request: httpx.Response(200, json={"from": name})
+                    )
+                )
+                client.get(f"https://api.example.com/{name}")
+                return {"log": state["log"] + [name]}
+
+            return node
+
+        builder = StateGraph(S)
+        builder.add_node("node_a", _make_node("node_a"))
+        builder.add_node("node_b", _make_node("node_b"))
+        builder.set_entry_point("node_a")
+        builder.add_edge("node_a", "node_b")
+        builder.add_edge("node_b", END)
+        graph = builder.compile()
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace(
+            "sequential-ainvoke-gap", record=True, run_id="lg-sequential-ainvoke-run"
+        ) as trace:
+            cb = LangGraphTracer(tracer=t, trace=trace)
+            await graph.ainvoke({"log": []}, config={"callbacks": [cb]})
+
+        with Fixture(tmp_path / "lg-sequential-ainvoke-run" / "fixture.db") as fixture:
+            all_exchanges = fixture.all_exchanges()
+            correlated = [e for e in all_exchanges if e.get("correlation_id")]
+
+        # Known limitation: both exchanges were captured (capture itself
+        # is unaffected), but neither ended up correlated — confirming the
+        # gap applies to ainvoke() generally, not just concurrent dispatch.
+        assert len(all_exchanges) == 2
+        assert correlated == []
+
+    async def test_known_limitation_concurrent_send_fan_out_not_correlated(
+        self, tmp_path: Path
+    ) -> None:
+        """Documented limitation (see the comment in LangGraphTracer._open_span,
+        src/agent_trace/integrations/langgraph.py): correlation does NOT
+        propagate into LangGraph's own internal concurrent Send()-based
+        parallel dispatch — each parallel branch runs in a context copy
+        that doesn't include the token pushed by on_tool_start/
+        on_chain_start. This test pins that current, known-limited
+        behavior so a future fix (or regression) is visible rather than
+        silently assumed away."""
+        from typing import Annotated, TypedDict
+
+        import httpx
+
+        from agent_trace import Tracer
+        from agent_trace._replay.fixture import Fixture
+        from agent_trace.integrations.langgraph import LangGraphTracer
+        from langgraph.graph import END, StateGraph
+        from langgraph.types import Send
+
+        class PState(TypedDict):
+            results: Annotated[list, operator.add]
+
+        def run_tool(state: dict) -> dict:
+            client = httpx.Client(
+                transport=httpx.MockTransport(
+                    lambda request: httpx.Response(200, json={"ok": state["name"]})
+                )
+            )
+            client.get(f"https://api.example.com/{state['name']}")
+            return {"results": [state["name"]]}
+
+        def dispatch(state):
+            return [Send("run_tool", {"name": n}) for n in ("alpha", "beta")]
+
+        builder = StateGraph(PState)
+        builder.add_node("run_tool", run_tool)
+        builder.add_conditional_edges("__start__", dispatch, ["run_tool"])
+        builder.add_edge("run_tool", END)
+        graph = builder.compile()
+
+        t = Tracer(trace_dir=tmp_path)
+        with t.start_trace(
+            "parallel-correlation-gap", record=True, run_id="lg-parallel-gap-run"
+        ) as trace:
+            cb = LangGraphTracer(tracer=t, trace=trace)
+            await graph.ainvoke({"results": []}, config={"callbacks": [cb]})
+
+        tool_spans = [s for s in trace.spans if s.name == "node:run_tool"]
+        assert len(tool_spans) == 2
+
+        with Fixture(tmp_path / "lg-parallel-gap-run" / "fixture.db") as fixture:
+            all_exchanges = fixture.all_exchanges()
+            correlated = [e for e in all_exchanges if e.get("correlation_id")]
+
+        # Known limitation: none of the concurrently-dispatched exchanges
+        # end up correlated to their originating span, even though both
+        # were captured (the capture itself is unaffected — only the
+        # correlation tag is missing for this topology).
+        assert len(all_exchanges) == 2
+        assert correlated == []

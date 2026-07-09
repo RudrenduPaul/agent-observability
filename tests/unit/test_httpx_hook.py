@@ -27,6 +27,8 @@ from agent_trace.interceptor.httpx_hook import (
     _is_tool_call_only_response,
     correlation_context,
     current_correlation_id,
+    pop_correlation_id,
+    push_correlation_id,
     raise_on_loop_detected,
 )
 
@@ -1027,6 +1029,50 @@ class TestCorrelationContext:
             with correlation_context("batch-0"):
                 raise ValueError("boom")
         assert current_correlation_id() is None
+
+
+class TestPushPopCorrelationId:
+    """Manual set()/reset() counterpart to correlation_context() — used by
+    LangGraphTracer (#6037), which must push in one callback (on_X_start)
+    and pop in a separate one (on_X_end) rather than within a single `with`
+    block."""
+
+    def test_push_sets_current_correlation_id(self) -> None:
+        assert current_correlation_id() is None
+        token = push_correlation_id("span-abc")
+        try:
+            assert current_correlation_id() == "span-abc"
+        finally:
+            pop_correlation_id(token)
+
+    def test_pop_restores_previous_value(self) -> None:
+        assert current_correlation_id() is None
+        token = push_correlation_id("span-abc")
+        pop_correlation_id(token)
+        assert current_correlation_id() is None
+
+    def test_nested_push_pop_restores_outer_value(self) -> None:
+        outer_token = push_correlation_id("outer-span")
+        inner_token = push_correlation_id("inner-span")
+        try:
+            assert current_correlation_id() == "inner-span"
+        finally:
+            pop_correlation_id(inner_token)
+        assert current_correlation_id() == "outer-span"
+        pop_correlation_id(outer_token)
+        assert current_correlation_id() is None
+
+    def test_push_pop_interoperates_with_correlation_context(self) -> None:
+        """push_correlation_id/correlation_context share the same
+        underlying contextvar — nesting either inside the other must
+        compose correctly."""
+        with correlation_context("batch-item-0"):
+            token = push_correlation_id("node-span-id")
+            try:
+                assert current_correlation_id() == "node-span-id"
+            finally:
+                pop_correlation_id(token)
+            assert current_correlation_id() == "batch-item-0"
 
 
 class TestRecordingTransportCorrelationId:

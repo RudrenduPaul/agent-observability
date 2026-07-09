@@ -50,6 +50,8 @@ __all__ = [
     "RunawayToolCallLoopError",
     "correlation_context",
     "current_correlation_id",
+    "pop_correlation_id",
+    "push_correlation_id",
     "raise_on_loop_detected",
     "warn_on_loop_detected",
 ]
@@ -110,6 +112,31 @@ def current_correlation_id() -> str | None:
     """Return the correlation id set by the innermost active
     ``correlation_context()``, or None if none is active."""
     return _correlation_id_var.get()
+
+
+def push_correlation_id(correlation_id: str) -> contextvars.Token[str | None]:
+    """Manual ``set()`` counterpart to ``correlation_context()`` for
+    callers that must set/reset across two separate call sites — e.g. a
+    callback-based framework integration's ``on_X_start``/``on_X_end`` pair
+    — rather than within a single enclosing ``with`` block.
+
+    Pair every call with ``pop_correlation_id(token)`` once the
+    corresponding span closes. See
+    ``agent_trace.integrations.langgraph.LangGraphTracer`` for the actual
+    usage: every span it opens (node/LLM/tool) pushes its own ``span_id``
+    as the correlation id for the duration that span is open, so an HTTP
+    exchange made anywhere inside it — including inside a supervisor
+    topology's sub-agent node — is automatically tagged with the
+    originating span, closing the "which node produced this HTTP call"
+    gap (#6037) the same way ``correlation_context()`` closes it for a
+    manually-tagged concurrent batch input (#30924).
+    """
+    return _correlation_id_var.set(correlation_id)
+
+
+def pop_correlation_id(token: contextvars.Token[str | None]) -> None:
+    """Reset counterpart to ``push_correlation_id()``."""
+    _correlation_id_var.reset(token)
 
 
 # ---------------------------------------------------------------------------

@@ -18,6 +18,30 @@ from agent_trace.core.span import Span
 from agent_trace.core.trace import Trace
 
 
+@pytest.fixture(autouse=True)
+def _reset_httpx_hook_correlation_id():
+    """Force the module-level correlation-id contextvar
+    (agent_trace.interceptor.httpx_hook._correlation_id_var) back to None
+    before and after every test.
+
+    Several tests exercise LangGraphTracer's on_X_start/_open_span (#6037)
+    without going through a full, properly-closed callback lifecycle (e.g.
+    calling on_chat_model_start directly without a matching on_llm_end) —
+    a legitimate way to unit-test one callback in isolation, but it leaves
+    a pushed correlation id token un-popped. Since the contextvar is
+    process/thread-global (not per-test), that leak would otherwise bleed
+    into unrelated later tests that assert "no correlation id is active"
+    as a starting condition. Using plain .set(None) rather than
+    .set()+.reset(token) deliberately avoids any risk of a cross-context
+    Token.reset() ValueError across pytest's fixture/test execution.
+    """
+    from agent_trace.interceptor.httpx_hook import _correlation_id_var
+
+    _correlation_id_var.set(None)
+    yield
+    _correlation_id_var.set(None)
+
+
 @pytest.fixture
 def tmp_fixture_path(tmp_path: Path) -> Path:
     """Return a temp path for a fixture.db (file not created yet)."""
