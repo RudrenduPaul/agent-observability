@@ -48,6 +48,7 @@ import threading
 from typing import TYPE_CHECKING, Any
 
 from agent_trace.core.span import Span, SpanStatus
+from agent_trace.interceptor.httpx_hook import pop_correlation_id, push_correlation_id
 
 if TYPE_CHECKING:
     from agent_trace import Trace, Tracer
@@ -241,6 +242,16 @@ def _get_handler_classes() -> tuple[type, type]:
             _tracer: Any = PrivateAttr(default=None)
             _registry: dict[str, Span] = PrivateAttr(default_factory=dict)
             _registry_lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
+            # Per-span correlation-id contextvar tokens (#13449): every
+            # span new_span() creates pushes its own span_id as the active
+            # httpx_hook correlation id for the duration it's open, so any
+            # HTTP exchange made anywhere inside it is recoverable
+            # afterwards via Fixture.exchanges_for_correlation_id(span_id)
+            # — the same mechanism LangGraphTracer uses for #6037. Same
+            # documented scope/limitation: reliable for synchronous
+            # dispatch, not guaranteed to propagate across llama_index's
+            # own async/concurrent execution paths.
+            _correlation_tokens: dict[str, Any] = PrivateAttr(default_factory=dict)
 
             @classmethod
             def class_name(cls) -> str:
@@ -268,9 +279,35 @@ def _get_handler_classes() -> tuple[type, type]:
                     span.set_attribute("llama_index.class", type(instance).__name__)
                 with self._registry_lock:
                     self._registry[id_] = span
+                    try:
+                        self._correlation_tokens[id_] = push_correlation_id(
+                            span.span_id
+                        )
+                    except Exception:
+                        logger.debug(
+                            "agent-trace: failed to push correlation id for "
+                            "llama_index span %r",
+                            id_,
+                            exc_info=True,
+                        )
                 return _AgentTraceSpan(
                     id_=id_, parent_id=parent_span_id, tags=tags or {}
                 )
+
+            def _pop_correlation_token(self, id_: str) -> None:
+                with self._registry_lock:
+                    token = self._correlation_tokens.pop(id_, None)
+                if token is None:
+                    return
+                try:
+                    pop_correlation_id(token)
+                except Exception:
+                    logger.debug(
+                        "agent-trace: failed to pop correlation id for "
+                        "llama_index span %r",
+                        id_,
+                        exc_info=True,
+                    )
 
             def prepare_to_exit_span(
                 self,
@@ -282,6 +319,7 @@ def _get_handler_classes() -> tuple[type, type]:
             ) -> _AgentTraceSpan | None:
                 with self._registry_lock:
                     span = self._registry.pop(id_, None)
+                self._pop_correlation_token(id_)
                 if span is not None and span.end_time is None:
                     span.end(SpanStatus.OK)
                 return self.open_spans.get(id_)  # type: ignore[no-any-return]
@@ -298,6 +336,7 @@ def _get_handler_classes() -> tuple[type, type]:
                     return None
                 with self._registry_lock:
                     span = self._registry.pop(id_, None)
+                self._pop_correlation_token(id_)
                 if span is not None:
                     try:
                         if err is not None:

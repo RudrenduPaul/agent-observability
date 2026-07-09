@@ -340,6 +340,65 @@ class TestLangGraphCallbacks:
         span = handler._spans[str(llm_id)]
         assert "llm.nested_in_tool" not in span.attributes
 
+    def test_open_span_pushes_span_id_as_correlation_id(self, tracer_and_trace):
+        """#6037: opening a span must set it as the active httpx_hook
+        correlation id, so any HTTP exchange made while the span is open
+        gets tagged with the originating node/span automatically."""
+        from agent_trace.interceptor.httpx_hook import current_correlation_id
+
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        assert current_correlation_id() is None
+
+        handler.on_chain_start({"name": "agent"}, {}, run_id=run_id)
+        span = handler._spans[str(run_id)]
+        assert current_correlation_id() == span.span_id
+
+        handler.on_chain_end({}, run_id=run_id)
+        assert current_correlation_id() is None
+
+    def test_nested_spans_push_correlation_id_of_innermost_span(
+        self, tracer_and_trace
+    ):
+        from agent_trace.interceptor.httpx_hook import current_correlation_id
+
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        parent_id = _run_id()
+        child_id = _run_id()
+
+        handler.on_chain_start({"name": "parent"}, {}, run_id=parent_id)
+        parent_span = handler._spans[str(parent_id)]
+        assert current_correlation_id() == parent_span.span_id
+
+        handler.on_tool_start(
+            {"name": "child_tool"}, "q", run_id=child_id, parent_run_id=parent_id
+        )
+        child_span = handler._spans[str(child_id)]
+        assert current_correlation_id() == child_span.span_id
+
+        handler.on_tool_end("result", run_id=child_id)
+        assert current_correlation_id() == parent_span.span_id
+
+        handler.on_chain_end({}, run_id=parent_id)
+        assert current_correlation_id() is None
+
+    def test_close_span_with_exception_also_pops_correlation_id(
+        self, tracer_and_trace
+    ):
+        from agent_trace.interceptor.httpx_hook import current_correlation_id
+
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+
+        handler.on_tool_start({"name": "search"}, "q", run_id=run_id)
+        assert current_correlation_id() is not None
+
+        handler.on_tool_error(RuntimeError("boom"), run_id=run_id)
+        assert current_correlation_id() is None
+
 
 # ---------------------------------------------------------------------------
 # Previously-discarded data — now captured onto spans

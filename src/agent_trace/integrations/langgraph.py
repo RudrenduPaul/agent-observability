@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any
 
 from agent_trace.core.clock import get_time
 from agent_trace.core.span import Span, SpanStatus
+from agent_trace.interceptor.httpx_hook import pop_correlation_id, push_correlation_id
 
 if TYPE_CHECKING:
     from agent_trace import Trace, Tracer
@@ -1305,6 +1306,16 @@ def _get_tracer_class() -> type:
                 # per-span SpanEvent cap without holding the events
                 # themselves. Cleared alongside the span on close.
                 self._stream_token_counts: dict[str, int] = {}
+                # Per-run correlation-id contextvar tokens (#6037): every
+                # span _open_span creates pushes its own span_id as the
+                # active httpx_hook correlation id for the duration it's
+                # open, so any HTTP exchange made anywhere inside it —
+                # including inside a supervisor topology's sub-agent node
+                # — is automatically tagged with the originating span via
+                # Fixture.exchanges_for_correlation_id(). Popped (in the
+                # same context the push happened in) alongside the span on
+                # close.
+                self._correlation_tokens: dict[str, contextvars.Token[str | None]] = {}
                 self._lock: threading.Lock = threading.Lock()
                 # Best-effort: makes this instance discoverable to the
                 # Branch-dispatch and tool-argument-injection patches (see
@@ -1381,8 +1392,55 @@ def _get_tracer_class() -> type:
                         # tree indentation or a manual parent_id read
                         # (#5665: the exact schema-leak-triggering shape).
                         span.set_attribute("llm.nested_in_tool", True)
+                # Tag every HTTP exchange made anywhere while this span is
+                # open with its span_id (#6037) — recoverable afterwards
+                # via Fixture.exchanges_for_correlation_id(span_id). Best
+                # effort: pushing/popping a contextvars.Token must never be
+                # allowed to break span creation itself.
+                #
+                # Known limitation, verified empirically against the
+                # installed langgraph (1.2.8): this correctly attributes
+                # HTTP calls for graphs invoked via the *synchronous*
+                # entrypoint (graph.invoke(...)) — including a
+                # create_supervisor topology's sequential sub-agent
+                # handoffs, #6037's actual shape — because the callback
+                # that pushes the token and the node body that makes the
+                # HTTP call run in the same context/thread.
+                #
+                # It does NOT propagate when the graph is invoked via the
+                # *asynchronous* entrypoint (graph.ainvoke(...)/
+                # graph.astream(...)), regardless of whether the node
+                # itself is sync or async, and regardless of whether
+                # dispatch is sequential or concurrent (Send()-based
+                # fan-out, #7129's shape): LangGraph's async runtime
+                # dispatches node execution in a way that doesn't inherit a
+                # contextvar pushed by this callback (empirically, even a
+                # single sequential sync node loses the token under
+                # ainvoke()) — current_correlation_id() reads None inside
+                # the node body even though push_correlation_id() ran
+                # moments earlier in on_chain_start/on_tool_start. Fixing
+                # this would need a different mechanism entirely (e.g.
+                # LangGraph itself threading a correlation id through its
+                # own task/Send dispatch) — out of scope here. Documented,
+                # not silently assumed to work universally; see
+                # tests/integration/test_langgraph.py::
+                # TestHttpExchangeCorrelationToOriginatingSpan for both the
+                # working (sync invoke) and known-limited (async
+                # ainvoke/Send) cases pinned as tests.
+                token: contextvars.Token[str | None] | None = None
+                try:
+                    token = push_correlation_id(span.span_id)
+                except Exception:
+                    logger.debug(
+                        "agent-trace: failed to push correlation id for span %r",
+                        span.name,
+                        exc_info=True,
+                    )
+
                 with self._lock:
                     self._spans[run_key] = span
+                    if token is not None:
+                        self._correlation_tokens[run_key] = token
                 return span
 
             def _flag_if_long_running(self, span: Span) -> None:
@@ -1422,6 +1480,26 @@ def _get_tracer_class() -> type:
                         exc_info=True,
                     )
 
+            def _pop_correlation_token(self, run_key: str) -> None:
+                """Best-effort counterpart to the push in _open_span. A
+                cross-context Token reset (e.g. a span opened on one
+                asyncio task's context and closed from another after a
+                cancellation/executor edge case) must degrade to "leave the
+                correlation id set a little longer than intended", never
+                raise and break span closure itself."""
+                with self._lock:
+                    token = self._correlation_tokens.pop(run_key, None)
+                if token is None:
+                    return
+                try:
+                    pop_correlation_id(token)
+                except Exception:
+                    logger.debug(
+                        "agent-trace: failed to pop correlation id for run %r",
+                        run_key,
+                        exc_info=True,
+                    )
+
             def _close_span(
                 self,
                 run_id: uuid.UUID | str,
@@ -1432,6 +1510,7 @@ def _get_tracer_class() -> type:
                 with self._lock:
                     span = self._spans.pop(run_key, None)
                     self._stream_token_counts.pop(run_key, None)
+                self._pop_correlation_token(run_key)
                 if span is not None and span.end_time is None:
                     self._flag_if_long_running(span)
                     span.end(status)
@@ -1462,6 +1541,7 @@ def _get_tracer_class() -> type:
                 with self._lock:
                     span = self._spans.pop(run_key, None)
                     self._stream_token_counts.pop(run_key, None)
+                self._pop_correlation_token(run_key)
                 if span is None:
                     return
 
