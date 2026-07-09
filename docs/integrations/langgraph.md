@@ -367,3 +367,89 @@ registered to any trace, so they do not appear in `trace.json`.
 
 **Fix for (1):** Move all SDK client construction inside the replay block, or
 use a factory function that creates a fresh client each time.
+
+---
+
+## 10. Wiring agent-trace into `langgraph dev` / LangGraph Studio
+
+Every example above (and the quick-start in section 2) assumes a
+user-owned script calling `graph.invoke()` directly, inside a
+`with tracer.start_trace(...)` block you write yourself. `langgraph dev`/
+LangGraph Studio inverts that: `langgraph_api` imports your `graph.py` and
+calls your `make_graph()`-style factory function (the one `langgraph.json`'s
+`graphs` config points at) exactly **once**, at server startup — before any
+`.invoke()` call exists anywhere for you to wrap. A bug in that
+construction phase itself (MCP client setup, tool loading, config parsing —
+[langgraph#4798](https://github.com/langchain-ai/langgraph/issues/4798)) is
+therefore unreachable by `LangGraphTracer` no matter how carefully you wire
+it into your own invoke() call, because there is no code of yours in the
+loop to wire it into.
+
+See `examples/09-langgraph-dev-cli/` for a complete, runnable reference
+implementation (no `langgraph-cli` install required to run the example
+itself). Summary of the three pieces it demonstrates:
+
+### `AGENT_TRACE_AUTO_RECORD` — process-wide activation, no `with` block
+
+Set before the process that imports `agent_trace` starts — directly, or via
+the `agent-trace run` CLI wrapper — this activates recording on the global
+`tracer` singleton the moment `agent_trace` is first imported, with no
+`with tracer.start_trace(...)` block required anywhere in your code:
+
+```bash
+# Directly:
+AGENT_TRACE_AUTO_RECORD=1 langgraph dev
+
+# Or via the CLI wrapper (also sets a run_id and prints where it's recording to):
+agent-trace run -- langgraph dev
+```
+
+Recording then stays active for the server's entire remaining lifetime
+(until the process exits, or `tracer.stop_auto_record()` is called
+explicitly) — one trace/fixture pair accumulates every HTTP exchange and
+LangGraph span for the process's whole life, not one logical run per
+served request. See `Tracer.start_auto_record()`'s docstring in
+`src/agent_trace/__init__.py` for the full API (env vars honored:
+`AGENT_TRACE_AUTO_RECORD`, `AGENT_TRACE_RUN_ID`,
+`AGENT_TRACE_AUTO_RECORD_NAME`, `AGENT_TRACE_TRACE_DIR`).
+
+### `agent-trace run` — subprocess-wrapping CLI command
+
+```bash
+agent-trace run -- langgraph dev
+agent-trace run --run-id my-run -- langgraph dev --port 2024
+```
+
+Execs the given command with `AGENT_TRACE_AUTO_RECORD=1` (plus
+`AGENT_TRACE_RUN_ID`/`AGENT_TRACE_AUTO_RECORD_NAME`/`AGENT_TRACE_TRACE_DIR`)
+already set in its environment, and relays the child process's exit code.
+This is the recommended way to launch `langgraph dev` under agent-trace —
+it needs no code changes in your `graph.py` at all, only this one
+command-line change to how you start the dev server.
+
+### `instrument_graph_factory()` — pre-invocation (construction-phase) hook
+
+```python
+from agent_trace import tracer
+from agent_trace.integrations.langgraph import instrument_graph_factory
+
+@instrument_graph_factory(tracer)
+def make_graph(config: dict) -> CompiledStateGraph:
+    mcp_client = MultiServerMCPClient(...)   # now captured
+    tools = mcp_client.get_tools()
+    return build_graph(tools)
+```
+
+Decorates the factory function itself so tracing/recording is active while
+the graph is being *built*, not only while it is later invoked. If a trace
+is already active (e.g. `AGENT_TRACE_AUTO_RECORD` fired above), the factory
+call becomes a nested `graph-construction` span; if not, it gets its own
+scoped `start_trace(record=True)` for the duration of the call, so
+construction-phase HTTP calls are captured either way instead of being an
+outright blind spot. Combine with
+`graph.with_config(callbacks=[LangGraphTracer(tracer=tracer,
+trace=tracer.active_trace)])` inside the factory (only meaningful when
+`tracer.active_trace` is not None — i.e. `AGENT_TRACE_AUTO_RECORD` was set)
+to also trace every subsequent `.invoke()`/`.stream()` call the framework
+makes against the compiled graph, not just construction — see
+`examples/09-langgraph-dev-cli/graph.py` for the complete pattern.

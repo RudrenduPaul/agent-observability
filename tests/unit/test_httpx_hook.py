@@ -17,12 +17,15 @@ import pytest
 import respx
 
 from agent_trace._replay.fixture import Fixture
+from agent_trace.core.exceptions import RunawayToolCallLoopError
 from agent_trace.interceptor.httpx_hook import (
     AsyncRecordingTransport,
     AsyncReplayTransport,
     NetworkGuardError,
     RecordingTransport,
     ReplayTransport,
+    _is_tool_call_only_response,
+    raise_on_loop_detected,
 )
 
 # ---------------------------------------------------------------------------
@@ -751,3 +754,240 @@ class TestAsyncRecordingTransportStreamMode:
         assert exchange["response_body"] == b"".join(_SSE_CHUNKS).decode("utf-8")
         assert exchange["chunk_timestamps"] is not None
         assert len(exchange["chunk_timestamps"]) == len(_SSE_CHUNKS)
+
+
+# ---------------------------------------------------------------------------
+# Runaway-tool-call-loop guard — RecordingTransport(loop_guard_threshold=...)
+# ---------------------------------------------------------------------------
+
+_TOOL_CALL_ONLY_BODY = json.dumps(
+    {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "function": {"name": "search", "arguments": "{}"},
+                        }
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ]
+    }
+)
+
+_FINAL_ANSWER_BODY = json.dumps(
+    {
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": "Here's your answer."},
+                "finish_reason": "stop",
+            }
+        ]
+    }
+)
+
+_ANTHROPIC_TOOL_USE_BODY = json.dumps(
+    {
+        "stop_reason": "tool_use",
+        "content": [{"type": "tool_use", "name": "search", "input": {}}],
+    }
+)
+
+_ANTHROPIC_TEXT_BODY = json.dumps(
+    {
+        "stop_reason": "end_turn",
+        "content": [{"type": "text", "text": "Here you go."}],
+    }
+)
+
+
+class TestIsToolCallOnlyResponse:
+    def test_openai_style_tool_call_only_is_flagged(self) -> None:
+        assert _is_tool_call_only_response(_TOOL_CALL_ONLY_BODY) is True
+
+    def test_openai_style_final_answer_is_not_flagged(self) -> None:
+        assert _is_tool_call_only_response(_FINAL_ANSWER_BODY) is False
+
+    def test_anthropic_tool_use_is_flagged(self) -> None:
+        assert _is_tool_call_only_response(_ANTHROPIC_TOOL_USE_BODY) is True
+
+    def test_anthropic_text_response_is_not_flagged(self) -> None:
+        assert _is_tool_call_only_response(_ANTHROPIC_TEXT_BODY) is False
+
+    def test_malformed_json_is_not_flagged(self) -> None:
+        assert _is_tool_call_only_response("not json{{{") is False
+
+    def test_non_dict_json_is_not_flagged(self) -> None:
+        assert _is_tool_call_only_response("[1, 2, 3]") is False
+
+    def test_empty_choices_is_not_flagged(self) -> None:
+        assert _is_tool_call_only_response(json.dumps({"choices": []})) is False
+
+
+def _tool_call_handler(request: httpx.Request) -> httpx.Response:
+    return httpx.Response(200, content=_TOOL_CALL_ONLY_BODY)
+
+
+def _final_answer_handler(request: httpx.Request) -> httpx.Response:
+    return httpx.Response(200, content=_FINAL_ANSWER_BODY)
+
+
+class TestRecordingTransportLoopGuardDisabledByDefault:
+    def test_no_warning_without_threshold(self, tmp_path, recwarn) -> None:
+        """loop_guard_threshold=None (the default) must never warn/raise,
+        no matter how many consecutive tool-call-only responses occur."""
+        fixture = _make_fixture(tmp_path)
+        client = httpx.Client(
+            transport=RecordingTransport(
+                fixture, inner=httpx.MockTransport(_tool_call_handler)
+            )
+        )
+        with client:
+            for _ in range(10):
+                client.get("https://api.example.com/chat")
+
+        assert fixture.exchange_count() == 10
+        assert len(recwarn) == 0
+
+
+class TestRecordingTransportLoopGuardWarns:
+    def test_warns_once_threshold_reached(self, tmp_path) -> None:
+        fixture = _make_fixture(tmp_path)
+        client = httpx.Client(
+            transport=RecordingTransport(
+                fixture,
+                inner=httpx.MockTransport(_tool_call_handler),
+                loop_guard_threshold=3,
+            )
+        )
+        with client:
+            with pytest.warns(UserWarning, match="runaway tool-call loop"):
+                for _ in range(3):
+                    client.get("https://api.example.com/chat")
+
+        # All requests are still recorded — the default handler only warns.
+        assert fixture.exchange_count() == 3
+
+    def test_no_warning_below_threshold(self, tmp_path, recwarn) -> None:
+        fixture = _make_fixture(tmp_path)
+        client = httpx.Client(
+            transport=RecordingTransport(
+                fixture,
+                inner=httpx.MockTransport(_tool_call_handler),
+                loop_guard_threshold=5,
+            )
+        )
+        with client:
+            for _ in range(4):
+                client.get("https://api.example.com/chat")
+
+        assert len(recwarn) == 0
+
+    def test_final_answer_resets_the_consecutive_count(self, tmp_path, recwarn) -> None:
+        """A tool-call-free response in between must reset the streak, not
+        merely pause it — 2 tool-call-only, 1 final answer, 2 more
+        tool-call-only must not trigger a threshold=3 guard."""
+        fixture = _make_fixture(tmp_path)
+
+        responses = iter(
+            [
+                _tool_call_handler,
+                _tool_call_handler,
+                _final_answer_handler,
+                _tool_call_handler,
+                _tool_call_handler,
+            ]
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return next(responses)(request)
+
+        client = httpx.Client(
+            transport=RecordingTransport(
+                fixture, inner=httpx.MockTransport(handler), loop_guard_threshold=3
+            )
+        )
+        with client:
+            for _ in range(5):
+                client.get("https://api.example.com/chat")
+
+        assert len(recwarn) == 0
+
+    def test_different_hosts_counted_independently(self, tmp_path, recwarn) -> None:
+        fixture = _make_fixture(tmp_path)
+        client = httpx.Client(
+            transport=RecordingTransport(
+                fixture,
+                inner=httpx.MockTransport(_tool_call_handler),
+                loop_guard_threshold=3,
+            )
+        )
+        with client:
+            client.get("https://api.example.com/chat")
+            client.get("https://api.other.com/chat")
+            client.get("https://api.example.com/chat")
+            client.get("https://api.other.com/chat")
+
+        # 2 consecutive per host — below threshold=3 for either host.
+        assert len(recwarn) == 0
+
+
+class TestRecordingTransportLoopGuardRaises:
+    def test_raise_on_loop_detected_aborts_the_run(self, tmp_path) -> None:
+        fixture = _make_fixture(tmp_path)
+        client = httpx.Client(
+            transport=RecordingTransport(
+                fixture,
+                inner=httpx.MockTransport(_tool_call_handler),
+                loop_guard_threshold=2,
+                on_loop_detected=raise_on_loop_detected,
+            )
+        )
+        with client:
+            client.get("https://api.example.com/chat")
+            with pytest.raises(RunawayToolCallLoopError, match="2 consecutive"):
+                client.get("https://api.example.com/chat")
+
+        # The exchange that tripped the guard is still recorded before the
+        # exception propagates — the guard aborts the *run*, not the record.
+        assert fixture.exchange_count() == 2
+
+
+class TestAsyncRecordingTransportLoopGuard:
+    async def test_warns_once_threshold_reached(self, tmp_path) -> None:
+        fixture = _make_fixture(tmp_path)
+        client = httpx.AsyncClient(
+            transport=AsyncRecordingTransport(
+                fixture,
+                inner=httpx.MockTransport(_tool_call_handler),
+                loop_guard_threshold=2,
+            )
+        )
+        async with client:
+            with pytest.warns(UserWarning, match="runaway tool-call loop"):
+                for _ in range(2):
+                    await client.get("https://api.example.com/chat")
+
+        assert fixture.exchange_count() == 2
+
+    async def test_raise_on_loop_detected_aborts_the_run(self, tmp_path) -> None:
+        fixture = _make_fixture(tmp_path)
+        client = httpx.AsyncClient(
+            transport=AsyncRecordingTransport(
+                fixture,
+                inner=httpx.MockTransport(_tool_call_handler),
+                loop_guard_threshold=2,
+                on_loop_detected=raise_on_loop_detected,
+            )
+        )
+        async with client:
+            await client.get("https://api.example.com/chat")
+            with pytest.raises(RunawayToolCallLoopError, match="2 consecutive"):
+                await client.get("https://api.example.com/chat")
+
+        assert fixture.exchange_count() == 2

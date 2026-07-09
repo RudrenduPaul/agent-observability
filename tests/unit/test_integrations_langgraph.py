@@ -1317,6 +1317,148 @@ class TestTracedAstream:
 
 
 # ---------------------------------------------------------------------------
+# instrument_graph_factory — pre-invocation (graph-construction-phase)
+# instrumentation entry point for a langgraph dev/Platform `make_graph()`
+# entry point (issue #4798). Pure Tracer-API tests — no langchain_core/
+# langgraph needed, since the wrapper only touches Tracer/Span, not any
+# LangGraph type.
+# ---------------------------------------------------------------------------
+
+
+class TestInstrumentGraphFactory:
+    def test_used_as_decorator_returns_the_call_result_unchanged(self, tmp_path):
+        from agent_trace.integrations.langgraph import instrument_graph_factory
+
+        t = Tracer(trace_dir=tmp_path)
+
+        @instrument_graph_factory(t)
+        def make_graph(config):
+            return {"config": config, "graph": "compiled"}
+
+        result = make_graph({"x": 1})
+        assert result == {"config": {"x": 1}, "graph": "compiled"}
+
+    def test_used_as_inline_wrapper(self, tmp_path):
+        from agent_trace.integrations.langgraph import instrument_graph_factory
+
+        t = Tracer(trace_dir=tmp_path)
+
+        def make_graph(config):
+            return config["x"] * 2
+
+        wrapped = instrument_graph_factory(t, make_graph)
+        assert wrapped({"x": 21}) == 42
+
+    def test_no_active_trace_activates_a_scoped_recording_trace(self, tmp_path):
+        """No enclosing start_trace(): the factory call gets its own scoped
+        start_trace(record=True) so at minimum HTTP calls made during
+        construction are captured."""
+        import httpx
+
+        from agent_trace._replay.fixture import Fixture
+        from agent_trace.integrations.langgraph import instrument_graph_factory
+
+        t = Tracer(trace_dir=tmp_path)
+
+        def make_graph(config):
+            client = httpx.Client(
+                transport=httpx.MockTransport(
+                    lambda r: httpx.Response(200, json={"tools": []})
+                )
+            )
+            with client:
+                client.get("https://mcp.example.com/tools")
+            return "compiled-graph"
+
+        wrapped = instrument_graph_factory(t, make_graph)
+        result = wrapped({})
+        assert result == "compiled-graph"
+
+        run_dirs = [d for d in tmp_path.iterdir() if d.is_dir()]
+        assert len(run_dirs) == 1
+        with Fixture(run_dirs[0] / "fixture.db") as fixture:
+            exchanges = fixture.all_exchanges()
+        assert [e["url"] for e in exchanges] == ["https://mcp.example.com/tools"]
+
+    def test_active_trace_gets_a_nested_construction_span_instead(self, tmp_path):
+        """An enclosing start_trace() (e.g. via AGENT_TRACE_AUTO_RECORD):
+        the factory call becomes a child span of the already-active trace
+        rather than a brand new trace/run directory."""
+        from agent_trace.integrations.langgraph import instrument_graph_factory
+
+        t = Tracer(trace_dir=tmp_path)
+
+        def make_graph(config):
+            return "compiled-graph"
+
+        wrapped = instrument_graph_factory(t, make_graph)
+
+        with t.start_trace("outer-run") as trace:
+            result = wrapped({})
+            assert result == "compiled-graph"
+
+        assert any(s.name == "graph-construction" for s in trace.spans)
+        # Exactly one run directory (the outer one) — no second trace/run
+        # was created for the factory call.
+        run_dirs = [d for d in tmp_path.iterdir() if d.is_dir()]
+        assert len(run_dirs) == 1
+
+    def test_span_name_is_customizable(self, tmp_path):
+        from agent_trace.integrations.langgraph import instrument_graph_factory
+
+        t = Tracer(trace_dir=tmp_path)
+
+        def make_graph(config):
+            return "compiled-graph"
+
+        wrapped = instrument_graph_factory(t, make_graph, name="my-graph-build")
+
+        with t.start_trace("outer-run") as trace:
+            wrapped({})
+
+        assert any(s.name == "my-graph-build" for s in trace.spans)
+
+    async def test_async_factory_is_awaited_correctly(self, tmp_path):
+        from agent_trace.integrations.langgraph import instrument_graph_factory
+
+        t = Tracer(trace_dir=tmp_path)
+
+        @instrument_graph_factory(t)
+        async def make_graph(config):
+            return "async-compiled-graph"
+
+        result = await make_graph({})
+        assert result == "async-compiled-graph"
+
+    async def test_async_factory_nests_under_active_trace(self, tmp_path):
+        from agent_trace.integrations.langgraph import instrument_graph_factory
+
+        t = Tracer(trace_dir=tmp_path)
+
+        @instrument_graph_factory(t)
+        async def make_graph(config):
+            return "async-compiled-graph"
+
+        with t.start_trace("outer-run") as trace:
+            result = await make_graph({})
+            assert result == "async-compiled-graph"
+
+        assert any(s.name == "graph-construction" for s in trace.spans)
+
+    def test_exception_during_construction_propagates(self, tmp_path):
+        from agent_trace.integrations.langgraph import instrument_graph_factory
+
+        t = Tracer(trace_dir=tmp_path)
+
+        @instrument_graph_factory(t)
+        def make_graph(config):
+            raise ValueError("bad MCP config")
+
+        with pytest.raises(ValueError, match="bad MCP config"):
+            make_graph({})
+
+
+# ---------------------------------------------------------------------------
 # derive_trace_id — deterministic trace_id from LangGraph thread_id/checkpoint
 # identity (issue #7417). Pure function, no langchain_core/langgraph needed.
 # ---------------------------------------------------------------------------

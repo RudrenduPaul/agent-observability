@@ -20,10 +20,12 @@ Replay offline:
 
 from __future__ import annotations
 
+import atexit
 import functools
 import inspect
 import json
 import logging
+import os
 import uuid
 from collections.abc import Callable, Generator
 from contextlib import contextmanager, nullcontext
@@ -75,7 +77,18 @@ class Tracer:
     """
 
     def __init__(self, trace_dir: Path | None = None) -> None:
-        self._trace_dir: Path = trace_dir or (Path.home() / ".agent-trace" / "runs")
+        # Honours AGENT_TRACE_TRACE_DIR (same env var agent_trace._cli's
+        # _trace_dir() reads) so that a tracer constructed anonymously in a
+        # process started via `agent-trace run` — most importantly the
+        # global `tracer` singleton, which AGENT_TRACE_AUTO_RECORD activates
+        # on below — writes to the same location the CLI will later look in
+        # by default, without requiring the caller to thread trace_dir
+        # through by hand.
+        env_trace_dir = os.environ.get("AGENT_TRACE_TRACE_DIR")
+        default_trace_dir = Path.home() / ".agent-trace" / "runs"
+        self._trace_dir: Path = trace_dir or (
+            Path(env_trace_dir) if env_trace_dir else default_trace_dir
+        )
         # ContextVar gives each async task / thread its own active trace.
         # This replaces the previous threading.Lock + single attribute approach
         # which was not safe for concurrent asyncio agents.
@@ -103,6 +116,11 @@ class Tracer:
         )
         # Registered plugins — called on span and trace lifecycle events.
         self._plugins: list[Plugin] = []
+        # Set by start_auto_record()/AGENT_TRACE_AUTO_RECORD when this
+        # tracer is recording process-wide, outside any `with
+        # start_trace(...)` block the caller owns — see start_auto_record()
+        # docstring. None when no auto-record session is active.
+        self._auto_record_state: dict[str, Any] | None = None
 
     # ------------------------------------------------------------------
     # Trace lifecycle
@@ -251,6 +269,157 @@ class Tracer:
                 run_id,
                 exc_info=True,
             )
+
+    # ------------------------------------------------------------------
+    # Auto-record — process-wide activation with no enclosing `with` block
+    # ------------------------------------------------------------------
+    #
+    # start_trace()/instrument() both require the caller to own the
+    # top-level invocation so they have somewhere to put a `with
+    # tracer.start_trace(record=True):` block. That assumption breaks for
+    # any framework-managed server process the developer doesn't control
+    # the entrypoint of — e.g. `langgraph dev`/LangGraph Studio, which
+    # imports the developer's `make_graph()` once at server startup and
+    # then owns every subsequent invocation's lifecycle itself. The methods
+    # below (and the AGENT_TRACE_AUTO_RECORD env var read at import time,
+    # below the class) are the supported mechanism for that case: recording
+    # activates for the remaining lifetime of the process instead of one
+    # caller-scoped block.
+
+    def start_auto_record(
+        self,
+        name: str = "auto-record",
+        run_id: str | None = None,
+    ) -> Path:
+        """Activate process-wide recording with no enclosing `with` block.
+
+        Unlike :meth:`start_trace`, this has no natural "end" the caller is
+        expected to reach — it's meant for a process whose top-level
+        invocation the caller does not own (e.g. a `langgraph dev`/
+        LangGraph Studio server process). Everything that happens for the
+        remainder of the process — every HTTP exchange, every span opened
+        via :meth:`start_span`/:meth:`span` — is captured into one Trace
+        and one Fixture, exactly as :meth:`start_trace` does, except the
+        capture window is "until the process exits or
+        :meth:`stop_auto_record` is called" instead of "for the duration of
+        one `with` block".
+
+        An ``atexit`` hook is registered so ``trace.json``/``fixture.db``
+        are flushed on ordinary interpreter shutdown even if the caller
+        never calls :meth:`stop_auto_record` explicitly (the common case —
+        the process is killed by its supervisor, not shut down by the
+        developer's own code).
+
+        Idempotent: calling this while an auto-record session is already
+        active logs a warning and returns the existing session's run
+        directory unchanged, rather than leaking a second Fixture/patch
+        layer.
+
+        Returns the run directory (``trace_dir/<run_id>``) recording is
+        being written to.
+
+        Coarser-grained than :meth:`start_trace` by design: because there's
+        no well-defined caller-owned "end", a long-lived process
+        accumulates every exchange/span for its entire remaining lifetime
+        into a single trace/fixture pair, not one logical run per
+        invocation. Prefer :meth:`start_trace` whenever the caller genuinely
+        owns the top-level invocation.
+        """
+        if self._auto_record_state is not None:
+            logger.warning(
+                "agent-trace: start_auto_record() called while an auto-record "
+                "session is already active (run_dir=%s) — ignoring.",
+                self._auto_record_state["run_dir"],
+            )
+            return self._auto_record_state["run_dir"]  # type: ignore[no-any-return]
+
+        effective_run_id = run_id or f"run_{uuid.uuid4().hex[:12]}"
+        base = self._trace_dir.resolve()
+        run_dir = (base / effective_run_id).resolve()
+        try:
+            run_dir.relative_to(base)
+        except ValueError:
+            raise ValueError(
+                f"Invalid run_id {effective_run_id!r}: path traversal detected"
+            ) from None
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        trace = Trace(trace_id=uuid.uuid4().hex, run_id=effective_run_id)
+        trace.metadata["name"] = name
+        trace.metadata["auto_record"] = True
+        trace_token = self._active_trace_var.set(trace)
+
+        fixture = Fixture(run_dir / "fixture.db", trace_id=trace.trace_id)
+        fixture_token = self._active_fixture_var.set(fixture)
+        self._install_recording_transport()
+
+        atexit_callback = self.stop_auto_record
+        atexit.register(atexit_callback)
+
+        self._auto_record_state = {
+            "run_dir": run_dir,
+            "trace": trace,
+            "trace_token": trace_token,
+            "fixture": fixture,
+            "fixture_token": fixture_token,
+            "atexit_callback": atexit_callback,
+        }
+        self._call_plugin("on_trace_start", trace)
+        logger.info("agent-trace: auto-record active — writing to %s", run_dir)
+        return run_dir
+
+    def stop_auto_record(self) -> None:
+        """Stop a :meth:`start_auto_record` session, flushing
+        ``trace.json``/closing ``fixture.db``. A no-op when no auto-record
+        session is active (safe to call from an ``atexit`` hook even after
+        an explicit call already ran)."""
+        state = self._auto_record_state
+        if state is None:
+            return
+        self._auto_record_state = None
+
+        try:
+            self._uninstall_recording_transport()
+        finally:
+            fixture: Fixture = state["fixture"]
+            try:
+                fixture.close()
+            except Exception:
+                logger.warning(
+                    "agent-trace: error closing auto-record fixture", exc_info=True
+                )
+            try:
+                self._active_fixture_var.reset(state["fixture_token"])
+            except ValueError:
+                # reset() requires the same Context the token's set() ran
+                # in; an atexit callback can run in a different Context
+                # than the original start_auto_record() call. Best-effort —
+                # the ContextVar's process-lifetime value no longer matters
+                # once the process is shutting down.
+                pass
+
+        trace: Trace = state["trace"]
+        run_dir: Path = state["run_dir"]
+        try:
+            (run_dir / "trace.json").write_text(
+                json.dumps(trace.to_dict(), indent=2), encoding="utf-8"
+            )
+        except OSError as _write_err:
+            logger.warning(
+                "agent-trace: could not write trace.json to %s: %s",
+                run_dir / "trace.json",
+                _write_err,
+            )
+        self._call_plugin("on_trace_end", trace)
+
+        try:
+            self._active_trace_var.reset(state["trace_token"])
+        except ValueError:
+            pass
+
+        # atexit.unregister() is documented to never raise, even when the
+        # callback was never registered or was already removed.
+        atexit.unregister(state["atexit_callback"])
 
     # ------------------------------------------------------------------
     # Decorator
@@ -557,6 +726,55 @@ class Tracer:
 # ---------------------------------------------------------------------------
 
 tracer: Tracer = Tracer()
+
+
+# ---------------------------------------------------------------------------
+# AGENT_TRACE_AUTO_RECORD — process-wide auto-record activation, read once at
+# import time. This is the supported mechanism for attaching agent-trace to
+# an externally-managed server process (e.g. `langgraph dev`/LangGraph
+# Studio) that the developer does not own the top-level invocation of: set
+# the env var (directly, or via `agent-trace run -- <command>`, see
+# agent_trace._cli.cmd_run) before the process that imports `agent_trace`
+# starts, and recording activates on the global `tracer` singleton the
+# moment this module is first imported — no `with tracer.start_trace(...)`
+# block required anywhere in the developer's own code.
+#
+# AGENT_TRACE_AUTO_RECORD: "1"/"true"/"yes"/"on" (case-insensitive) enables.
+# Anything else (unset, "0", "false", ...) leaves the tracer untouched —
+# this whole block is then a no-op with zero overhead.
+# AGENT_TRACE_RUN_ID: optional explicit run_id (default: random).
+# AGENT_TRACE_AUTO_RECORD_NAME: optional trace name (default: "auto-record").
+# AGENT_TRACE_TRACE_DIR: honoured indirectly — the CLI's `agent-trace run`
+# sets it explicitly; the module-level `tracer` singleton otherwise uses its
+# own default (~/.agent-trace/runs), same as every other entry point.
+# ---------------------------------------------------------------------------
+
+_AUTO_RECORD_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def _auto_record_enabled_from_env() -> bool:
+    raw = os.environ.get("AGENT_TRACE_AUTO_RECORD", "")
+    return raw.strip().lower() in _AUTO_RECORD_TRUE_VALUES
+
+
+def _activate_auto_record_from_env() -> None:
+    """Best-effort AGENT_TRACE_AUTO_RECORD activation on the global
+    `tracer` singleton. Never raises — a misconfigured env var must not
+    break importing `agent_trace` itself."""
+    if not _auto_record_enabled_from_env():
+        return
+    try:
+        tracer.start_auto_record(
+            name=os.environ.get("AGENT_TRACE_AUTO_RECORD_NAME", "auto-record"),
+            run_id=os.environ.get("AGENT_TRACE_RUN_ID") or None,
+        )
+    except Exception:
+        logger.warning(
+            "agent-trace: AGENT_TRACE_AUTO_RECORD activation failed", exc_info=True
+        )
+
+
+_activate_auto_record_from_env()
 
 
 # ---------------------------------------------------------------------------
