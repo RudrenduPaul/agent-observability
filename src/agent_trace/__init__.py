@@ -120,6 +120,7 @@ class Tracer:
         # every agent-trace user, even ones who never touch gRPC).
         self._original_grpc_channel_fns: tuple[Any, Any] | None = None
         self._original_grpc_aio_channel_fns: tuple[Any, Any] | None = None
+        self._original_aiohttp_request: Any = None
         # Registered plugins — called on span and trace lifecycle events.
         self._plugins: list[Plugin] = []
         # Set by start_auto_record()/AGENT_TRACE_AUTO_RECORD when this
@@ -602,6 +603,7 @@ class Tracer:
         self._patch_httpx()
         self._patch_requests()
         self._patch_grpc()
+        self._patch_aiohttp()
 
     def _uninstall_recording_transport(self) -> None:
         """Restore the original patched methods.
@@ -614,6 +616,7 @@ class Tracer:
         self._unpatch_httpx()
         self._unpatch_requests()
         self._unpatch_grpc()
+        self._unpatch_aiohttp()
 
     def _patch_httpx(self) -> None:
         try:
@@ -699,6 +702,23 @@ class Tracer:
 
             self._original_requests_get_adapter = orig
             setattr(requests.Session, "get_adapter", _patched)
+        except ImportError:
+            pass
+
+    def _patch_aiohttp(self, fixture: Any) -> None:
+        try:
+            import aiohttp
+
+            from agent_trace.interceptor.aiohttp_hook import make_recording_request
+
+            orig_request = aiohttp.ClientSession._request
+
+            self._original_aiohttp_request = orig_request
+            setattr(
+                aiohttp.ClientSession,
+                "_request",
+                make_recording_request(fixture, orig_request),
+            )
         except ImportError:
             pass
 
@@ -844,6 +864,53 @@ class Tracer:
             except ImportError:
                 pass
             self._original_grpc_aio_channel_fns = None
+
+    def _patch_aiohttp(self) -> None:
+        """Monkey-patch aiohttp.ClientSession._request to record every call.
+
+        Like _patch_httpx/_patch_requests/_patch_grpc, the fixture is
+        resolved from self._active_fixture_var at call time (not closed
+        over at patch-install time) so concurrently active
+        start_trace(record=True) contexts each record into their own
+        fixture. See agent_trace/interceptor/aiohttp_hook.py's module
+        docstring for why this interceptor exists alongside the
+        httpx/requests ones.
+        """
+        active_fixture_var = self._active_fixture_var
+        try:
+            import aiohttp
+
+            from agent_trace.interceptor.aiohttp_hook import _record_exchange
+
+            orig_request = aiohttp.ClientSession._request
+
+            async def _patched_request(
+                session_self: Any, method: str, str_or_url: Any, **kwargs: Any
+            ) -> Any:
+                response = await orig_request(
+                    session_self, method, str_or_url, **kwargs
+                )
+                fixture = active_fixture_var.get()
+                if fixture is not None:
+                    await _record_exchange(fixture, method, str_or_url, kwargs, response)
+                return response
+
+            self._original_aiohttp_request = orig_request
+            setattr(aiohttp.ClientSession, "_request", _patched_request)
+        except ImportError:
+            pass
+
+    def _unpatch_aiohttp(self) -> None:
+        orig = self._original_aiohttp_request
+        if orig is None:
+            return
+        try:
+            import aiohttp
+
+            setattr(aiohttp.ClientSession, "_request", orig)
+        except ImportError:
+            pass
+        self._original_aiohttp_request = None
 
 
 # ---------------------------------------------------------------------------

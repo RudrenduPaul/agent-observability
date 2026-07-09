@@ -1090,3 +1090,88 @@ class TestAutoRecordEnvVarActivation:
             check=False,
         )
         assert result.returncode == 0, result.stderr
+
+
+# ---------------------------------------------------------------------------
+# aiohttp interceptor wiring (Tracer._patch_aiohttp / _unpatch_aiohttp)
+# ---------------------------------------------------------------------------
+
+
+class TestAiohttpRecordingIntegration:
+    def test_client_session_request_is_patched_during_recording(
+        self, tmp_path: Path
+    ) -> None:
+        """aiohttp.ClientSession._request must be patched alongside httpx/requests."""
+        import aiohttp
+
+        t = Tracer(trace_dir=tmp_path)
+        orig_request = aiohttp.ClientSession._request
+
+        with t.start_trace("aiohttp-patch-test", record=True, run_id="aiohttp-patch"):
+            assert aiohttp.ClientSession._request is not orig_request, (
+                "aiohttp.ClientSession._request was not patched — aiohttp-routed "
+                "traffic (e.g. LiteLLM's aiohttp transport) during record mode "
+                "would be silently unintercepted"
+            )
+
+        assert aiohttp.ClientSession._request is orig_request
+
+    def test_nested_record_true_does_not_double_patch_aiohttp(
+        self, tmp_path: Path
+    ) -> None:
+        import aiohttp
+
+        t = Tracer(trace_dir=tmp_path)
+        original_request = aiohttp.ClientSession._request
+
+        with t.start_trace("outer", record=True, run_id="aio-outer"):
+            patched_request = aiohttp.ClientSession._request
+            assert patched_request is not original_request
+
+            with t.start_trace("inner", record=True, run_id="aio-inner"):
+                assert aiohttp.ClientSession._request is patched_request
+
+            assert aiohttp.ClientSession._request is patched_request
+
+        assert aiohttp.ClientSession._request is original_request
+
+    async def test_aiohttp_traffic_is_captured_into_fixture_db(
+        self, tmp_path: Path
+    ) -> None:
+        """End-to-end: a plain aiohttp.ClientSession() call made inside a
+        start_trace(record=True) block lands in fixture.db, exactly like the
+        httpx/requests interceptors -- no code change needed at the call site
+        (the scenario a LiteLLM-routed aiohttp call represents)."""
+        import aiohttp
+        from aiohttp import web
+        from aiohttp.test_utils import TestServer
+
+        from agent_trace._replay.fixture import Fixture
+
+        async def handler(request: web.Request) -> web.Response:
+            return web.json_response({"model": "gpt-4o", "ok": True})
+
+        app = web.Application()
+        app.router.add_post("/v1/chat/completions", handler)
+        server = TestServer(app)
+        await server.start_server()
+
+        t = Tracer(trace_dir=tmp_path)
+        try:
+            with t.start_trace("aiohttp-e2e", record=True, run_id="aiohttp-e2e"):
+                async with aiohttp.ClientSession() as session:
+                    response = await session.post(
+                        server.make_url("/v1/chat/completions"),
+                        json={"model": "gpt-4o", "messages": []},
+                    )
+                    assert response.status == 200
+        finally:
+            await server.close()
+
+        fixture = Fixture(tmp_path / "aiohttp-e2e" / "fixture.db", trace_id="check")
+        exchanges = fixture.all_exchanges()
+        assert len(exchanges) == 1
+        assert exchanges[0]["method"] == "POST"
+        assert "gpt-4o" in exchanges[0]["request_body"]
+        assert "gpt-4o" in exchanges[0]["response_body"]
+        fixture.close()
