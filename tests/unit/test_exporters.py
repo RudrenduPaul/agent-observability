@@ -271,6 +271,71 @@ class TestStdoutExporter:
         captured = capsys.readouterr()
         assert "plain-boom-details" in captured.out
 
+    def _http_error_exc(self) -> ValueError:
+        class _FakeResponse:
+            status_code = 400
+            text = "Malformed input request (Bedrock validation)"
+
+        class _FakeHTTPError(Exception):
+            def __init__(self) -> None:
+                super().__init__("400 Client Error: None for url: ...")
+                self.response = _FakeResponse()
+
+        return _FakeHTTPError()
+
+    def test_export_span_prints_http_response_body_for_error_status(self, capsys) -> None:
+        exporter = StdoutExporter()
+        span = Span(name="llm:bedrock")
+        span.record_exception(self._http_error_exc())
+        span.end(SpanStatus.ERROR)
+        exporter.export_span(span, depth=0)
+        captured = capsys.readouterr()
+        assert "HTTP 400" in captured.out
+        assert "Malformed input request" in captured.out
+
+    def test_export_span_no_http_detail_line_when_absent(self, capsys) -> None:
+        exporter = StdoutExporter()
+        span = Span(name="broken")
+        span.record_exception(ValueError("plain error, no .response"))
+        span.end(SpanStatus.ERROR)
+        exporter.export_span(span, depth=0)
+        captured = capsys.readouterr()
+        assert "HTTP" not in captured.out
+
+    def test_rich_export_includes_http_response_body(self, capsys) -> None:
+        exporter = StdoutExporter()
+        trace = Trace(trace_id="t-http-err", run_id="run-http-err")
+        trace.metadata["name"] = "http-error-trace"
+        span = Span(name="llm:bedrock", span_id="he001", trace_id="t-http-err")
+        span.record_exception(self._http_error_exc())
+        span.end(SpanStatus.ERROR)
+        trace.add_span(span)
+        exporter.export(trace)
+        captured = capsys.readouterr()
+        assert "HTTP 400" in captured.out
+        assert "Malformed input request" in captured.out
+
+    def test_plain_export_includes_http_response_body(self, capsys) -> None:
+        import sys
+        import unittest.mock
+
+        exporter = StdoutExporter()
+        trace = Trace(trace_id="t-plain-http-err", run_id="run-plain-http-err")
+        trace.metadata["name"] = "plain-http-error-trace"
+        span = Span(name="llm:bedrock", span_id="phe001", trace_id="t-plain-http-err")
+        span.record_exception(self._http_error_exc())
+        span.end(SpanStatus.ERROR)
+        trace.add_span(span)
+
+        with unittest.mock.patch.dict(
+            sys.modules, {"rich": None, "rich.console": None, "rich.tree": None}
+        ):
+            exporter.export(trace)
+
+        captured = capsys.readouterr()
+        assert "HTTP 400" in captured.out
+        assert "Malformed input request" in captured.out
+
 
 # ---------------------------------------------------------------------------
 # FileExporter

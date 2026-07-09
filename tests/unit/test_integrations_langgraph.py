@@ -283,6 +283,63 @@ class TestLangGraphCallbacks:
         handler.on_chain_end({}, run_id=phantom_id)  # must not raise
         handler.on_tool_end("x", run_id=phantom_id)  # must not raise
 
+    def test_llm_span_nested_inside_tool_is_flagged(self, tracer_and_trace):
+        """#5665: node:agent -> llm: -> tool:simple_tool -> nested llm: — the
+        exact schema-leak-triggering shape. The inner LLM call, opened with
+        the tool span as its parent, must get llm.nested_in_tool=True."""
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+
+        node_id = _run_id()
+        handler.on_chain_start({"name": "agent"}, {}, run_id=node_id)
+
+        outer_llm_id = _run_id()
+        handler.on_chat_model_start(
+            {"name": "ChatOpenAI"}, [[]], run_id=outer_llm_id, parent_run_id=node_id
+        )
+        handler.on_llm_end(
+            {"generations": [[{"text": "", "message": None}]], "llm_output": {}},
+            run_id=outer_llm_id,
+        )
+
+        tool_id = _run_id()
+        handler.on_tool_start(
+            {"name": "simple_tool"}, "q", run_id=tool_id, parent_run_id=node_id
+        )
+
+        inner_llm_id = _run_id()
+        handler.on_chat_model_start(
+            {"name": "ChatOpenAI"}, [[]], run_id=inner_llm_id, parent_run_id=tool_id
+        )
+        inner_span = handler._spans[str(inner_llm_id)]
+
+        assert inner_span.attributes.get("llm.nested_in_tool") is True
+
+    def test_llm_span_under_graph_node_not_flagged(self, tracer_and_trace):
+        """The common case (LLM call directly under a graph node, not a
+        tool) must NOT get llm.nested_in_tool set at all."""
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+
+        node_id = _run_id()
+        handler.on_chain_start({"name": "agent"}, {}, run_id=node_id)
+
+        llm_id = _run_id()
+        handler.on_chat_model_start(
+            {"name": "ChatOpenAI"}, [[]], run_id=llm_id, parent_run_id=node_id
+        )
+        span = handler._spans[str(llm_id)]
+
+        assert "llm.nested_in_tool" not in span.attributes
+
+    def test_top_level_llm_span_no_parent_not_flagged(self, tracer_and_trace):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        llm_id = _run_id()
+        handler.on_chat_model_start({"name": "ChatOpenAI"}, [[]], run_id=llm_id)
+        span = handler._spans[str(llm_id)]
+        assert "llm.nested_in_tool" not in span.attributes
+
 
 # ---------------------------------------------------------------------------
 # Previously-discarded data — now captured onto spans

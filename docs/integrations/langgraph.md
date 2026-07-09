@@ -225,16 +225,25 @@ with replay("<run_id>") as ctx:
   before upgrading LangGraph.
 
 - **Async graphs:** `graph.ainvoke(...)` uses `httpx.AsyncClient` internally.
-  agent-trace v0.1 only patches `httpx.Client` (synchronous). Async graphs
-  will pass through to the live network during replay. Async support is planned
-  for v0.2.
+  agent-trace patches both `httpx.Client` (sync) and `httpx.AsyncClient`
+  (async) — see `src/agent_trace/interceptor/httpx_hook.py`'s
+  `RecordingTransport`/`AsyncRecordingTransport` and
+  `Tracer._patch_httpx()`, which installs the patch on both classes at
+  request-dispatch time (`_transport_for_url`), not just at client
+  construction time. Async graphs are recorded and replayed the same as
+  sync ones; no special configuration is needed.
 
-- **Streaming:** LLM streaming calls (SSE responses) are recorded as a single
-  buffered response. The recorded body is the full concatenated stream. During
-  replay, the response is returned as a single chunk rather than as an SSE
-  stream. If your node code reads `.iter_text()` or `.iter_lines()`, it will
-  still work because httpx's response model supports iteration over a single
-  content buffer, but chunking behavior will differ.
+- **Streaming:** By default, LLM streaming calls (SSE responses) are
+  recorded as a single buffered response — the recorded body is the full
+  concatenated stream, and replay returns it as one chunk rather than a
+  live SSE stream. `RecordingTransport`/`AsyncRecordingTransport`
+  (`src/agent_trace/interceptor/httpx_hook.py`) also support a
+  non-buffering, pass-through `stream=True` mode that tees the real
+  streamed response to both the caller and the fixture as it arrives (see
+  `_TeeSyncByteStream`/`_TeeAsyncByteStream`), but that mode is only
+  reachable today by constructing the transport directly — the high-level
+  `Tracer.start_trace(record=True)` path does not yet expose a `stream=`
+  kwarg to opt into it.
 
 - **Conditional edges:** LangGraph's conditional routing is driven by the
   return value of your routing function, which depends on node outputs. Since
@@ -354,19 +363,20 @@ registered to any trace, so they do not appear in `trace.json`.
 
 **Most common causes:**
 
-1. The `httpx.Client` or `openai.OpenAI()` client was instantiated *before*
-   the `replay(...)` context was entered. The patch only applies to clients
-   created inside the context.
+1. The OpenAI SDK version you are using bypasses `httpx.Client`/
+   `httpx.AsyncClient` entirely and creates a transport directly. Check with
+   `pip show openai` and compare to the versions that were tested in
+   `pyproject.toml`.
 
-2. Your LangGraph nodes use `httpx.AsyncClient`. Async client patching is not
-   yet implemented.
+2. Streaming was recorded in the default buffered mode and your node code
+   depends on incremental chunk-arrival timing rather than just the final
+   concatenated content — see the streaming note above.
 
-3. The OpenAI SDK version you are using bypasses `httpx.Client.__init__` and
-   creates a transport directly. Check with `pip show openai` and compare to
-   the versions that were tested in `pyproject.toml`.
-
-**Fix for (1):** Move all SDK client construction inside the replay block, or
-use a factory function that creates a fresh client each time.
+Both `httpx.Client` (sync) and `httpx.AsyncClient` (async) are patched, and
+the patch is applied at request-dispatch time (`_transport_for_url`), not
+just at client-construction time — so a client instantiated before
+`replay(...)`/`start_trace(record=True)` is entered is still intercepted,
+including LangGraph nodes that use `httpx.AsyncClient` via `graph.ainvoke(...)`.
 
 ---
 

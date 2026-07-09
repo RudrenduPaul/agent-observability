@@ -34,6 +34,7 @@ from agent_trace._cli import (
     _print_streaming_timing,
     _print_zero_task_updates,
     _retry_storm_rows,
+    _span_exception_http_detail,
     _span_exception_message,
     _streaming_timing_rows,
     _strip_leading_separator,
@@ -564,6 +565,43 @@ class TestSpanExceptionMessage:
         assert _span_exception_message(span) is None
 
 
+def _error_span_with_http_body(
+    name: str, message: str, status_code: int, body: str
+) -> dict[str, object]:
+    return {
+        "name": name,
+        "status": "ERROR",
+        "attributes": {},
+        "events": [
+            {
+                "name": "exception",
+                "attributes": {
+                    "exception.type": "HTTPError",
+                    "exception.message": message,
+                    "exception.http_status_code": status_code,
+                    "exception.http_response_body": body,
+                },
+            }
+        ],
+    }
+
+
+class TestSpanExceptionHttpDetail:
+    def test_no_exception_event_returns_none(self) -> None:
+        assert _span_exception_http_detail(_span("node:a")) is None
+
+    def test_exception_without_http_body_returns_none(self) -> None:
+        span = _error_span_with_exception("node:a", "boom")
+        assert _span_exception_http_detail(span) is None
+
+    def test_exception_with_http_body_returns_formatted_detail(self) -> None:
+        span = _error_span_with_http_body(
+            "llm:bedrock", "400 Client Error", 400, "Malformed input request"
+        )
+        detail = _span_exception_http_detail(span)
+        assert detail == "HTTP 400: Malformed input request"
+
+
 class TestErrorSpans:
     def test_filters_to_error_status_only(self) -> None:
         spans = [_span("node:a", status="OK"), _span("node:b", status="ERROR")]
@@ -597,6 +635,22 @@ class TestPrintErrorsOnly:
         out = capsys.readouterr().out
         assert "[ERR] node:a" not in out
         assert "[ERR] llm:gpt-4" in out
+
+    def test_error_span_prints_http_response_body_when_present(self, capsys) -> None:
+        spans = [
+            _error_span_with_http_body(
+                "llm:bedrock", "400 Client Error", 400, "Malformed input request"
+            )
+        ]
+        _print_errors_only(spans)
+        out = capsys.readouterr().out
+        assert "HTTP 400: Malformed input request" in out
+
+    def test_error_span_no_http_line_when_absent(self, capsys) -> None:
+        spans = [_error_span_with_exception("llm:gpt-4", "boom")]
+        _print_errors_only(spans)
+        out = capsys.readouterr().out
+        assert "HTTP" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -964,6 +1018,102 @@ class TestInspectSubcommand:
         result = _run_cli(["inspect", "run-clean"], env=env)
         assert result.returncode == 0, result.stderr
         assert "No anomalies flagged" in result.stdout
+
+    def test_diff_get_post_field_flags_stale_instructions(self, tmp_path) -> None:
+        """#2620 (GPTAssistantAgent): a POST /runs referencing the same
+        assistant_id as an earlier GET /assistants/{id} sends a stale
+        ``instructions`` value that no longer matches what the GET returned —
+        should be auto-flagged via `agent-trace inspect --diff-get-post-field`
+        without a developer having to hand-diff the two bodies."""
+        import json as _json
+        import os
+
+        env = dict(os.environ)
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
+
+        get_response = _json.dumps(
+            {"id": "asst_123", "instructions": "You are a fresh, updated agent."}
+        )
+        post_request = _json.dumps(
+            {"assistant_id": "asst_123", "instructions": "You are a STALE agent."}
+        )
+        _write_run(
+            tmp_path,
+            "run-stale",
+            exchanges=[
+                {
+                    "url": "https://api.openai.com/v1/assistants/asst_123",
+                    "method": "GET",
+                    "request_headers": {},
+                    "request_body": "",
+                    "response_status": 200,
+                    "response_headers": {},
+                    "response_body": get_response,
+                },
+                {
+                    "url": "https://api.openai.com/v1/threads/t1/runs",
+                    "method": "POST",
+                    "request_headers": {},
+                    "request_body": post_request,
+                    "response_status": 200,
+                    "response_headers": {},
+                    "response_body": "{}",
+                },
+            ],
+        )
+
+        result = _run_cli(
+            [
+                "inspect",
+                "run-stale",
+                "--diff-get-post-field",
+                "instructions",
+                "--diff-get-post-post-id-field",
+                "assistant_id",
+            ],
+            env=env,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "get_post_field_mismatch" in result.stdout
+        assert "STALE agent" in result.stdout
+
+    def test_diff_get_post_field_absent_when_flag_not_passed(self, tmp_path) -> None:
+        import json as _json
+        import os
+
+        env = dict(os.environ)
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
+
+        get_response = _json.dumps({"id": "asst_123", "instructions": "fresh"})
+        post_request = _json.dumps({"assistant_id": "asst_123", "instructions": "stale"})
+        _write_run(
+            tmp_path,
+            "run-stale-2",
+            exchanges=[
+                {
+                    "url": "https://api.openai.com/v1/assistants/asst_123",
+                    "method": "GET",
+                    "request_headers": {},
+                    "request_body": "",
+                    "response_status": 200,
+                    "response_headers": {},
+                    "response_body": get_response,
+                },
+                {
+                    "url": "https://api.openai.com/v1/threads/t1/runs",
+                    "method": "POST",
+                    "request_headers": {},
+                    "request_body": post_request,
+                    "response_status": 200,
+                    "response_headers": {},
+                    "response_body": "{}",
+                },
+            ],
+        )
+
+        result = _run_cli(["inspect", "run-stale-2"], env=env)
+        assert result.returncode == 0, result.stderr
+        assert "get_post_field_mismatch" not in result.stdout
 
 
 class TestDiffSubcommand:
