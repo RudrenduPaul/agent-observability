@@ -34,6 +34,7 @@ dependencies = [
 
 [project.optional-dependencies]
 langgraph = ["langgraph>=1.0.10", "langchain-core>=0.3"]
+mcp = ["mcp>=1.28"]
 openai-agents = ["openai-agents>=0.0.3"]
 otlp = ["opentelemetry-exporter-otlp-proto-grpc>=1.25"]
 requests = ["requests>=2.31"]
@@ -96,7 +97,7 @@ no_implicit_optional = true
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
-module = ["langchain_core.*", "opentelemetry.*"]
+module = ["langchain_core.*", "opentelemetry.*", "mcp.*", "anyio.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
