@@ -33,6 +33,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+autogen = ["autogen-agentchat>=0.4", "autogen-ext[openai]>=0.4"]
 langgraph = ["langgraph>=1.0.10", "langchain-core>=0.3"]
 openai-agents = ["openai-agents>=0.0.3"]
 otlp = ["opentelemetry-exporter-otlp-proto-grpc>=1.25"]
