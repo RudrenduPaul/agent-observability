@@ -984,6 +984,25 @@ def _extract_token_usage(response: Any, first_message: Any) -> dict[str, Any]:
     }
 
 
+def _extract_bound_tools(kwargs: dict[str, Any]) -> Any:
+    """Return the tools/functions schema bound to this specific LLM call
+    (i.e. what LangChain actually sent the provider as `tools`/
+    `functions`), or None if none were bound.
+
+    Read from the `invocation_params` dict LangChain's own callback
+    manager passes as a kwarg to on_chat_model_start/on_llm_start
+    (confirmed via direct inspection against the installed langchain-core:
+    `invocation_params={'tools': [...], ...}` when `.bind_tools(...)` was
+    used) — #5665's ask, so a nested LLM span can show not just *that* a
+    tool-nested call happened but *what* it was bound to (e.g. a
+    `with_structured_output(SimpleSchema)` schema leaking in as a bound
+    tool on an unexpected call)."""
+    invocation_params = kwargs.get("invocation_params")
+    if not isinstance(invocation_params, dict):
+        return None
+    return invocation_params.get("tools") or invocation_params.get("functions")
+
+
 def _extract_finish_reason(
     response_metadata: dict[str, Any] | None,
     generation_info: dict[str, Any] | None,
@@ -1678,6 +1697,9 @@ def _get_tracer_class() -> type:
                 span.set_attribute("llm.prompt_count", len(prompts))
                 if metadata:
                     span.set_attribute("llm.metadata", _to_attr_string(metadata))
+                bound_tools = _extract_bound_tools(kwargs)
+                if bound_tools:
+                    span.set_attribute("llm.bound_tools", _to_attr_string(bound_tools))
 
             def on_chat_model_start(
                 self,
@@ -1710,6 +1732,9 @@ def _get_tracer_class() -> type:
                     span.set_attribute("llm.messages", _to_attr_string(messages))
                 if metadata:
                     span.set_attribute("llm.metadata", _to_attr_string(metadata))
+                bound_tools = _extract_bound_tools(kwargs)
+                if bound_tools:
+                    span.set_attribute("llm.bound_tools", _to_attr_string(bound_tools))
 
             def on_llm_new_token(
                 self,
