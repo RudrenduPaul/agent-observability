@@ -675,3 +675,60 @@ class TestContextManager:
 
         with pytest.raises(Exception):
             f._conn.execute("SELECT 1")
+
+
+# ---------------------------------------------------------------------------
+# on_exchange_recorded callback — durable/remote fixture backend support
+# (issue #7417): lets a caller durably persist each exchange as it's
+# recorded, not just whatever makes it into the local fixture.db.
+# ---------------------------------------------------------------------------
+
+
+class TestOnExchangeRecordedCallback:
+    def test_callback_invoked_once_per_recorded_exchange(self, tmp_path: Path) -> None:
+        seen: list[dict] = []
+        with Fixture(tmp_path / "f.db", on_exchange_recorded=seen.append) as f:
+            _record(f, url="https://a")
+            _record(f, url="https://b")
+        assert len(seen) == 2
+
+    def test_callback_receives_exchange_shape(self, tmp_path: Path) -> None:
+        seen: list[dict] = []
+        with Fixture(tmp_path / "f.db", on_exchange_recorded=seen.append) as f:
+            _record(f, url="https://example.com", method="GET", body='{"x":1}')
+        assert seen[0]["url"] == "https://example.com"
+        assert seen[0]["method"] == "GET"
+        assert seen[0]["response_body"] == '{"x":1}'
+        assert seen[0]["sequence_num"] == 0
+        assert "id" in seen[0]
+
+    def test_no_callback_is_a_noop(self, tmp_path: Path) -> None:
+        # Default (no on_exchange_recorded) must behave exactly as before —
+        # no crash, no attribute error.
+        with Fixture(tmp_path / "f.db") as f:
+            _record(f)
+            assert f.exchange_count() == 1
+
+    def test_callback_exception_does_not_break_recording(self, tmp_path: Path) -> None:
+        def _boom(exchange: dict) -> None:
+            raise RuntimeError("remote upload failed")
+
+        with Fixture(tmp_path / "f.db", on_exchange_recorded=_boom) as f:
+            _record(f)  # must not raise
+            assert f.exchange_count() == 1
+
+    def test_failed_before_response_exchange_also_triggers_callback(
+        self, tmp_path: Path
+    ) -> None:
+        seen: list[dict] = []
+        with Fixture(tmp_path / "f.db", on_exchange_recorded=seen.append) as f:
+            f.record_exchange(
+                url="https://unreachable.example.com",
+                method="POST",
+                request_headers={},
+                request_body="",
+                error_type="ConnectionError",
+                error_message="connection refused",
+            )
+        assert len(seen) == 1
+        assert seen[0]["error_type"] == "ConnectionError"

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import hashlib
 import json
 import logging
 import threading
@@ -26,12 +27,18 @@ import uuid
 from collections.abc import AsyncGenerator, AsyncIterable, Generator, Iterable
 from typing import TYPE_CHECKING, Any
 
+from agent_trace.core.clock import get_time
 from agent_trace.core.span import Span, SpanStatus
 
 if TYPE_CHECKING:
     from agent_trace import Trace, Tracer
 
-__all__ = ["LangGraphTracer", "traced_astream", "traced_stream"]
+__all__ = [
+    "LangGraphTracer",
+    "derive_trace_id",
+    "traced_astream",
+    "traced_stream",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +208,48 @@ def _stringify(value: Any, *, max_len: int = _MAX_ATTR_LEN) -> str:
     if len(text) > max_len:
         text = text[:max_len] + "...<truncated>"
     return text
+
+
+# ---------------------------------------------------------------------------
+# trace_id derivation from LangGraph thread_id/checkpoint identity
+# ---------------------------------------------------------------------------
+#
+# Tracer.start_trace() always mints a random trace_id (uuid.uuid4().hex) and
+# LangGraphTracer never reads config["configurable"]["thread_id"] or any
+# checkpoint identity. Two worker processes independently recording "the
+# same" logical operation (e.g. an original long-running tool call and its
+# checkpoint-swept re-dispatch on a managed platform — see issue #7417)
+# therefore produce two unrelated, un-linkable traces today: there is no way
+# to recognize or diff them as the same logical run after the fact.
+#
+# derive_trace_id() lets a caller opt into a *deterministic* trace_id (still
+# a 128-bit hex string, so it stays valid for the OTLP exporter) computed
+# from LangGraph's own thread_id (+ an optional checkpoint id), instead of a
+# fresh random UUID:
+#
+#     thread_id = config["configurable"]["thread_id"]
+#     with tracer.start_trace("my_graph", record=True,
+#                              trace_id=derive_trace_id(thread_id)) as trace:
+#         graph.invoke(inputs, config=config)
+#
+# Two processes deriving from the same thread_id (+ checkpoint id, when one
+# resumes from a specific checkpoint) always produce the identical trace_id,
+# letting tooling recognize/diff them as the same logical run — exactly the
+# "tooling to diff runs" use case Trace's own docstring already describes
+# trace_id as existing for.
+
+
+def derive_trace_id(thread_id: str, checkpoint_id: str | None = None) -> str:
+    """Deterministically derive a 128-bit-hex trace_id from a LangGraph
+    ``thread_id`` (and, optionally, a checkpoint id).
+
+    Same (thread_id, checkpoint_id) always produces the same trace_id,
+    regardless of which process or machine computes it — the mechanism
+    needed to correlate an original run and its checkpoint-swept
+    re-dispatch (issue #7417) as one logical run after the fact.
+    """
+    material = thread_id if checkpoint_id is None else f"{thread_id}:{checkpoint_id}"
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
 
 
 # ---------------------------------------------------------------------------
@@ -853,7 +902,12 @@ def _get_tracer_class() -> type:
             """Concrete implementation — see LangGraphTracer for public docs."""
 
             def __init__(
-                self, tracer: Tracer, trace: Trace, *, graph: Any = None
+                self,
+                tracer: Tracer,
+                trace: Trace,
+                *,
+                graph: Any = None,
+                long_span_threshold_secs: float | None = None,
             ) -> None:
                 super().__init__()
                 self._tracer: Tracer = tracer
@@ -866,6 +920,14 @@ def _get_tracer_class() -> type:
                 # keeps the pre-existing behavior: no declared-tags lookup,
                 # every other capability unaffected.
                 self._graph: Any = graph
+                # Optional: flags any span (node/llm/tool) whose measured
+                # open duration exceeds this many seconds once it closes —
+                # e.g. LangGraph Cloud's ~180s checkpoint-sweep re-dispatch
+                # window (issue #7417). None (the default) disables the
+                # check entirely.
+                self._long_span_threshold_secs: float | None = (
+                    long_span_threshold_secs
+                )
                 # Thread-safe span registry: run_id (UUID str) -> open Span
                 self._spans: dict[str, Span] = {}
                 # Per-run streaming-token counters (on_llm_new_token), so
@@ -908,6 +970,43 @@ def _get_tracer_class() -> type:
                     self._spans[run_key] = span
                 return span
 
+            def _flag_if_long_running(self, span: Span) -> None:
+                """Best-effort: mark *span* with
+                ``span.exceeded_long_running_threshold=true`` if its measured
+                open duration crosses ``self._long_span_threshold_secs``
+                (disabled entirely when that's None — the default).
+
+                Checked at close time rather than via a background timer —
+                agent-trace has no in-flight monitoring thread for spans, so
+                this surfaces the same information (a span that ran longer
+                than a known-risky platform duration, e.g. LangGraph Cloud's
+                ~180s checkpoint-sweep re-dispatch window, issue #7417) the
+                one place this callback-driven architecture actually can:
+                once the span closes and its true duration is known.
+                """
+                if self._long_span_threshold_secs is None:
+                    return
+                try:
+                    elapsed = get_time() - span.start_time
+                    span.set_attribute(
+                        "span.duration_secs_at_close", round(elapsed, 3)
+                    )
+                    if elapsed >= self._long_span_threshold_secs:
+                        span.set_attribute(
+                            "span.exceeded_long_running_threshold", True
+                        )
+                        span.set_attribute(
+                            "span.long_running_threshold_secs",
+                            self._long_span_threshold_secs,
+                        )
+                except Exception:
+                    logger.debug(
+                        "agent-trace: failed to evaluate long-running-span "
+                        "threshold for span %r",
+                        span.name,
+                        exc_info=True,
+                    )
+
             def _close_span(
                 self,
                 run_id: uuid.UUID | str,
@@ -919,6 +1018,7 @@ def _get_tracer_class() -> type:
                     span = self._spans.pop(run_key, None)
                     self._stream_token_counts.pop(run_key, None)
                 if span is not None and span.end_time is None:
+                    self._flag_if_long_running(span)
                     span.end(status)
                 return span
 
@@ -953,18 +1053,21 @@ def _get_tracer_class() -> type:
                 if _is_langgraph_control_flow_signal(error):
                     _record_control_flow_signal(span, error)
                     if span.end_time is None:
+                        self._flag_if_long_running(span)
                         span.end(SpanStatus.OK)
                     return
 
                 if isinstance(error, asyncio.CancelledError):
                     span.record_exception(error, status=SpanStatus.CANCELLED)
                     if span.end_time is None:
+                        self._flag_if_long_running(span)
                         span.end(SpanStatus.CANCELLED)
                     return
 
                 span.record_exception(error)
                 _classify_and_tag_exception(span, error)
                 if span.end_time is None:
+                    self._flag_if_long_running(span)
                     span.end(SpanStatus.ERROR)
 
             # ------------------------------------------------------------------
@@ -1424,10 +1527,23 @@ class LangGraphTracer:
         ``.with_config(tags=["nostream"])``), which the runtime callback
         ``tags`` kwarg alone never exposes. Omit (the default, None) to keep
         the pre-existing behavior with no declared-tags lookup.
+    long_span_threshold_secs:
+        Optional: once a span (node/llm/tool) closes having been open for at
+        least this many seconds, it is flagged with
+        ``span.exceeded_long_running_threshold=true`` and
+        ``span.duration_secs_at_close``. Useful for platform-level behaviors
+        keyed off wall-clock duration — e.g. LangGraph Cloud's ~180s
+        checkpoint-sweep re-dispatch window (issue #7417). Omit (the
+        default, None) to disable the check entirely.
     """
 
     def __new__(
-        cls, tracer: Tracer, trace: Trace, *, graph: Any = None
+        cls,
+        tracer: Tracer,
+        trace: Trace,
+        *,
+        graph: Any = None,
+        long_span_threshold_secs: float | None = None,
     ) -> LangGraphTracer:
         # Construct the concrete impl directly so Python's normal type.__call__
         # runs _LangGraphTracerImpl.__init__ automatically.  We cannot use
@@ -1435,9 +1551,21 @@ class LangGraphTracer:
         # object would not be an instance of LangGraphTracer, causing Python
         # to skip __init__ entirely — leaving _tracer/_trace/_spans unset.
         impl_cls = _get_tracer_class()
-        return impl_cls(tracer, trace, graph=graph)  # type: ignore[no-any-return]
+        return impl_cls(  # type: ignore[no-any-return]
+            tracer,
+            trace,
+            graph=graph,
+            long_span_threshold_secs=long_span_threshold_secs,
+        )
 
-    def __init__(self, tracer: Tracer, trace: Trace, *, graph: Any = None) -> None:
+    def __init__(
+        self,
+        tracer: Tracer,
+        trace: Trace,
+        *,
+        graph: Any = None,
+        long_span_threshold_secs: float | None = None,
+    ) -> None:
         # __init__ is called on the instance whose __class__ is already the
         # concrete impl class (set by __new__).  Delegate to its __init__.
         # This path is only reached if someone subclasses LangGraphTracer
