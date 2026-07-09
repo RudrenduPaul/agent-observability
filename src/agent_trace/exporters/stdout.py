@@ -66,6 +66,25 @@ def _exception_message(span: Span) -> str | None:
     return None
 
 
+def _exception_http_detail(span: Span) -> str | None:
+    """Return "HTTP <status>: <body preview>" when *span*'s recorded
+    exception carried an HTTP error response body (exception.http_
+    response_body/exception.http_status_code, set by Span.record_exception
+    for requests.exceptions.HTTPError/httpx.HTTPStatusError-shaped
+    exceptions) — the actual provider/proxy error text (#4940), which
+    str(exc) alone (all `_exception_message` surfaces) typically omits."""
+    for event in span.events:
+        if event.name != "exception":
+            continue
+        body = event.attributes.get("exception.http_response_body")
+        if not body:
+            continue
+        status = event.attributes.get("exception.http_status_code")
+        prefix = f"HTTP {status}: " if status is not None else "HTTP: "
+        return f"{prefix}{body}"
+    return None
+
+
 def _trace_header_info(trace: Trace) -> tuple[str, str]:
     """Return (duration_string, display_name) for trace header lines."""
     ended = [s.end_time for s in trace.spans if s.end_time is not None]
@@ -103,6 +122,9 @@ class StdoutExporter:
             message = _exception_message(span)
             if message:
                 print(f"{indent}      ! {message}")
+            http_detail = _exception_http_detail(span)
+            if http_detail:
+                print(f"{indent}      ! {http_detail}")
 
     # ------------------------------------------------------------------
     # Rich implementation
@@ -148,6 +170,9 @@ class StdoutExporter:
                     message = _exception_message(span)
                     if message:
                         label += f"\n  [red]! {message}[/red]"
+                    http_detail = _exception_http_detail(span)
+                    if http_detail:
+                        label += f"\n  [red]! {http_detail}[/red]"
                 node = parent_node.add(label)
                 _add_children(node, span.span_id)
 

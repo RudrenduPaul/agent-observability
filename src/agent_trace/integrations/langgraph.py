@@ -1370,6 +1370,17 @@ def _get_tracer_class() -> type:
                     )
 
                 span = self._tracer.start_span(name, parent_id=parent_span_id)
+                if name.startswith("llm:") and parent_span_id is not None:
+                    with self._lock:
+                        parent_span = self._spans.get(str(parent_run_id))
+                    if parent_span is not None and parent_span.name.startswith("tool:"):
+                        # This LLM call is happening inside a tool's own
+                        # execution, not directly under a graph node —
+                        # flag it explicitly rather than leaving "this call
+                        # happened inside a tool" recoverable only from
+                        # tree indentation or a manual parent_id read
+                        # (#5665: the exact schema-leak-triggering shape).
+                        span.set_attribute("llm.nested_in_tool", True)
                 with self._lock:
                     self._spans[run_key] = span
                 return span
