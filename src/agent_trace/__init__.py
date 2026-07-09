@@ -89,6 +89,7 @@ class Tracer:
         # Stored as a (sync_init, async_init) tuple when patched; None otherwise.
         self._original_httpx_init: tuple[Any, Any] | None = None
         self._original_requests_get_adapter: Any = None
+        self._original_websockets_connect: Any = None
         # Registered plugins — called on span and trace lifecycle events.
         self._plugins: list[Plugin] = []
 
@@ -333,9 +334,10 @@ class Tracer:
             return
         self._patch_httpx(fixture)
         self._patch_requests(fixture)
+        self._patch_websockets(fixture)
 
     def _uninstall_recording_transport(self) -> None:
-        """Restore the original ``__init__`` / ``get_adapter`` methods.
+        """Restore the original ``__init__`` / ``get_adapter`` / ``connect`` methods.
 
         Only the outermost trace uninstalls; inner traces decrement the counter.
         """
@@ -344,6 +346,7 @@ class Tracer:
             return
         self._unpatch_httpx()
         self._unpatch_requests()
+        self._unpatch_websockets()
 
     def _patch_httpx(self, fixture: Any) -> None:
         try:
@@ -415,6 +418,34 @@ class Tracer:
         except ImportError:
             pass
         self._original_requests_get_adapter = None
+
+    def _patch_websockets(self, fixture: Any) -> None:
+        try:
+            import websockets
+
+            from agent_trace.interceptor.websocket_hook import RecordingConnect
+
+            orig_connect = websockets.connect
+
+            def _patched_connect(uri: str, *args: Any, **kwargs: Any) -> Any:
+                return RecordingConnect(orig_connect, fixture, uri, *args, **kwargs)
+
+            self._original_websockets_connect = orig_connect
+            setattr(websockets, "connect", _patched_connect)
+        except ImportError:
+            pass
+
+    def _unpatch_websockets(self) -> None:
+        orig = self._original_websockets_connect
+        if orig is None:
+            return
+        try:
+            import websockets
+
+            setattr(websockets, "connect", orig)
+        except ImportError:
+            pass
+        self._original_websockets_connect = None
 
 
 # ---------------------------------------------------------------------------
