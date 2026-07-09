@@ -5,6 +5,7 @@ Commands:
     agent-trace replay <run_id>     — replay a recorded run and print span tree
     agent-trace list                — list all recorded runs in trace_dir
     agent-trace show <run_id>       — show the stored trace.json for a run
+    agent-trace run -- <command>    — exec a child process with recording pre-enabled
     agent-trace version             — print version
 """
 
@@ -14,7 +15,9 @@ import argparse
 import datetime
 import json
 import os
+import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 __all__ = ["main"]
@@ -522,6 +525,82 @@ def cmd_replay(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Subcommand: run
+# ---------------------------------------------------------------------------
+#
+# Wraps an arbitrary child process (e.g. `langgraph dev`) with recording
+# pre-enabled process-wide, via the AGENT_TRACE_AUTO_RECORD env var
+# (Tracer.start_auto_record() / agent_trace._activate_auto_record_from_env())
+# — the supported mechanism for capturing a framework-managed dev server
+# process whose entrypoint the developer doesn't own, and doesn't want to
+# hand-instrument with a `with tracer.start_trace(...)` block.
+# ---------------------------------------------------------------------------
+
+
+def _strip_leading_separator(command: list[str]) -> list[str]:
+    """`agent-trace run -- langgraph dev` — argparse.REMAINDER captures the
+    `--` separator verbatim as the first token of the remainder. Strip it
+    (when present) so the child process is exec'd with the real command
+    only. A bare `agent-trace run langgraph dev` (no `--`) works too — there
+    is simply nothing to strip in that case."""
+    if command and command[0] == "--":
+        return command[1:]
+    return command
+
+
+def cmd_run(args: argparse.Namespace) -> None:
+    """Exec a child process with recording pre-enabled process-wide.
+
+    Sets ``AGENT_TRACE_AUTO_RECORD=1`` (plus ``AGENT_TRACE_RUN_ID``/
+    ``AGENT_TRACE_AUTO_RECORD_NAME``/``AGENT_TRACE_TRACE_DIR``) in the
+    child's environment before launching it, so the *first* `import
+    agent_trace` anywhere inside that process — including one owned
+    entirely by a third-party CLI like `langgraph dev` that the developer
+    never touches — activates process-wide recording with zero code
+    changes required in the developer's own graph/agent code. See
+    ``agent_trace.Tracer.start_auto_record`` and
+    ``agent_trace._activate_auto_record_from_env`` for the activation path
+    this env var feeds into.
+
+    Exits with the child process's own exit code.
+    """
+    command = _strip_leading_separator(args.child_command)
+    if not command:
+        sys.exit(
+            "error: no command given.\n"
+            "Usage: agent-trace run -- <command> [args...]\n"
+            "Example: agent-trace run -- langgraph dev"
+        )
+
+    run_id = args.run_id or f"run_{uuid.uuid4().hex[:12]}"
+    trace_dir = _trace_dir()
+
+    env = os.environ.copy()
+    env["AGENT_TRACE_AUTO_RECORD"] = "1"
+    env["AGENT_TRACE_RUN_ID"] = run_id
+    env["AGENT_TRACE_AUTO_RECORD_NAME"] = args.name
+    env["AGENT_TRACE_TRACE_DIR"] = str(trace_dir)
+
+    print("agent-trace: recording enabled (AGENT_TRACE_AUTO_RECORD=1)")
+    print(f"agent-trace: run_id:    {run_id}")
+    print(f"agent-trace: trace_dir: {trace_dir}")
+    print(f"agent-trace: command:   {' '.join(command)}")
+    print()
+
+    try:
+        result = subprocess.run(command, env=env, check=False)  # noqa: S603
+    except FileNotFoundError as exc:
+        sys.exit(f"error: could not exec {command[0]!r}: {exc}")
+    except KeyboardInterrupt:
+        sys.exit(130)
+
+    print()
+    print(f"agent-trace: child process exited with code {result.returncode}")
+    print(f"agent-trace: inspect this run with: agent-trace show {run_id}")
+    sys.exit(result.returncode)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -536,6 +615,7 @@ def main() -> None:
             "  agent-trace list\n"
             "  agent-trace show run_abc123def456\n"
             "  agent-trace replay run_abc123def456\n"
+            "  agent-trace run -- langgraph dev\n"
             "  agent-trace version\n"
         ),
     )
@@ -560,6 +640,32 @@ def main() -> None:
     )
     replay_p.add_argument("run_id", help="Run ID (e.g. run_abc123def456)")
 
+    # run
+    run_p = sub.add_parser(
+        "run",
+        help=(
+            "Exec a child process with recording pre-enabled process-wide "
+            "(e.g. agent-trace run -- langgraph dev)"
+        ),
+    )
+    run_p.add_argument(
+        "--run-id",
+        dest="run_id",
+        default=None,
+        help="Explicit run ID (default: random, printed on start)",
+    )
+    run_p.add_argument(
+        "--name",
+        dest="name",
+        default="auto-record",
+        help="Trace name recorded in trace.json metadata (default: auto-record)",
+    )
+    run_p.add_argument(
+        "child_command",
+        nargs=argparse.REMAINDER,
+        help="Command to exec, e.g. -- langgraph dev",
+    )
+
     args = parser.parse_args()
 
     dispatch = {
@@ -567,6 +673,7 @@ def main() -> None:
         "list": cmd_list,
         "show": cmd_show,
         "replay": cmd_replay,
+        "run": cmd_run,
     }
 
     handler = dispatch.get(args.command)

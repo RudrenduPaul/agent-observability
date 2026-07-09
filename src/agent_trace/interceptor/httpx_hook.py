@@ -19,6 +19,7 @@ AttributeError on the first request.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 import warnings
@@ -30,7 +31,11 @@ import httpx
 if TYPE_CHECKING:
     from agent_trace._replay.fixture import Fixture
 
-from agent_trace.core.exceptions import NetworkGuardError, guard_active
+from agent_trace.core.exceptions import (
+    NetworkGuardError,
+    RunawayToolCallLoopError,
+    guard_active,
+)
 
 __all__ = [
     "AsyncRecordingTransport",
@@ -38,9 +43,146 @@ __all__ = [
     "NetworkGuardError",
     "RecordingTransport",
     "ReplayTransport",
+    "RunawayToolCallLoopError",
+    "raise_on_loop_detected",
+    "warn_on_loop_detected",
 ]
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Runaway-tool-call-loop guard — optional, opt-in via
+# RecordingTransport(..., loop_guard_threshold=N). Counts *consecutive*
+# tool-call-only responses (no final, tool-call-free assistant message) seen
+# for the same host during the life of this transport instance and calls
+# on_loop_detected(host, count) once the count reaches the threshold (and
+# again on every subsequent response while it stays at/above threshold).
+#
+# This is a live, in-the-loop signal — not a replay-time diagnostic — for
+# issue #3097 (a model that never stops emitting tool_calls, burning the
+# full context window before anyone notices). Disabled by default
+# (loop_guard_threshold=None) so it costs nothing for callers who don't want
+# it: no per-response JSON parsing, no per-host bookkeeping.
+# ---------------------------------------------------------------------------
+
+
+def _response_host(url: str) -> str:
+    """Best-effort hostname for *url*; falls back to the raw url string on
+    any parse failure so the guard never raises for this reason alone."""
+    try:
+        host = httpx.URL(url).host
+        return host or url
+    except Exception:
+        return url
+
+
+def _is_tool_call_only_response(response_body: str) -> bool:
+    """Best-effort detection of a chat-completion response that carries
+    tool call(s) and nothing else — no final, human-readable assistant
+    message alongside them.
+
+    Recognizes two response shapes:
+      - OpenAI/Groq/Azure-OpenAI-style Chat Completions:
+        ``choices[0].message.tool_calls`` non-empty and
+        ``choices[0].message.content`` empty/null, or
+        ``choices[0].finish_reason == "tool_calls"``.
+      - Anthropic Messages API: ``stop_reason == "tool_use"`` and no
+        ``content`` block of type ``"text"`` carries non-empty text.
+
+    Best-effort by design (same tradeoff as the rest of this module): a
+    response body that isn't valid JSON, or doesn't match either shape,
+    simply isn't flagged — this never raises for a malformed/unrecognized
+    body, it just returns False.
+    """
+    try:
+        data = json.loads(response_body)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices:
+        first = choices[0]
+        if isinstance(first, dict):
+            message = first.get("message")
+            if isinstance(message, dict):
+                tool_calls = message.get("tool_calls")
+                has_tool_calls = isinstance(tool_calls, list) and len(tool_calls) > 0
+                if has_tool_calls:
+                    content = message.get("content")
+                    empty_content = content in (None, "", [])
+                    if empty_content or first.get("finish_reason") == "tool_calls":
+                        return True
+
+    if data.get("stop_reason") == "tool_use":
+        content_blocks = data.get("content")
+        if isinstance(content_blocks, list) and content_blocks:
+            has_text = any(
+                isinstance(block, dict)
+                and block.get("type") == "text"
+                and block.get("text")
+                for block in content_blocks
+            )
+            if not has_text:
+                return True
+
+    return False
+
+
+def warn_on_loop_detected(host: str, count: int) -> None:
+    """Default ``on_loop_detected`` callback — emits a ``UserWarning`` and
+    lets the caller continue (does not raise). Recording, and the run being
+    recorded, both continue unaffected."""
+    warnings.warn(
+        f"agent-trace: {count} consecutive tool-call-only responses recorded "
+        f"for host {host!r} — possible runaway tool-call loop (see "
+        "https://github.com/langchain-ai/langgraph/issues/3097). Pass "
+        "on_loop_detected=agent_trace.interceptor.httpx_hook."
+        "raise_on_loop_detected to abort the run instead of warning.",
+        stacklevel=3,
+    )
+
+
+def raise_on_loop_detected(host: str, count: int) -> None:
+    """Opt-in ``on_loop_detected`` callback that raises
+    :class:`RunawayToolCallLoopError` instead of warning — use this when you
+    want a suspected runaway tool-call loop to actually stop the run rather
+    than merely being logged."""
+    raise RunawayToolCallLoopError(
+        f"{count} consecutive tool-call-only responses recorded for host "
+        f"{host!r} — aborting (see "
+        "https://github.com/langchain-ai/langgraph/issues/3097)."
+    )
+
+
+class _LoopGuardMixin:
+    """Shared consecutive-tool-call-only-response bookkeeping for
+    RecordingTransport and AsyncRecordingTransport. Not a public class —
+    both transports compose this state directly (see their __init__) rather
+    than inheriting, so it stays a plain implementation detail."""
+
+    def _init_loop_guard(
+        self,
+        loop_guard_threshold: int | None,
+        on_loop_detected: Callable[[str, int], None] | None,
+    ) -> None:
+        self._loop_guard_threshold = loop_guard_threshold
+        self._on_loop_detected = on_loop_detected or warn_on_loop_detected
+        self._consecutive_tool_call_counts: dict[str, int] = {}
+
+    def _check_loop_guard(self, url: str, response_body: str) -> None:
+        if self._loop_guard_threshold is None:
+            return
+        host = _response_host(url)
+        if _is_tool_call_only_response(response_body):
+            count = self._consecutive_tool_call_counts.get(host, 0) + 1
+            self._consecutive_tool_call_counts[host] = count
+            if count >= self._loop_guard_threshold:
+                self._on_loop_detected(host, count)
+        else:
+            self._consecutive_tool_call_counts[host] = 0
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +285,7 @@ class _TeeAsyncByteStream(httpx.AsyncByteStream):
         self._on_complete(b"".join(self._chunks), list(self._chunk_offsets_s))
 
 
-class RecordingTransport(httpx.BaseTransport):
+class RecordingTransport(httpx.BaseTransport, _LoopGuardMixin):
     """httpx transport that records every exchange to a Fixture.
 
     Parameters
@@ -167,6 +309,26 @@ class RecordingTransport(httpx.BaseTransport):
         streaming/SSE endpoints, where the default mode's full-buffering
         would otherwise destroy real incremental token delivery for every
         request made while recording is active.
+    loop_guard_threshold:
+        Opt-in runaway-tool-call-loop guard, disabled by default (None).
+        When set to an integer N, this transport counts *consecutive*
+        tool-call-only responses (see ``_is_tool_call_only_response``)
+        recorded for the same host and calls ``on_loop_detected(host,
+        count)`` once that count reaches N — the live-recording signal for
+        issue #3097 (a model that never stops emitting tool_calls, burning
+        the full context window before anyone notices). A tool-call-only
+        response is one whose assistant message carries tool call(s) and no
+        other final content (OpenAI/Groq-style ``tool_calls`` with empty
+        ``content``, or Anthropic ``stop_reason: "tool_use"`` with no text
+        block) — any other response resets the count for that host to 0.
+    on_loop_detected:
+        Callback invoked as ``on_loop_detected(host, count)`` once
+        ``loop_guard_threshold`` is reached. Defaults to
+        :func:`warn_on_loop_detected` (emits a ``UserWarning``, does not
+        interrupt the run). Pass :func:`raise_on_loop_detected` to raise
+        :class:`~agent_trace.core.exceptions.RunawayToolCallLoopError`
+        instead — the exchange is still recorded to the fixture before the
+        exception propagates to the caller.
     """
 
     def __init__(
@@ -175,12 +337,15 @@ class RecordingTransport(httpx.BaseTransport):
         inner: httpx.BaseTransport | None = None,
         *,
         stream: bool = False,
+        loop_guard_threshold: int | None = None,
+        on_loop_detected: Callable[[str, int], None] | None = None,
     ) -> None:
         self._fixture = fixture
         self._inner: httpx.BaseTransport = (
             inner if inner is not None else httpx.HTTPTransport()
         )
         self._stream = stream
+        self._init_loop_guard(loop_guard_threshold, on_loop_detected)
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         """Forward the request, record the exchange, return the response.
@@ -238,6 +403,7 @@ class RecordingTransport(httpx.BaseTransport):
             response_body=resp_body,
             duration_ms=duration_ms,
         )
+        self._check_loop_guard(url, resp_body)
 
         # Reconstruct so the caller receives a fully-read response with the
         # same status, headers, and body as the original.
@@ -265,6 +431,7 @@ class RecordingTransport(httpx.BaseTransport):
 
         def _on_complete(body_bytes: bytes, chunk_offsets_s: list[float]) -> None:
             duration_ms = (time.monotonic() - start) * 1000
+            decoded_body = body_bytes.decode("utf-8", errors="replace")
             self._fixture.record_exchange(
                 url=url,
                 method=method,
@@ -272,10 +439,11 @@ class RecordingTransport(httpx.BaseTransport):
                 request_body=req_body,
                 response_status=resp_status,
                 response_headers=resp_headers,
-                response_body=body_bytes.decode("utf-8", errors="replace"),
+                response_body=decoded_body,
                 duration_ms=duration_ms,
                 chunk_timestamps=chunk_offsets_s,
             )
+            self._check_loop_guard(url, decoded_body)
 
         tee = _TeeSyncByteStream(response, _on_complete)
         return httpx.Response(
@@ -364,7 +532,7 @@ class ReplayTransport(httpx.BaseTransport):
         pass  # No resources to release; fixture lifecycle is managed externally.
 
 
-class AsyncRecordingTransport(httpx.AsyncBaseTransport):
+class AsyncRecordingTransport(httpx.AsyncBaseTransport, _LoopGuardMixin):
     """httpx async transport that records every exchange to a Fixture.
 
     Use this with ``httpx.AsyncClient`` — the sync ``RecordingTransport``
@@ -383,6 +551,9 @@ class AsyncRecordingTransport(httpx.AsyncBaseTransport):
         ``RecordingTransport(..., stream=True)`` — see that class's
         docstring. Defaults to False (the historical eager-buffering
         behavior).
+    loop_guard_threshold, on_loop_detected:
+        Same opt-in runaway-tool-call-loop guard as
+        ``RecordingTransport`` — see that class's docstring.
     """
 
     def __init__(
@@ -391,12 +562,15 @@ class AsyncRecordingTransport(httpx.AsyncBaseTransport):
         inner: httpx.AsyncBaseTransport | None = None,
         *,
         stream: bool = False,
+        loop_guard_threshold: int | None = None,
+        on_loop_detected: Callable[[str, int], None] | None = None,
     ) -> None:
         self._fixture = fixture
         self._inner: httpx.AsyncBaseTransport = (
             inner if inner is not None else httpx.AsyncHTTPTransport()
         )
         self._stream = stream
+        self._init_loop_guard(loop_guard_threshold, on_loop_detected)
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         """Forward the request async, record the exchange, return the response.
@@ -448,6 +622,7 @@ class AsyncRecordingTransport(httpx.AsyncBaseTransport):
             response_body=resp_body,
             duration_ms=duration_ms,
         )
+        self._check_loop_guard(url, resp_body)
 
         return httpx.Response(
             status_code=resp_status,
@@ -473,6 +648,7 @@ class AsyncRecordingTransport(httpx.AsyncBaseTransport):
 
         def _on_complete(body_bytes: bytes, chunk_offsets_s: list[float]) -> None:
             duration_ms = (time.monotonic() - start) * 1000
+            decoded_body = body_bytes.decode("utf-8", errors="replace")
             self._fixture.record_exchange(
                 url=url,
                 method=method,
@@ -480,10 +656,11 @@ class AsyncRecordingTransport(httpx.AsyncBaseTransport):
                 request_body=req_body,
                 response_status=resp_status,
                 response_headers=resp_headers,
-                response_body=body_bytes.decode("utf-8", errors="replace"),
+                response_body=decoded_body,
                 duration_ms=duration_ms,
                 chunk_timestamps=chunk_offsets_s,
             )
+            self._check_loop_guard(url, decoded_body)
 
         tee = _TeeAsyncByteStream(response, _on_complete)
         return httpx.Response(
