@@ -533,8 +533,70 @@ def _numeric_start_time(span: dict[str, object]) -> float | None:
     return float(start) if isinstance(start, (int, float)) else None
 
 
+def _http_sequence_confirms(
+    suspect: dict[str, object],
+    likely_parent: dict[str, object],
+    exchanges: list[dict[str, object]],
+) -> bool | None:
+    """Cross-check a *suspect*/*likely_parent* guess — built purely from
+    wall-clock span `start_time`/`end_time` — against the independent,
+    always-correct total ordering already captured in fixture.db's
+    `sequence_num` column (see `_replay/fixture.py`'s module docstring: "a
+    monotonically increasing sequence_num" assigned once per HTTP round-trip
+    at record time, immune to the callback-registry misses that produce
+    misattributed spans in the first place). This is the reconciliation
+    pass the "unaccounted-for root span" heuristic above needs: two spans'
+    wall-clock timestamps can only be trusted so far, but the HTTP capture
+    layer's sequence_num ordering is a second, structurally independent
+    signal for the same underlying chronology.
+
+    Returns True when at least one HTTP exchange was recorded during
+    *likely_parent*'s activity strictly before *suspect* started (i.e. the
+    HTTP layer independently confirms *likely_parent* was already doing
+    work before *suspect* began — corroborating the timestamp-based guess),
+    False when every such exchange has a `sequence_num` *greater than* an
+    exchange recorded during *suspect*'s own window (the HTTP layer
+    contradicts the guess), or None when there isn't enough HTTP-layer data
+    on either side to judge (note *likely_parent*'s window necessarily
+    contains *suspect*'s, since that's how it was chosen — so only the
+    portion of *likely_parent*'s window strictly before *suspect* started is
+    used, otherwise every exchange inside *suspect*'s own window would also
+    trivially count as "inside likely_parent's window" too).
+    """
+
+    def _sequence_nums_in(start: float, end_bound: float) -> list[int]:
+        seqs: list[int] = []
+        for exchange in exchanges:
+            recorded_at = exchange.get("recorded_at")
+            seq = exchange.get("sequence_num")
+            if not isinstance(recorded_at, (int, float)) or not isinstance(
+                seq, int
+            ):
+                continue
+            if start <= recorded_at < end_bound:
+                seqs.append(seq)
+        return seqs
+
+    parent_start = _numeric_start_time(likely_parent)
+    suspect_start = _numeric_start_time(suspect)
+    if parent_start is None or suspect_start is None:
+        return None
+
+    suspect_end = suspect.get("end_time")
+    suspect_end_bound = (
+        suspect_end if isinstance(suspect_end, (int, float)) else float("inf")
+    )
+
+    parent_exclusive_seqs = _sequence_nums_in(parent_start, suspect_start)
+    suspect_seqs = _sequence_nums_in(suspect_start, suspect_end_bound)
+    if not parent_exclusive_seqs or not suspect_seqs:
+        return None
+    return max(parent_exclusive_seqs) < min(suspect_seqs)
+
+
 def _misattributed_span_rows(
     spans: list[dict[str, object]],
+    exchanges: list[dict[str, object]] | None = None,
 ) -> list[dict[str, object]]:
     rootlike = [s for s in spans if s.get("parent_id") is None]
     timed_roots = [
@@ -580,17 +642,23 @@ def _misattributed_span_rows(
                 best = candidate
                 best_start = c_start
         if best is not None:
-            rows.append(
-                {
-                    "span": suspect.get("name"),
-                    "likely_parent": best.get("name"),
-                }
-            )
+            row: dict[str, object] = {
+                "span": suspect.get("name"),
+                "likely_parent": best.get("name"),
+            }
+            if exchanges is not None:
+                row["http_sequence_confirmed"] = _http_sequence_confirms(
+                    suspect, best, exchanges
+                )
+            rows.append(row)
     return rows
 
 
-def _print_misattributed_spans(spans: list[dict[str, object]]) -> None:
-    rows = _misattributed_span_rows(spans)
+def _print_misattributed_spans(
+    spans: list[dict[str, object]],
+    exchanges: list[dict[str, object]] | None = None,
+) -> None:
+    rows = _misattributed_span_rows(spans, exchanges)
     if not rows:
         return
     print()
@@ -599,11 +667,22 @@ def _print_misattributed_spans(spans: list[dict[str, object]]) -> None:
         "overlaps another span):"
     )
     for row in rows:
-        print(f"  {row['span']:<30}  likely belongs under {row['likely_parent']}")
+        suffix = ""
+        confirmed = row.get("http_sequence_confirmed")
+        if confirmed is True:
+            suffix = "  [confirmed via HTTP sequence_num ordering]"
+        elif confirmed is False:
+            suffix = "  [HTTP sequence_num ordering does NOT confirm this guess]"
+        print(
+            f"  {row['span']:<30}  likely belongs under "
+            f"{row['likely_parent']}{suffix}"
+        )
     print(
         "  (A span with no parent that started while another span was still "
         "open may have been flattened to the trace root instead of nested "
-        "under its originating node — the shape behind langgraph#3975.)"
+        "under its originating node — the shape behind langgraph#3975. "
+        "Reconciled against fixture.db's sequence_num-ordered HTTP capture "
+        "where available, per the timestamp-independent cross-check above.)"
     )
 
 
@@ -656,10 +735,26 @@ def cmd_show(args: argparse.Namespace) -> None:
     print()
     print(f"File: {trace_path}")
     print(f"Spans: {len(spans)}")
+
+    # Load fixture.db's exchanges (if this run was recorded with
+    # record=True) purely so _print_misattributed_spans can reconcile its
+    # wall-clock-timestamp guess against the independent, always-correct
+    # sequence_num ordering the HTTP capture layer already has.
+    exchanges: list[dict[str, object]] | None = None
+    fixture_db = _fixture_path(run_id)
+    if fixture_db.exists():
+        try:
+            from agent_trace._replay.fixture import Fixture
+
+            with Fixture(fixture_db) as f:
+                exchanges = f.all_exchanges()
+        except Exception:
+            exchanges = None
+
     _print_error_classification(spans)
     _print_duplicate_node_spans(spans)
     _print_retry_storms(spans)
-    _print_misattributed_spans(spans)
+    _print_misattributed_spans(spans, exchanges)
     _print_checkpoint_durability(spans)
     _print_zero_task_updates(spans)
 
@@ -669,14 +764,17 @@ def cmd_show(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _print_replay_span_diagnostics(spans: list[dict[str, object]]) -> None:
+def _print_replay_span_diagnostics(
+    spans: list[dict[str, object]],
+    exchanges: list[dict[str, object]] | None = None,
+) -> None:
     """The full diagnostic block `agent-trace replay` prints after the span
     tree — split out from cmd_replay() purely to keep that function's
     statement count manageable, not for reuse elsewhere."""
     _print_error_classification(spans)
     _print_duplicate_node_spans(spans)
     _print_retry_storms(spans)
-    _print_misattributed_spans(spans)
+    _print_misattributed_spans(spans, exchanges)
     _print_checkpoint_durability(spans)
     _print_zero_task_updates(spans)
 
@@ -745,7 +843,7 @@ def cmd_replay(args: argparse.Namespace) -> None:
             trace_obj = Trace.from_dict(trace_data)
             print("--- Original span tree (from trace.json) ---")
             StdoutExporter().export(trace_obj)
-            _print_replay_span_diagnostics(trace_data.get("spans", []))
+            _print_replay_span_diagnostics(trace_data.get("spans", []), all_exchanges)
         except Exception as exc:
             print(f"Could not render span tree: {exc}")
     else:
