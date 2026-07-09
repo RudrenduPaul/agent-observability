@@ -555,6 +555,97 @@ class TestCheckGetPostFieldMismatch:
 
 
 # ---------------------------------------------------------------------------
+# check_duplicate_concurrent_tool_calls (#6882)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckDuplicateConcurrentToolCalls:
+    def test_single_tool_call_not_flagged(self) -> None:
+        body = json.dumps(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {"id": "c1", "function": {"name": "run_team"}},
+                            ]
+                        }
+                    }
+                ]
+            }
+        )
+        assert ins.check_duplicate_concurrent_tool_calls([_exchange(response_body=body)]) == []
+
+    def test_two_distinct_tools_not_flagged(self) -> None:
+        body = json.dumps(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {"id": "c1", "function": {"name": "tool_a"}},
+                                {"id": "c2", "function": {"name": "tool_b"}},
+                            ]
+                        }
+                    }
+                ]
+            }
+        )
+        assert ins.check_duplicate_concurrent_tool_calls([_exchange(response_body=body)]) == []
+
+    def test_same_tool_called_twice_flagged(self) -> None:
+        """The exact #6882 shape: parallel_tool_calls=True calling the same
+        (non-reentrant) team/tool twice in one assistant turn."""
+        body = json.dumps(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {"id": "c1", "function": {"name": "run_team"}},
+                                {"id": "c2", "function": {"name": "run_team"}},
+                            ]
+                        }
+                    }
+                ]
+            }
+        )
+        flags = ins.check_duplicate_concurrent_tool_calls([_exchange(response_body=body)])
+        assert len(flags) == 1
+        assert flags[0]["duplicated_tool_counts"] == {"run_team": 2}
+
+    def test_three_calls_two_duplicated_one_distinct(self) -> None:
+        body = json.dumps(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {"id": "c1", "function": {"name": "run_team"}},
+                                {"id": "c2", "function": {"name": "run_team"}},
+                                {"id": "c3", "function": {"name": "other_tool"}},
+                            ]
+                        }
+                    }
+                ]
+            }
+        )
+        flags = ins.check_duplicate_concurrent_tool_calls([_exchange(response_body=body)])
+        assert len(flags) == 1
+        assert flags[0]["duplicated_tool_counts"] == {"run_team": 2}
+
+    def test_no_tool_calls_not_flagged(self) -> None:
+        body = json.dumps({"choices": [{"message": {"content": "hi"}}]})
+        assert ins.check_duplicate_concurrent_tool_calls([_exchange(response_body=body)]) == []
+
+    def test_malformed_body_not_raised(self) -> None:
+        assert (
+            ins.check_duplicate_concurrent_tool_calls([_exchange(response_body="not json")])
+            == []
+        )
+
+
+# ---------------------------------------------------------------------------
 # flag_4xx_5xx_exchanges
 # ---------------------------------------------------------------------------
 

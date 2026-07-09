@@ -338,6 +338,148 @@ class TestStdoutExporter:
 
 
 # ---------------------------------------------------------------------------
+# Computed "unaccounted time" per span (#3515, #2920)
+# ---------------------------------------------------------------------------
+
+
+def _span_with_duration(
+    name: str, start: float, end: float | None, span_id: str = "s1"
+) -> Span:
+    span = Span(name=name, span_id=span_id, start_time=start, end_time=end)
+    return span
+
+
+class TestUnaccountedMs:
+    def test_no_children_returns_none(self) -> None:
+        from agent_trace.exporters.stdout import _unaccounted_ms
+
+        span = _span_with_duration("node:a", 0.0, 1.0)
+        assert _unaccounted_ms(span, None) is None
+        assert _unaccounted_ms(span, []) is None
+
+    def test_open_span_returns_none(self) -> None:
+        from agent_trace.exporters.stdout import _unaccounted_ms
+
+        span = _span_with_duration("node:a", 0.0, None)
+        child = _span_with_duration("llm:x", 0.0, 0.5, span_id="c1")
+        assert _unaccounted_ms(span, [child]) is None
+
+    def test_open_child_returns_none(self) -> None:
+        from agent_trace.exporters.stdout import _unaccounted_ms
+
+        span = _span_with_duration("node:a", 0.0, 1.0)
+        child = _span_with_duration("llm:x", 0.0, None, span_id="c1")
+        assert _unaccounted_ms(span, [child]) is None
+
+    def test_computes_gap_between_parent_and_single_child(self) -> None:
+        from agent_trace.exporters.stdout import _unaccounted_ms
+
+        # 1050ms total, 40ms in the one child -> 1010ms unaccounted —
+        # the exact #2920 "slow node, fast LLM call" pattern.
+        span = _span_with_duration("node:respond", 0.0, 1.050)
+        child = _span_with_duration("llm:gpt-4", 0.0, 0.040, span_id="c1")
+        assert _unaccounted_ms(span, [child]) == pytest.approx(1010.0)
+
+    def test_sums_multiple_children(self) -> None:
+        from agent_trace.exporters.stdout import _unaccounted_ms
+
+        span = _span_with_duration("node:a", 0.0, 1.0)
+        child1 = _span_with_duration("llm:x", 0.0, 0.2, span_id="c1")
+        child2 = _span_with_duration("tool:y", 0.2, 0.5, span_id="c2")
+        # child1: 200ms, child2: 300ms -> 500ms in children, 1000-500=500ms
+        # unaccounted.
+        assert _unaccounted_ms(span, [child1, child2]) == pytest.approx(500.0)
+
+
+class TestUnaccountedSuffix:
+    def test_no_children_empty_suffix(self) -> None:
+        from agent_trace.exporters.stdout import _unaccounted_suffix
+
+        span = _span_with_duration("node:a", 0.0, 1.0)
+        assert _unaccounted_suffix(span, None) == ""
+
+    def test_with_children_formats_both_numbers(self) -> None:
+        from agent_trace.exporters.stdout import _unaccounted_suffix
+
+        span = _span_with_duration("node:respond", 0.0, 1.050)
+        child = _span_with_duration("llm:gpt-4", 0.0, 0.040, span_id="c1")
+        suffix = _unaccounted_suffix(span, [child])
+        assert "1010.0ms unaccounted" in suffix
+        assert "1050.0ms" in suffix
+
+
+class TestExportSpanUnaccountedTime:
+    def test_export_span_without_children_arg_shows_no_unaccounted_line(
+        self, capsys
+    ) -> None:
+        exporter = StdoutExporter()
+        span = _span_with_duration("node:a", 0.0, 1.0)
+        exporter.export_span(span, depth=0)
+        assert "unaccounted" not in capsys.readouterr().out
+
+    def test_export_span_with_children_shows_unaccounted_line(self, capsys) -> None:
+        exporter = StdoutExporter()
+        span = _span_with_duration("node:respond", 0.0, 1.050)
+        child = _span_with_duration("llm:gpt-4", 0.0, 0.040, span_id="c1")
+        exporter.export_span(span, depth=0, children=[child])
+        out = capsys.readouterr().out
+        assert "1010.0ms unaccounted of 1050.0ms" in out
+
+    def test_plain_export_shows_unaccounted_time_for_parent_span(self, capsys) -> None:
+        import sys
+        import unittest.mock
+
+        exporter = StdoutExporter()
+        trace = Trace(trace_id="t-unacc", run_id="run-unacc")
+        trace.metadata["name"] = "unaccounted-trace"
+        parent = _span_with_duration(
+            "node:respond", 0.0, 1.050, span_id="p1"
+        )
+        child = Span(
+            name="llm:gpt-4",
+            span_id="c1",
+            trace_id="t-unacc",
+            parent_id="p1",
+            start_time=0.0,
+            end_time=0.040,
+        )
+        trace.add_span(parent)
+        trace.add_span(child)
+
+        with unittest.mock.patch.dict(
+            sys.modules, {"rich": None, "rich.console": None, "rich.tree": None}
+        ):
+            exporter.export(trace)
+
+        out = capsys.readouterr().out
+        assert "1010.0ms unaccounted of 1050.0ms" in out
+        # The child (leaf, no children of its own) must NOT show a line.
+        child_line = next(line for line in out.splitlines() if "llm:gpt-4" in line)
+        assert "unaccounted" not in child_line
+
+    def test_rich_export_shows_unaccounted_time_for_parent_span(self, capsys) -> None:
+        exporter = StdoutExporter()
+        trace = Trace(trace_id="t-unacc-rich", run_id="run-unacc-rich")
+        trace.metadata["name"] = "unaccounted-trace-rich"
+        parent = _span_with_duration("node:respond", 0.0, 1.050, span_id="p1")
+        child = Span(
+            name="llm:gpt-4",
+            span_id="c1",
+            trace_id="t-unacc-rich",
+            parent_id="p1",
+            start_time=0.0,
+            end_time=0.040,
+        )
+        trace.add_span(parent)
+        trace.add_span(child)
+
+        exporter.export(trace)
+
+        out = capsys.readouterr().out
+        assert "1010.0ms unaccounted of 1050.0ms" in out
+
+
+# ---------------------------------------------------------------------------
 # FileExporter
 # ---------------------------------------------------------------------------
 

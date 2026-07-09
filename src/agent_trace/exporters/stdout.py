@@ -66,6 +66,33 @@ def _exception_message(span: Span) -> str | None:
     return None
 
 
+def _unaccounted_ms(span: Span, children: list[Span] | None) -> float | None:
+    """Return *span*'s duration_ms minus the sum of its direct children's
+    duration_ms, or None when it can't be computed (span or any child is
+    still open, or there are no children — nothing to subtract).
+
+    Surfaces the gap a developer previously had to manually eyeball —
+    "this node took far longer than the LLM call inside it did" — e.g.
+    #2920's reporters posting screenshots of exactly this pattern with no
+    quantified figure to point at.
+    """
+    if span.duration_ms is None or not children:
+        return None
+    child_total = 0.0
+    for child in children:
+        if child.duration_ms is None:
+            return None  # a still-open child makes the subtraction meaningless
+        child_total += child.duration_ms
+    return span.duration_ms - child_total
+
+
+def _unaccounted_suffix(span: Span, children: list[Span] | None) -> str:
+    unaccounted = _unaccounted_ms(span, children)
+    if unaccounted is None:
+        return ""
+    return f"  [{unaccounted:.1f}ms unaccounted of {span.duration_ms:.1f}ms]"
+
+
 def _exception_http_detail(span: Span) -> str | None:
     """Return "HTTP <status>: <body preview>" when *span*'s recorded
     exception carried an HTTP error response body (exception.http_
@@ -111,13 +138,22 @@ class StdoutExporter:
         except ImportError:
             self._export_plain(trace)
 
-    def export_span(self, span: Span, depth: int = 0) -> None:
-        """Export a single span at the given indent depth (plain-text only)."""
+    def export_span(
+        self, span: Span, depth: int = 0, children: list[Span] | None = None
+    ) -> None:
+        """Export a single span at the given indent depth (plain-text only).
+
+        *children*, when supplied, enables the "N ms unaccounted of M ms
+        total" suffix (duration_ms minus the sum of direct children's
+        duration_ms) — omitted entirely when not supplied, so existing
+        single-span callers are unaffected.
+        """
         indent = "  " * depth
         sym = _STATUS_SYMBOL.get(span.status.value, "[---]")
         dur = f" ({span.duration_ms:.1f} ms)" if span.duration_ms is not None else ""
         attrs_suffix = _inline_attributes_suffix(span.attributes)
-        print(f"{indent}{sym} {span.name}{dur}{attrs_suffix}")
+        unaccounted_suffix = _unaccounted_suffix(span, children)
+        print(f"{indent}{sym} {span.name}{dur}{attrs_suffix}{unaccounted_suffix}")
         if span.status.value == "ERROR":
             message = _exception_message(span)
             if message:
@@ -161,10 +197,18 @@ class StdoutExporter:
                 dim_attrs = (
                     f"  [dim]{attrs_suffix.strip()}[/dim]" if attrs_suffix else ""
                 )
+                unaccounted_suffix = _unaccounted_suffix(
+                    span, children_map.get(span.span_id)
+                )
+                dim_unaccounted = (
+                    f"  [dim]{unaccounted_suffix.strip()}[/dim]"
+                    if unaccounted_suffix
+                    else ""
+                )
                 label = (
                     f"[{colour}]{span.name}[/{colour}]"
                     f"  [{colour}]{span.status.value}[/{colour}]"
-                    f"{dur}{dim_attrs}"
+                    f"{dur}{dim_attrs}{dim_unaccounted}"
                 )
                 if span.status.value == "ERROR":
                     message = _exception_message(span)
@@ -194,7 +238,9 @@ class StdoutExporter:
 
         def _print_subtree(parent_id: str | None, depth: int) -> None:
             for span in children.get(parent_id, []):
-                self.export_span(span, depth=depth)
+                self.export_span(
+                    span, depth=depth, children=children.get(span.span_id)
+                )
                 _print_subtree(span.span_id, depth + 1)
 
         _print_subtree(None, depth=1)

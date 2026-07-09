@@ -275,6 +275,57 @@ class TestLangGraphCallbacks:
         assert span.name == "llm:gpt-4o"
         assert span.attributes.get("llm.model") == "gpt-4o"
 
+    def test_chat_model_start_records_bound_tools(self, tracer_and_trace):
+        """#5665: which tools/schemas were bound to this specific LLM call
+        must be recorded, so a nested-in-tool LLM span can show *what* it
+        was bound to (e.g. a with_structured_output(SimpleSchema) schema
+        leaking in as a bound tool), not just *that* a call happened."""
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chat_model_start(
+            {"kwargs": {"model_name": "gemini-2.5-flash"}},
+            [[]],
+            run_id=run_id,
+            invocation_params={
+                "tools": [
+                    {"type": "function", "function": {"name": "SimpleSchema"}}
+                ]
+            },
+        )
+        span = handler._spans[str(run_id)]
+        assert "SimpleSchema" in span.attributes.get("llm.bound_tools", "")
+
+    def test_chat_model_start_no_bound_tools_attribute_when_none_bound(
+        self, tracer_and_trace
+    ):
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_chat_model_start(
+            {"kwargs": {"model_name": "gpt-4o"}},
+            [[]],
+            run_id=run_id,
+            invocation_params={"stop": None},
+        )
+        span = handler._spans[str(run_id)]
+        assert "llm.bound_tools" not in span.attributes
+
+    def test_llm_start_records_bound_functions(self, tracer_and_trace):
+        """Legacy on_llm_start path — functions= (older OpenAI function-
+        calling convention) is also recognized, not just tools=."""
+        t, trace = tracer_and_trace
+        handler = _make_handler(t, trace)
+        run_id = _run_id()
+        handler.on_llm_start(
+            {"kwargs": {}},
+            ["hi"],
+            run_id=run_id,
+            invocation_params={"functions": [{"name": "legacy_fn"}]},
+        )
+        span = handler._spans[str(run_id)]
+        assert "legacy_fn" in span.attributes.get("llm.bound_tools", "")
+
     def test_unknown_run_id_in_end_is_noop(self, tracer_and_trace):
         """Closing a span that was never opened must not raise."""
         t, trace = tracer_and_trace

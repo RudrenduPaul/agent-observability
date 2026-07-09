@@ -35,6 +35,7 @@ dependencies = [
 [project.optional-dependencies]
 autogen = ["autogen-agentchat>=0.4", "autogen-ext[openai]>=0.4"]
 langgraph = ["langgraph>=1.0.10", "langchain-core>=0.3"]
+langchain = ["langchain-core>=0.3"]
 mcp = ["mcp>=1.26"]
 openai-agents = ["openai-agents>=0.0.3"]
 crewai = ["crewai>=1.0.0"]
@@ -69,6 +70,8 @@ dev = [
     "aioresponses>=0.7",  # aiohttp mocking for unit tests
     "boto3>=1.34",  # AWS SDK — botocore interceptor unit tests
     "websockets>=13.0",  # WebSocket interceptor unit tests
+    "langchain-core>=0.3",  # generic LangChain callback integration unit tests
+    "langchain-classic>=1.0",  # classic Chain/BaseMemory integration tests (#6761)
 ]
 
 [project.urls]
