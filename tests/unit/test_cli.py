@@ -1,11 +1,16 @@
 """
 Unit tests for agent_trace._cli — the pure-function helpers behind
 `agent-trace show`/`agent-trace replay`'s error-classification summary and
-duplicate-node-span detection.
+duplicate-node-span detection, plus `agent-trace run`'s command-line parsing
+and subprocess wiring.
 
-Only the data-shaping helpers are tested directly (no subprocess/argparse
-wiring) — they operate on plain dicts shaped like trace.json's "spans" list,
-so no LangGraph/langchain_core dependency is needed here.
+Most of this file tests pure data-shaping helpers directly (no
+subprocess/argparse wiring) — they operate on plain dicts shaped like
+trace.json's "spans" list, so no LangGraph/langchain_core dependency is
+needed here. `TestCmdRun`/`TestStripLeadingSeparator`/`TestRunSubcommand
+ArgParsing` are the exception: `agent-trace run` is inherently a
+subprocess-wrapping command, so it's tested by actually invoking
+`python -m agent_trace._cli run ...` in a real subprocess.
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ from agent_trace._cli import (
     _print_streaming_timing,
     _print_zero_task_updates,
     _streaming_timing_rows,
+    _strip_leading_separator,
     _zero_task_update_rows,
 )
 
@@ -365,3 +371,146 @@ class TestPrintZeroTaskUpdates:
         assert "Zero tasks scheduled" in out
         assert "as_node=my_node" in out
         assert "issue #4217" in out
+
+
+# ---------------------------------------------------------------------------
+# _strip_leading_separator() — pure function behind `agent-trace run`
+# ---------------------------------------------------------------------------
+
+
+class TestStripLeadingSeparator:
+    def test_strips_leading_double_dash(self) -> None:
+        assert _strip_leading_separator(["--", "langgraph", "dev"]) == [
+            "langgraph",
+            "dev",
+        ]
+
+    def test_leaves_command_without_separator_unchanged(self) -> None:
+        assert _strip_leading_separator(["langgraph", "dev"]) == ["langgraph", "dev"]
+
+    def test_empty_list_stays_empty(self) -> None:
+        assert _strip_leading_separator([]) == []
+
+    def test_only_strips_the_leading_separator_not_later_ones(self) -> None:
+        assert _strip_leading_separator(["--", "echo", "--", "x"]) == [
+            "echo",
+            "--",
+            "x",
+        ]
+
+
+# ---------------------------------------------------------------------------
+# `agent-trace run` — subprocess-wrapping CLI command. Genuinely exercised
+# via a real subprocess (python -m agent_trace._cli run ...) since its whole
+# job is to launch a child process with recording pre-enabled.
+# ---------------------------------------------------------------------------
+
+
+def _run_cli(args: list[str], env: dict[str, str]):
+    import subprocess
+    import sys
+
+    return subprocess.run(
+        [sys.executable, "-m", "agent_trace._cli", *args],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+
+class TestRunSubcommand:
+    def test_no_command_given_exits_nonzero_with_usage(self, tmp_path) -> None:
+        import os
+
+        env = dict(os.environ)
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
+
+        result = _run_cli(["run"], env=env)
+        assert result.returncode != 0
+        assert "no command given" in (result.stdout + result.stderr)
+
+    def test_execs_child_and_relays_exit_code(self, tmp_path) -> None:
+        import os
+        import sys
+
+        env = dict(os.environ)
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
+
+        result = _run_cli(
+            ["run", "--run-id", "cli-exit-test", "--", sys.executable, "-c", "exit(7)"],
+            env=env,
+        )
+        assert result.returncode == 7
+
+    def test_sets_auto_record_env_vars_for_the_child(self, tmp_path) -> None:
+        """The child process, importing agent_trace itself, must observe
+        AGENT_TRACE_AUTO_RECORD=1 and record an HTTP exchange into the
+        run_id/trace_dir agent-trace run selected — proving the env vars
+        set by cmd_run() actually reach and activate the child."""
+        import os
+        import sys
+
+        from agent_trace._replay.fixture import Fixture
+
+        env = dict(os.environ)
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
+
+        child_script = (
+            "import agent_trace, httpx\n"
+            "client = httpx.Client(transport=httpx.MockTransport("
+            "lambda r: httpx.Response(200, json={'ok': True})))\n"
+            "client.get('https://api.example.com/from-child')\n"
+        )
+
+        result = _run_cli(
+            ["run", "--run-id", "cli-env-test", "--", sys.executable, "-c", child_script],
+            env=env,
+        )
+        assert result.returncode == 0, result.stderr
+
+        with Fixture(tmp_path / "cli-env-test" / "fixture.db") as fixture:
+            exchanges = fixture.all_exchanges()
+        assert [e["url"] for e in exchanges] == ["https://api.example.com/from-child"]
+
+    def test_uses_custom_run_id_when_given(self, tmp_path) -> None:
+        # Run dir creation is driven by the child process's own
+        # start_auto_record() call (triggered by `import agent_trace`
+        # observing AGENT_TRACE_AUTO_RECORD=1) — a child that never imports
+        # agent_trace creates no run dir at all, so use one that does.
+        import os
+        import sys
+
+        env = dict(os.environ)
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
+
+        result = _run_cli(
+            [
+                "run",
+                "--run-id",
+                "my-custom-run",
+                "--",
+                sys.executable,
+                "-c",
+                "import agent_trace",
+            ],
+            env=env,
+        )
+        assert result.returncode == 0
+        assert (tmp_path / "my-custom-run").is_dir()
+
+    def test_generates_a_run_id_when_not_given(self, tmp_path) -> None:
+        import os
+        import sys
+
+        env = dict(os.environ)
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
+
+        result = _run_cli(
+            ["run", "--", sys.executable, "-c", "import agent_trace"], env=env
+        )
+        assert result.returncode == 0
+        run_dirs = [d for d in tmp_path.iterdir() if d.is_dir()]
+        assert len(run_dirs) == 1
+        assert run_dirs[0].name.startswith("run_")

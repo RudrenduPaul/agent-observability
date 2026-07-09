@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 
-__all__ = ["NetworkGuardError", "guard_active"]
+__all__ = ["NetworkGuardError", "RunawayToolCallLoopError", "guard_active"]
 
 
 class NetworkGuardError(RuntimeError):
@@ -22,6 +22,27 @@ class NetworkGuardError(RuntimeError):
 
     Both the httpx and requests interceptors raise this same class, so a
     single ``except NetworkGuardError`` catches either.
+    """
+
+
+class RunawayToolCallLoopError(RuntimeError):
+    """Raised by RecordingTransport/AsyncRecordingTransport's optional
+    live loop guard (``loop_guard_threshold=``) once a configurable number
+    of *consecutive* tool-call-only responses have been recorded for the
+    same host during an active recording session.
+
+    This is the live-recording signal for issue #3097 — a model that never
+    stops emitting ``tool_calls`` and never returns a final tool-call-free
+    message, silently burning through the full context window (and API
+    budget) before anyone notices. Replay-after-the-fact only helps
+    diagnose a loop that already happened and already cost the tokens; this
+    guard is what actually catches it early, during the run that is still
+    burning the budget.
+
+    Raised (rather than merely warned) only when the transport was
+    constructed with ``on_loop_detected=agent_trace.interceptor.httpx_hook.
+    raise_on_loop_detected`` (or an equivalent custom callback) — the
+    default ``on_loop_detected`` only emits a ``UserWarning``.
     """
 
 

@@ -19,12 +19,14 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import functools
 import hashlib
+import inspect
 import json
 import logging
 import threading
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterable, Generator, Iterable
+from collections.abc import AsyncGenerator, AsyncIterable, Callable, Generator, Iterable
 from typing import TYPE_CHECKING, Any
 
 from agent_trace.core.clock import get_time
@@ -37,6 +39,7 @@ __all__ = [
     "LangGraphTracer",
     "derive_trace_id",
     "find_tool_params_shaped_like_state",
+    "instrument_graph_factory",
     "traced_astream",
     "traced_stream",
 ]
@@ -251,6 +254,100 @@ def derive_trace_id(thread_id: str, checkpoint_id: str | None = None) -> str:
     """
     material = thread_id if checkpoint_id is None else f"{thread_id}:{checkpoint_id}"
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
+
+
+# ---------------------------------------------------------------------------
+# Pre-invocation (graph-construction-phase) instrumentation entry point
+# ---------------------------------------------------------------------------
+#
+# LangGraphTracer only ever attaches at graph.invoke()/graph.stream() time —
+# a `config["callbacks"]=[LangGraphTracer(...)]` argument passed to a call
+# that must already exist. `langgraph dev`/LangGraph Platform inverts that:
+# it imports the developer's own `make_graph()`-style factory function once
+# at server startup and calls it *before* any invocation exists to attach a
+# callback to. A bug in that construction phase itself (MCP client setup,
+# tool loading, config parsing — issue #4798) is therefore unreachable by
+# LangGraphTracer no matter how it's wired into the eventual invoke() call.
+#
+# instrument_graph_factory() closes that gap: it wraps the factory function
+# itself, so recording/tracing is active for the duration of the call that
+# *builds* the graph, not only the calls that later run it.
+
+
+def instrument_graph_factory(
+    tracer: Tracer,
+    factory: Callable[..., Any] | None = None,
+    *,
+    name: str = "graph-construction",
+) -> Any:
+    """Give a LangGraph Platform ``make_graph()``-style entry point a
+    construction-phase instrumentation hook, so tracing/recording is active
+    while the graph is being *built* — MCP client setup, tool loading,
+    config parsing — not only while it is later invoked.
+
+    Usable as a decorator directly on the factory::
+
+        from agent_trace import tracer
+        from agent_trace.integrations.langgraph import instrument_graph_factory
+
+        @instrument_graph_factory(tracer)
+        def make_graph(config: dict) -> CompiledStateGraph:
+            mcp_client = MultiServerMCPClient(...)   # now captured
+            tools = mcp_client.get_tools()
+            return build_graph(tools)
+
+    ...or wrapping an existing factory inline::
+
+        graph = instrument_graph_factory(tracer, make_graph)(config)
+
+    Behavior depends on whether a trace is already active in the calling
+    context:
+
+      - If :attr:`Tracer.active_trace` is already set (e.g.
+        :meth:`Tracer.start_auto_record` activated via
+        ``AGENT_TRACE_AUTO_RECORD``, or an enclosing
+        ``start_trace(record=True)`` block), the factory call is wrapped in
+        its own child ``graph-construction`` span, nested under whatever is
+        already active, so construction-phase work is visible as a
+        distinct span in the trace.
+      - If no trace is active at all, this activates a scoped
+        ``start_trace(name, record=True)`` for the duration of the factory
+        call only — so at minimum, HTTP calls made during construction
+        (e.g. an MCP ``streamable_http`` client's tool-listing request) are
+        captured, closing the alternative of *zero* visibility into
+        construction-phase bugs.
+
+    Works for both sync and async factories (``async def make_graph(...)``
+    is detected via :func:`inspect.iscoroutinefunction` and awaited
+    correctly).
+    """
+
+    def _decorate(fn: Callable[..., Any]) -> Callable[..., Any]:
+        if inspect.iscoroutinefunction(fn):
+
+            @functools.wraps(fn)
+            async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+                if tracer.active_trace is not None:
+                    with tracer.span(name):
+                        return await fn(*args, **kwargs)
+                with tracer.start_trace(name, record=True):
+                    return await fn(*args, **kwargs)
+
+            return async_wrapper
+
+        @functools.wraps(fn)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            if tracer.active_trace is not None:
+                with tracer.span(name):
+                    return fn(*args, **kwargs)
+            with tracer.start_trace(name, record=True):
+                return fn(*args, **kwargs)
+
+        return wrapper
+
+    if factory is not None:
+        return _decorate(factory)
+    return _decorate
 
 
 # ---------------------------------------------------------------------------

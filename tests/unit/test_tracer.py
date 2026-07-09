@@ -900,3 +900,193 @@ class TestConcurrentRecordingIsolation:
 
         assert [e["url"] for e in exchanges_a] == ["https://api.example.com/a"]
         assert [e["url"] for e in exchanges_b] == ["https://api.example.com/b"]
+
+
+# ---------------------------------------------------------------------------
+# start_auto_record() / stop_auto_record() — process-wide recording
+# activation with no enclosing `with` block, for externally-managed server
+# processes (e.g. `langgraph dev`/LangGraph Studio) the caller doesn't own
+# the top-level invocation of.
+# ---------------------------------------------------------------------------
+
+
+class TestStartAutoRecord:
+    def test_installs_recording_transport(self, tmp_path: Path) -> None:
+        import httpx
+
+        from agent_trace._replay.fixture import Fixture
+
+        t = Tracer(trace_dir=tmp_path)
+        run_dir = t.start_auto_record(run_id="auto-1")
+        try:
+            client = httpx.Client(
+                transport=httpx.MockTransport(
+                    lambda r: httpx.Response(200, json={"ok": True})
+                )
+            )
+            with client:
+                client.get("https://api.example.com/x")
+        finally:
+            t.stop_auto_record()
+
+        with Fixture(run_dir / "fixture.db") as f:
+            exchanges = f.all_exchanges()
+        assert [e["url"] for e in exchanges] == ["https://api.example.com/x"]
+
+    def test_returns_run_dir_under_trace_dir(self, tmp_path: Path) -> None:
+        t = Tracer(trace_dir=tmp_path)
+        run_dir = t.start_auto_record(run_id="auto-2")
+        try:
+            assert run_dir == tmp_path / "auto-2"
+            assert run_dir.is_dir()
+        finally:
+            t.stop_auto_record()
+
+    def test_active_trace_is_set(self, tmp_path: Path) -> None:
+        t = Tracer(trace_dir=tmp_path)
+        t.start_auto_record(run_id="auto-3", name="my-auto-record")
+        try:
+            assert t.active_trace is not None
+            assert t.active_trace.metadata["name"] == "my-auto-record"
+            assert t.active_trace.metadata["auto_record"] is True
+        finally:
+            t.stop_auto_record()
+
+    def test_second_call_while_active_is_a_no_op(self, tmp_path: Path) -> None:
+        t = Tracer(trace_dir=tmp_path)
+        first_run_dir = t.start_auto_record(run_id="auto-4")
+        try:
+            second_run_dir = t.start_auto_record(run_id="should-be-ignored")
+            assert second_run_dir == first_run_dir
+            assert not (tmp_path / "should-be-ignored").exists()
+        finally:
+            t.stop_auto_record()
+
+    def test_rejects_path_traversal_in_run_id(self, tmp_path: Path) -> None:
+        t = Tracer(trace_dir=tmp_path)
+        with pytest.raises(ValueError, match="path traversal"):
+            t.start_auto_record(run_id="../../etc/passwd")
+
+
+class TestStopAutoRecord:
+    def test_writes_trace_json(self, tmp_path: Path) -> None:
+        t = Tracer(trace_dir=tmp_path)
+        run_dir = t.start_auto_record(run_id="auto-5")
+        t.stop_auto_record()
+
+        trace_json = run_dir / "trace.json"
+        assert trace_json.exists()
+        data = json.loads(trace_json.read_text(encoding="utf-8"))
+        assert data["run_id"] == "auto-5"
+
+    def test_uninstalls_recording_transport(self, tmp_path: Path) -> None:
+        import httpx
+
+        from agent_trace._replay.fixture import Fixture
+
+        t = Tracer(trace_dir=tmp_path)
+        run_dir = t.start_auto_record(run_id="auto-6")
+        t.stop_auto_record()
+
+        client = httpx.Client(
+            transport=httpx.MockTransport(
+                lambda r: httpx.Response(200, json={"ok": True})
+            )
+        )
+        with client:
+            client.get("https://api.example.com/after-stop")
+
+        with Fixture(run_dir / "fixture.db") as f:
+            # Nothing recorded after stop_auto_record() uninstalled the patch.
+            assert f.exchange_count() == 0
+
+    def test_clears_active_trace(self, tmp_path: Path) -> None:
+        t = Tracer(trace_dir=tmp_path)
+        t.start_auto_record(run_id="auto-7")
+        t.stop_auto_record()
+        assert t.active_trace is None
+
+    def test_is_a_no_op_when_not_active(self, tmp_path: Path) -> None:
+        t = Tracer(trace_dir=tmp_path)
+        t.stop_auto_record()  # must not raise
+
+    def test_is_idempotent(self, tmp_path: Path) -> None:
+        t = Tracer(trace_dir=tmp_path)
+        t.start_auto_record(run_id="auto-8")
+        t.stop_auto_record()
+        t.stop_auto_record()  # must not raise a second time
+
+    def test_can_start_a_new_session_after_stopping(self, tmp_path: Path) -> None:
+        t = Tracer(trace_dir=tmp_path)
+        t.start_auto_record(run_id="auto-9a")
+        t.stop_auto_record()
+        run_dir = t.start_auto_record(run_id="auto-9b")
+        try:
+            assert run_dir == tmp_path / "auto-9b"
+        finally:
+            t.stop_auto_record()
+
+
+class TestAutoRecordEnvVarActivation:
+    """AGENT_TRACE_AUTO_RECORD is read once at `agent_trace` import time —
+    exercised via a subprocess since the activation logic runs at module
+    import, not something a reload() inside the same process can safely
+    re-trigger against the real environment."""
+
+    def test_env_var_activates_recording_in_a_fresh_process(
+        self, tmp_path: Path
+    ) -> None:
+        import os
+        import subprocess
+        import sys
+
+        from agent_trace._replay.fixture import Fixture
+
+        script = (
+            "import agent_trace, httpx\n"
+            "client = httpx.Client(transport=httpx.MockTransport("
+            "lambda r: httpx.Response(200, json={'ok': True})))\n"
+            "client.get('https://api.example.com/auto-env')\n"
+            "assert agent_trace.tracer._auto_record_state is not None\n"
+        )
+        env = dict(os.environ)
+        env["AGENT_TRACE_AUTO_RECORD"] = "1"
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
+        env["AGENT_TRACE_RUN_ID"] = "auto-env-run"
+
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+        with Fixture(tmp_path / "auto-env-run" / "fixture.db") as f:
+            exchanges = f.all_exchanges()
+        assert [e["url"] for e in exchanges] == ["https://api.example.com/auto-env"]
+
+    def test_unset_env_var_does_not_activate(self, tmp_path: Path) -> None:
+        import os
+        import subprocess
+        import sys
+
+        script = (
+            "import agent_trace\n"
+            "assert agent_trace.tracer._auto_record_state is None\n"
+        )
+        env = dict(os.environ)
+        env.pop("AGENT_TRACE_AUTO_RECORD", None)
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
+
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
