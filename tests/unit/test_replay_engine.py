@@ -276,6 +276,97 @@ class TestNestedReplay:
 
 
 # ---------------------------------------------------------------------------
+# ReplayEngine.replay() — botocore (AWS SDK) patching
+# ---------------------------------------------------------------------------
+
+
+class TestReplayEngineBotocorePatch:
+    def test_boto3_client_serves_fixture_response(self, tmp_path: Path) -> None:
+        import boto3
+
+        url = (
+            "https://bedrock-runtime.us-east-1.amazonaws.com/"
+            "model/anthropic.claude-v2/invoke"
+        )
+        body = json.dumps({"completion": "from fixture"})
+        db = tmp_path / "f.db"
+        _build_fixture(db, [_default_exchange(url=url, method="POST", body=body)])
+
+        session = boto3.Session(
+            region_name="us-east-1",
+            aws_access_key_id="AKIAFAKE",
+            aws_secret_access_key="fakefakefakefakefakefakefakefakefakefake",
+        )
+
+        engine = ReplayEngine(db)
+        with engine.replay():
+            client = session.client(
+                "bedrock-runtime",
+                # Endpoint is never actually contacted during replay — the
+                # patched URLLib3Session.send serves the fixture instead.
+                endpoint_url="https://bedrock-runtime.us-east-1.amazonaws.com",
+                region_name="us-east-1",
+            )
+            response = client.invoke_model(
+                modelId="anthropic.claude-v2",
+                body=json.dumps({"prompt": "hi"}),
+                contentType="application/json",
+                accept="application/json",
+            )
+            result = json.loads(response["body"].read())
+
+        assert result == {"completion": "from fixture"}
+
+    def test_network_guard_raises_on_unrecorded_botocore_call(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        import boto3
+
+        from agent_trace.interceptor.botocore_hook import NetworkGuardError as BotoNGE
+
+        monkeypatch.setenv("AGENT_TRACE_NETWORK_GUARD", "1")
+
+        db = tmp_path / "f.db"
+        _build_fixture(db, [])  # no exchanges
+
+        session = boto3.Session(
+            region_name="us-east-1",
+            aws_access_key_id="AKIAFAKE",
+            aws_secret_access_key="fakefakefakefakefakefakefakefakefakefake",
+        )
+        engine = ReplayEngine(db)
+        with pytest.raises(BotoNGE):
+            with engine.replay():
+                client = session.client(
+                    "bedrock-runtime",
+                    endpoint_url="https://bedrock-runtime.us-east-1.amazonaws.com",
+                    region_name="us-east-1",
+                )
+                client.invoke_model(
+                    modelId="anthropic.claude-v2",
+                    body=json.dumps({"prompt": "hi"}),
+                    contentType="application/json",
+                    accept="application/json",
+                )
+
+    def test_botocore_send_restored_after_exit(self, tmp_path: Path) -> None:
+        """After replay() exits, URLLib3Session.send must be the original."""
+        import botocore.httpsession
+
+        original_send = botocore.httpsession.URLLib3Session.send
+
+        db = tmp_path / "f.db"
+        _build_fixture(db, [])
+        engine = ReplayEngine(db)
+
+        with engine.replay():
+            patched_send = botocore.httpsession.URLLib3Session.send
+            assert patched_send is not original_send
+
+        assert botocore.httpsession.URLLib3Session.send is original_send
+
+
+# ---------------------------------------------------------------------------
 # Async client patching — AsyncReplayTransport must be used for AsyncClient
 # ---------------------------------------------------------------------------
 
