@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 __all__ = [
     "LangGraphTracer",
     "derive_trace_id",
+    "find_tool_params_shaped_like_state",
     "traced_astream",
     "traced_stream",
 ]
@@ -582,8 +583,55 @@ def _is_branch_dispatch_callable(runnable_callable: Any, branch_spec_cls: type) 
     return False
 
 
-def _record_branch_dispatch_error(runnable_callable: Any, error: BaseException) -> None:
-    """Open a standalone span for a Branch dispatch failure and record it.
+def _branch_spec_instance(runnable_callable: Any) -> Any | None:
+    """Return the BranchSpec instance a dispatch RunnableCallable wraps, or
+    None. Shared by the router-name and registered-destinations lookups
+    below so there's exactly one place that reaches into
+    ``.func``/``.afunc.__self__``."""
+    bound_method = getattr(runnable_callable, "func", None) or getattr(
+        runnable_callable, "afunc", None
+    )
+    return getattr(bound_method, "__self__", None)
+
+
+def _resolve_router_name(runnable_callable: Any) -> str:
+    """Best-effort: the user's own router function name (e.g.
+    ``should_continue``) for a Branch dispatch RunnableCallable —
+    ``BranchSpec.path`` is the Runnable wrapping whatever callable was
+    passed to ``add_conditional_edges``, typically a ``RunnableLambda``
+    whose ``.func``/``.afunc`` is the original function object. Falls back
+    to ``"<anonymous>"`` for a lambda or when the shape doesn't match
+    (private LangGraph/LangChain internals, may change across versions).
+    """
+    branch_self = _branch_spec_instance(runnable_callable)
+    path = getattr(branch_self, "path", None)
+    underlying = getattr(path, "func", None) or getattr(path, "afunc", None) or path
+    name = getattr(underlying, "__name__", None)
+    return str(name) if name else "<anonymous>"
+
+
+def _registered_destinations(runnable_callable: Any) -> str:
+    """Comma-joined set of destinations this Branch could route to (its
+    ``path_map``/``ends``), or "" if unavailable."""
+    branch_self = _branch_spec_instance(runnable_callable)
+    ends = getattr(branch_self, "ends", None) or {}
+    return ",".join(str(v) for v in ends.values())
+
+
+def _record_branch_dispatch(
+    runnable_callable: Any, *, error: BaseException | None
+) -> None:
+    """Open a standalone ``branch:dispatch`` span recording which
+    conditional-edge/router function made a routing decision — on both the
+    success and failure path — since LangGraph deliberately builds this
+    component with ``trace=False`` and no ``on_chain_start``/``on_chain_end``/
+    ``on_chain_error`` ever fires for it otherwise.
+
+    Without this, a tool-call span's downstream exception (e.g. a
+    ``ValidationError`` on a missing injected field) looks identical
+    regardless of whether the cause was a routing bug that dispatched to the
+    wrong node, or genuinely malformed model output — a developer has no
+    record of which router ran, or that it ran at all.
 
     Best-effort: swallows every exception itself (an instrumentation bug
     here must never break — or change the exception raised by — the real
@@ -597,34 +645,34 @@ def _record_branch_dispatch_error(runnable_callable: Any, error: BaseException) 
     try:
         span = handler._tracer.start_span("branch:dispatch")
         span.set_attribute("langgraph.branch_dispatch", True)
-        branch_self = getattr(runnable_callable, "func", None) or getattr(
-            runnable_callable, "afunc", None
-        )
-        ends = getattr(getattr(branch_self, "__self__", None), "ends", None) or {}
-        if ends:
-            span.set_attribute(
-                "branch.registered_destinations",
-                ",".join(str(v) for v in ends.values()),
-            )
-        span.record_exception(error)
-        _classify_and_tag_exception(span, error)
-        span.end(SpanStatus.ERROR)
+        router_name = _resolve_router_name(runnable_callable)
+        span.set_attribute("branch.router_name", router_name)
+        destinations = _registered_destinations(runnable_callable)
+        if destinations:
+            span.set_attribute("branch.registered_destinations", destinations)
+        if error is not None:
+            span.record_exception(error)
+            _classify_and_tag_exception(span, error)
+            span.end(SpanStatus.ERROR)
+        else:
+            span.end(SpanStatus.OK)
     except Exception:
         logger.debug(
-            "agent-trace: failed to record Branch dispatch exception",
+            "agent-trace: failed to record Branch dispatch",
             exc_info=True,
         )
 
 
-def _install_branch_exception_capture_patch() -> None:
+def _install_branch_dispatch_capture_patch() -> None:
     """Best-effort monkeypatch making LangGraph's trace=False Branch dispatch
-    observable to agent-trace.
+    (conditional-edge routing) observable to agent-trace — both which router
+    ran and, on failure, why it raised.
 
     Touches private-ish LangGraph modules (``langgraph.graph._branch``,
     ``langgraph._internal._runnable``) that may change shape across versions
     without notice; every step here is wrapped so a mismatch degrades to
-    "dispatch exceptions not captured" (the pre-existing behavior) rather
-    than breaking tracing or import.
+    "dispatch not captured" (the pre-existing behavior) rather than breaking
+    tracing or import.
     """
     global _branch_patch_installed  # noqa: PLW0603
     if _branch_patch_installed:
@@ -639,8 +687,8 @@ def _install_branch_exception_capture_patch() -> None:
             logger.debug(
                 "agent-trace: LangGraph Branch dispatch capture patch "
                 "unavailable (internal module shape not as expected on "
-                "this LangGraph version); conditional-edge dispatch "
-                "exceptions will not be captured.",
+                "this LangGraph version); conditional-edge routing "
+                "dispatch will not be captured.",
                 exc_info=True,
             )
             _branch_patch_installed = True  # don't retry every call
@@ -652,26 +700,155 @@ def _install_branch_exception_capture_patch() -> None:
         def _patched_invoke(
             self: Any, input: Any, config: Any = None, **kwargs: Any
         ) -> Any:
+            is_branch = not self.trace and _is_branch_dispatch_callable(
+                self, BranchSpec
+            )
             try:
-                return original_invoke(self, input, config, **kwargs)
+                result = original_invoke(self, input, config, **kwargs)
             except BaseException as exc:
-                if not self.trace and _is_branch_dispatch_callable(self, BranchSpec):
-                    _record_branch_dispatch_error(self, exc)
+                if is_branch:
+                    _record_branch_dispatch(self, error=exc)
                 raise
+            if is_branch:
+                _record_branch_dispatch(self, error=None)
+            return result
 
         async def _patched_ainvoke(
             self: Any, input: Any, config: Any = None, **kwargs: Any
         ) -> Any:
+            is_branch = not self.trace and _is_branch_dispatch_callable(
+                self, BranchSpec
+            )
             try:
-                return await original_ainvoke(self, input, config, **kwargs)
+                result = await original_ainvoke(self, input, config, **kwargs)
             except BaseException as exc:
-                if not self.trace and _is_branch_dispatch_callable(self, BranchSpec):
-                    _record_branch_dispatch_error(self, exc)
+                if is_branch:
+                    _record_branch_dispatch(self, error=exc)
                 raise
+            if is_branch:
+                _record_branch_dispatch(self, error=None)
+            return result
 
         RunnableCallable.invoke = _patched_invoke  # type: ignore[method-assign]
         RunnableCallable.ainvoke = _patched_ainvoke  # type: ignore[method-assign]
         _branch_patch_installed = True
+
+
+# ---------------------------------------------------------------------------
+# Tool-argument injection (InjectedState/InjectedStore) capture
+# ---------------------------------------------------------------------------
+#
+# ToolNode._inject_tool_args() resolves Annotated[..., InjectedState]/
+# InjectedStore/InjectedToolCallId tool arguments right before the tool is
+# actually invoked — confirmed via direct inspection of the installed
+# langgraph.prebuilt.tool_node module: it is called via normal instance
+# method lookup (self._inject_tool_args(...)) from ToolNode's own dispatch
+# code, so patching the class method (like RunnableCallable.invoke/ainvoke
+# above) reliably intercepts every call regardless of when any given
+# ToolNode instance was constructed. Nothing in agent_trace previously
+# observed this step at all (confirmed via repo-wide grep: zero hits for
+# InjectedState/InjectedStore/inject_tool_args before this patch) — a
+# ValidationError raised later inside the tool call itself looks identical
+# whether the cause was a routing bug that bypassed injection, a caller
+# passing a malformed tool schema, or genuinely malformed model output.
+#
+# _inject_tool_args runs *before* the tool's own .invoke()/.ainvoke() call,
+# which is what fires on_tool_start — so there is no open tool: span yet to
+# attach to at the point this patch observes injection. Recorded as its own
+# standalone span instead (the same pattern as branch:dispatch above), whose
+# start_time necessarily precedes the corresponding tool: span's.
+
+_tool_injection_patch_lock = threading.Lock()
+_tool_injection_patch_installed = False
+
+
+def _record_tool_arg_injection(tool_name: str, injected_keys: list[str]) -> None:
+    """Open a standalone ``tool_inject:<tool_name>`` span recording whether
+    InjectedState/InjectedStore/InjectedToolCallId resolution ran for
+    *tool_name*, and which argument names it resolved.
+
+    Deliberately named with a ``tool_inject:`` prefix rather than
+    ``tool:...`` — code/tests filtering spans by ``name.startswith("tool:")``
+    to find the *actual* tool-call span must not also match this one, since
+    this span always precedes (and is distinct from) the real ``tool:<name>``
+    span for the same call (injection runs before on_tool_start fires).
+
+    Best-effort: swallows every exception itself. No-ops entirely if no
+    LangGraphTracer instance is active in this context.
+    """
+    handler = _current_langgraph_tracer.get()
+    if handler is None:
+        return
+    try:
+        span = handler._tracer.start_span(f"tool_inject:{tool_name}")
+        span.set_attribute("tool.name", tool_name)
+        span.set_attribute("tool.injection_ran", bool(injected_keys))
+        if injected_keys:
+            span.set_attribute("tool.injected_arg_keys", ",".join(injected_keys))
+        span.end(SpanStatus.OK)
+    except Exception:
+        logger.debug(
+            "agent-trace: failed to record tool-argument injection for "
+            "tool %r",
+            tool_name,
+            exc_info=True,
+        )
+
+
+def _install_tool_arg_injection_capture_patch() -> None:
+    """Best-effort monkeypatch making ``ToolNode``'s tool-argument injection
+    step observable to agent-trace.
+
+    Touches ``langgraph.prebuilt.tool_node.ToolNode._inject_tool_args``,
+    which may change shape across LangGraph versions without notice; every
+    step here is wrapped so a mismatch degrades to "injection not captured"
+    (the pre-existing behavior) rather than breaking tracing, import, or a
+    real tool call.
+    """
+    global _tool_injection_patch_installed  # noqa: PLW0603
+    if _tool_injection_patch_installed:
+        return
+    with _tool_injection_patch_lock:
+        if _tool_injection_patch_installed:
+            return
+        try:
+            from langgraph.prebuilt.tool_node import ToolNode
+        except Exception:
+            logger.debug(
+                "agent-trace: LangGraph tool-argument injection capture "
+                "patch unavailable (ToolNode._inject_tool_args not found "
+                "on this LangGraph version); InjectedState/InjectedStore "
+                "resolution will not be captured.",
+                exc_info=True,
+            )
+            _tool_injection_patch_installed = True  # don't retry every call
+            return
+
+        original_inject = ToolNode._inject_tool_args
+
+        def _patched_inject_tool_args(
+            self: Any, tool_call: Any, tool_runtime: Any, tool: Any = None
+        ) -> Any:
+            result = original_inject(self, tool_call, tool_runtime, tool)
+            try:
+                tool_name = tool_call.get("name", "") if tool_call else ""
+                injected = (self._injected_args or {}).get(tool_name)
+                injected_keys = (
+                    sorted(str(k) for k in injected.all_injected_keys)
+                    if injected is not None
+                    else []
+                )
+                _record_tool_arg_injection(tool_name, injected_keys)
+            except Exception:
+                logger.debug(
+                    "agent-trace: failed to observe tool-argument "
+                    "injection outcome",
+                    exc_info=True,
+                )
+            return result
+
+        ToolNode._inject_tool_args = _patched_inject_tool_args  # type: ignore[method-assign]
+        _tool_injection_patch_installed = True
 
 
 # ---------------------------------------------------------------------------
@@ -844,6 +1021,98 @@ def _get_declared_node_tags(graph: Any, node_name: str) -> list[str] | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Schema-level check: tool parameters shaped like framework state that
+# aren't marked injected
+# ---------------------------------------------------------------------------
+#
+# A bound tool's *model-facing* JSON schema (BaseTool.args, which LangChain
+# itself already computes with every Annotated[..., InjectedState]/
+# InjectedStore/InjectedToolCallId parameter excluded — confirmed by direct
+# inspection: a param annotated InjectedState never appears in tool.args)
+# tells us exactly which parameters the LLM will have to invent a value for
+# at call time. Comparing those names against the compiled graph's own state
+# field names (StateGraph.builder.schemas) encodes, as an automatable rule,
+# the diagnosis a LangGraph maintainer made purely by inspection in issue
+# #3266 ("the LLM is populating the state field and hallucinating the video
+# path"): a tool parameter that happens to share a name with a real state
+# field, but was never excluded from the model-facing schema via
+# InjectedState, is a parameter the model will fill in itself rather than
+# receive from real graph state.
+
+
+def _state_field_names(graph: Any) -> set[str]:
+    """Best-effort: every field name declared across a compiled StateGraph's
+    state schema(s) (``builder.schemas`` maps each schema class to a dict of
+    channel-name -> Channel). Returns an empty set if the shape doesn't
+    match (private-ish LangGraph attribute, may change across versions)."""
+    try:
+        schemas = getattr(getattr(graph, "builder", None), "schemas", None) or {}
+        names: set[str] = set()
+        for channel_map in schemas.values():
+            names.update(str(k) for k in channel_map)
+        return names
+    except Exception:
+        logger.debug(
+            "agent-trace: failed to read state schema field names off graph",
+            exc_info=True,
+        )
+        return set()
+
+
+def _tools_by_name_for_node(node: Any) -> dict[str, Any]:
+    """Best-effort: the ``{tool_name: BaseTool}`` mapping a compiled graph
+    node runs, if that node is (or wraps) a ``ToolNode`` — read off the
+    node's own ``bound`` Runnable's ``_tools_by_name`` attribute. Returns {}
+    for any node that isn't a ToolNode (the overwhelmingly common case —
+    most nodes aren't) or if the shape doesn't match."""
+    try:
+        bound = getattr(node, "bound", None)
+        tools_by_name = getattr(bound, "_tools_by_name", None)
+        if not tools_by_name:
+            return {}
+        return dict(tools_by_name)
+    except Exception:
+        return {}
+
+
+def find_tool_params_shaped_like_state(graph: Any) -> list[dict[str, str]]:
+    """Flag tool parameters that are model-facing (not excluded via
+    InjectedState/InjectedStore/InjectedToolCallId) but share a name with
+    one of the compiled graph's own state fields.
+
+    Returns a list of ``{"node": ..., "tool": ..., "param": ...}`` findings
+    (empty if none, or if the graph/state-schema shape can't be introspected
+    — e.g. *graph* isn't a compiled LangGraph ``CompiledStateGraph``).
+    Read-only: never mutates *graph* or raises into the caller.
+    """
+    findings: list[dict[str, str]] = []
+    try:
+        state_fields = _state_field_names(graph)
+        if not state_fields:
+            return findings
+        nodes = getattr(graph, "nodes", None) or {}
+        for node_name, node in nodes.items():
+            tools_by_name = _tools_by_name_for_node(node)
+            for tool_name, tool_obj in tools_by_name.items():
+                model_facing_args = getattr(tool_obj, "args", None) or {}
+                for param_name in model_facing_args:
+                    if param_name in state_fields:
+                        findings.append(
+                            {
+                                "node": str(node_name),
+                                "tool": str(tool_name),
+                                "param": str(param_name),
+                            }
+                        )
+    except Exception:
+        logger.debug(
+            "agent-trace: failed to check tool params against state schema",
+            exc_info=True,
+        )
+    return findings
+
+
 def _require_langchain_core() -> Any:
     """Lazy import guard — raises a clear error if langchain_core is absent."""
     try:
@@ -892,11 +1161,15 @@ def _get_tracer_class() -> type:
         # to on_chain_start below. No-ops safely if the private LangGraph
         # internals it depends on aren't present.
         _install_runtime_capture_patch()
-        # Best-effort — makes Branch (conditional-edge) dispatch exceptions
-        # observable despite LangGraph building that component with
-        # trace=False. No-ops safely if the internals it depends on aren't
-        # present.
-        _install_branch_exception_capture_patch()
+        # Best-effort — makes Branch (conditional-edge) routing dispatch
+        # (which router ran, and on failure why it raised) observable
+        # despite LangGraph building that component with trace=False.
+        # No-ops safely if the internals it depends on aren't present.
+        _install_branch_dispatch_capture_patch()
+        # Best-effort — makes ToolNode's InjectedState/InjectedStore
+        # argument-injection step observable. No-ops safely if the
+        # internals it depends on aren't present.
+        _install_tool_arg_injection_capture_patch()
 
         class _LangGraphTracerImpl(base_cls):  # type: ignore[misc]
             """Concrete implementation — see LangGraphTracer for public docs."""
@@ -937,17 +1210,51 @@ def _get_tracer_class() -> type:
                 self._stream_token_counts: dict[str, int] = {}
                 self._lock: threading.Lock = threading.Lock()
                 # Best-effort: makes this instance discoverable to the
-                # Branch-dispatch patch (see _record_branch_dispatch_error),
-                # which has no other way to reach a LangGraphTracer/Tracer
-                # since the callback manager never invokes it for a
+                # Branch-dispatch and tool-argument-injection patches (see
+                # _record_branch_dispatch / _record_tool_arg_injection),
+                # which have no other way to reach a LangGraphTracer/Tracer
+                # since the callback manager never invokes them for a
                 # trace=False component. Constructed in the same execution
                 # context that will go on to call graph.invoke()/.ainvoke(),
                 # so the ContextVar value is visible throughout that call.
                 _current_langgraph_tracer.set(self)
+                # Best-effort, one-time: flag tool parameters shaped like
+                # graph state but not marked InjectedState/InjectedStore —
+                # see find_tool_params_shaped_like_state(). Only runs when a
+                # graph was supplied; writes findings onto the trace's own
+                # metadata dict (not a span — this is a static property of
+                # the graph's wiring, not a per-invocation event) so it
+                # survives even if the graph never routes through the
+                # flagged tool during this particular run.
+                if graph is not None:
+                    self._check_tool_state_shaped_params(graph)
 
             # ------------------------------------------------------------------
             # Internal helpers
             # ------------------------------------------------------------------
+
+            def _check_tool_state_shaped_params(self, graph: Any) -> None:
+                """Run find_tool_params_shaped_like_state() against *graph*
+                once, at construction time, and record any findings onto
+                the active trace's metadata dict under
+                "tool_state_shaped_params" (JSON-serialized). Best-effort:
+                a failure here must never break constructing the tracer."""
+                try:
+                    findings = find_tool_params_shaped_like_state(graph)
+                    if not findings:
+                        return
+                    active = getattr(self._tracer, "active_trace", None)
+                    if active is None:
+                        return
+                    active.metadata["tool_state_shaped_params"] = _to_attr_string(
+                        findings
+                    )
+                except Exception:
+                    logger.debug(
+                        "agent-trace: failed to run "
+                        "find_tool_params_shaped_like_state()",
+                        exc_info=True,
+                    )
 
             def _open_span(
                 self,
