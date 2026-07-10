@@ -60,6 +60,33 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Every reconstructed httpx.Response below is built from body bytes that are
+# already fully decoded (httpx's own Response.read()/.text/.content transparently
+# gunzips/brotli-decodes based on Content-Encoding before we ever see them, and
+# fixture-replayed bodies are the plain text persisted by record_exchange).
+# Carrying the *original* response's Content-Encoding/Content-Length headers
+# into that reconstruction is wrong on both counts: httpx.Response.__init__
+# calls self.read() immediately, which re-applies the decoder implied by
+# Content-Encoding to already-plain bytes and raises
+# `httpx.DecodingError: Error -3 while decompressing data: incorrect header
+# check` — reproduced live against the real (gzip-compressing-by-default)
+# Gemini API, so this broke both recording (RecordingTransport/
+# AsyncRecordingTransport) and replay (ReplayTransport/AsyncReplayTransport)
+# for any upstream that compresses responses, not just Gemini. Content-Length
+# is equally stale (it described the compressed byte count) and left in place
+# would mislead any caller that trusts it over the actual body length.
+# ---------------------------------------------------------------------------
+
+_STALE_BODY_HEADERS = {"content-encoding", "content-length"}
+
+
+def _strip_stale_body_headers(headers: dict[str, str]) -> dict[str, str]:
+    """Drop headers that describe the *original* (possibly compressed) wire
+    body, not the already-decoded bytes being used to reconstruct a Response."""
+    return {k: v for k, v in headers.items() if k.lower() not in _STALE_BODY_HEADERS}
+
+
+# ---------------------------------------------------------------------------
 # Batch-input / graph-node correlation — ties a recorded HTTP exchange back
 # to whichever concurrent batch input (e.g. LangChain's abatch(config={
 # "max_concurrency": N})) or graph node it originated from, instead of
@@ -496,10 +523,13 @@ class RecordingTransport(httpx.BaseTransport, _LoopGuardMixin):
         self._check_loop_guard(url, resp_body)
 
         # Reconstruct so the caller receives a fully-read response with the
-        # same status, headers, and body as the original.
+        # same status, headers, and body as the original. response.content is
+        # already fully decoded, so the reconstructed Response must not carry
+        # the original Content-Encoding/Content-Length headers (see
+        # _strip_stale_body_headers).
         return httpx.Response(
             status_code=resp_status,
-            headers=resp_headers,
+            headers=_strip_stale_body_headers(resp_headers),
             content=response.content,
             request=request,
         )
@@ -539,7 +569,7 @@ class RecordingTransport(httpx.BaseTransport, _LoopGuardMixin):
         tee = _TeeSyncByteStream(response, _on_complete)
         return httpx.Response(
             status_code=resp_status,
-            headers=resp_headers,
+            headers=_strip_stale_body_headers(resp_headers),
             stream=tee,
             request=request,
         )
@@ -614,7 +644,7 @@ class ReplayTransport(httpx.BaseTransport):
 
         return httpx.Response(
             status_code=int(exchange["response_status"]),
-            headers=exchange["response_headers"],
+            headers=_strip_stale_body_headers(exchange["response_headers"]),
             content=exchange["response_body"].encode("utf-8"),
             request=request,
         )
@@ -719,7 +749,7 @@ class AsyncRecordingTransport(httpx.AsyncBaseTransport, _LoopGuardMixin):
 
         return httpx.Response(
             status_code=resp_status,
-            headers=resp_headers,
+            headers=_strip_stale_body_headers(resp_headers),
             content=response.content,
             request=request,
         )
@@ -759,7 +789,7 @@ class AsyncRecordingTransport(httpx.AsyncBaseTransport, _LoopGuardMixin):
         tee = _TeeAsyncByteStream(response, _on_complete)
         return httpx.Response(
             status_code=resp_status,
-            headers=resp_headers,
+            headers=_strip_stale_body_headers(resp_headers),
             stream=tee,
             request=request,
         )
@@ -827,7 +857,7 @@ class AsyncReplayTransport(httpx.AsyncBaseTransport):
 
         return httpx.Response(
             status_code=int(exchange["response_status"]),
-            headers=exchange["response_headers"],
+            headers=_strip_stale_body_headers(exchange["response_headers"]),
             content=exchange["response_body"].encode("utf-8"),
             request=request,
         )
