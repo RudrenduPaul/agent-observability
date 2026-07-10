@@ -122,6 +122,11 @@ class TestLangGraphTracerInit:
         assert handler._spans == {}
 
     def test_lock_is_a_lock(self, tracer_and_trace):
+        """threading.Lock is a factory function pre-3.13 (returns _thread.lock,
+        not a real class) and a genuine class from 3.13 on — isinstance()
+        against threading.Lock itself raises TypeError on the older versions.
+        Compare against the actual runtime type instead so this holds on both.
+        """
         t, trace = tracer_and_trace
         handler = _make_handler(t, trace)
         # threading.Lock is a factory function returning a
