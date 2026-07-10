@@ -103,7 +103,7 @@ with replay("run_<id>") as ctx:
 
 > To store the input for later retrieval in replay, call `ctx.fixture.set_metadata('input', query)` inside the recording context.
 
-> **Sync clients only (v0.1):** Agent Observability currently intercepts `httpx.Client` and `requests.Session`. `httpx.AsyncClient` — used by default in the OpenAI Python SDK v1.x and Anthropic SDK — is not yet intercepted. Async support is planned for v0.3. Use the synchronous `openai.OpenAI()` client when recording.
+> **Sync and async clients:** Agent Observability intercepts `httpx.Client`, `httpx.AsyncClient`, and `requests.Session` — including the async client used by default in the OpenAI Python SDK v1.x and Anthropic SDK. The patch is installed at request-dispatch time, so it also covers clients constructed before recording/replay starts (e.g. a module-level `openai.AsyncOpenAI()` instance).
 
 ---
 
@@ -191,6 +191,60 @@ from agent_trace.exporters.otlp import OTLPExporter
 exporter = OTLPExporter(endpoint="http://localhost:4317")
 exporter.export(trace)
 ```
+
+---
+
+## Known limitations
+
+Agent Observability's capture model is HTTP-interceptor-based (plus
+instrumented framework callbacks for the integrations under
+`src/agent_trace/integrations/`) and process-local. That model has real
+edges — stated explicitly here so they're clear before you hit one, not
+after:
+
+- **Process-local only.** Recording/replay happens inside the Python
+  process you import `agent_trace` into (`httpx.Client(transport=
+  RecordingTransport(...))`, `session.mount(..., RecordingAdapter(...))`,
+  or `ReplayEngine.replay()`'s monkeypatches — see
+  `src/agent_trace/interceptor/`). It cannot observe or replay calls made
+  by a third-party **hosted** service you don't run or deploy yourself
+  (e.g. a vendor's own hosted chat assistant) — only your own process's
+  outbound calls.
+
+- **gRPC coverage is partial.** `src/agent_trace/interceptor/grpc_hook.py`
+  patches `grpc.secure_channel`/`grpc.insecure_channel` (and the `grpc.aio`
+  equivalents) to capture Gemini/Vertex AI traffic that bypasses `httpx`
+  entirely — unary-unary calls (e.g. `GenerateContent`) and sync
+  unary-stream calls (e.g. `StreamGenerateContent`) are fully recorded and
+  replayed. Client-streaming and bidirectional-streaming gRPC calls, and
+  any `grpc.aio` streaming call, are **not** captured — those go straight
+  to the live network unintercepted, both during recording and (if
+  attempted) replay.
+
+- **Capture starts once a request object exists.** `RecordingTransport.
+  handle_request`/`AsyncRecordingTransport.handle_async_request`
+  (`httpx_hook.py`) and `RecordingAdapter.send`
+  (`requests_patch.py`) only run once a fully-constructed
+  `httpx.Request`/`PreparedRequest` reaches them. Any exception raised
+  *before* that — while an SDK is serializing a tool schema, building
+  headers, or otherwise assembling the call, or even earlier, during plain
+  Python object construction (e.g. `TypeError` from `abc.ABCMeta` when
+  instantiating an abstract class incorrectly) — happens entirely upstream
+  of the interceptor's capture surface and produces zero fixture rows.
+  A wired-in framework integration's own error callback (e.g.
+  `LangGraphTracer.on_llm_error`) *does* still capture such pre-HTTP
+  exceptions when they propagate through that framework's own
+  `try`/`except` — so "invisible to the interceptor" is not the same as
+  "invisible everywhere": it depends on whether a framework integration is
+  wired in for the exception to pass through.
+
+- **No visibility into a framework's own print/display code.** Exceptions
+  raised inside local logging/printing/display machinery — e.g. `rich`
+  Console output, IPython/Jupyter display hooks, triggered by a framework's
+  own `verbose=True` logging — have zero HTTP traffic and zero framework
+  callback surface. No existing or planned capture mechanism (HTTP
+  interceptor, MCP stdio-transport hook, or any framework integration)
+  observes this category of failure.
 
 ---
 

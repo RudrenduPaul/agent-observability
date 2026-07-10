@@ -5,6 +5,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- gRPC transport interception (`pip install agent-trace[grpc]`) for LLM SDKs
+  that default to gRPC instead of REST (e.g. Vertex AI's mTLS-authenticated
+  path). Records/replays unary-unary and unary-stream gRPC calls the same
+  way `RecordingTransport`/`ReplayTransport` do for httpx; wired into
+  `Tracer._install_recording_transport`/`_uninstall_recording_transport` and
+  the replay engine alongside the existing httpx/requests patches. Covers
+  both sync `grpc` and async `grpc.aio` (unary-unary only for aio).
+- HTTP transport interception for `aiohttp.ClientSession` (`pip install agent-trace[aiohttp]`), closing a silent recording gap for LLM traffic routed through aiohttp-based clients (e.g. LiteLLM's default async transport)
+
 ## [0.1.0] - 2026-06-19
 
 ### Added

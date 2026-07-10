@@ -26,13 +26,81 @@ __all__ = [
 # Attribute value types accepted everywhere in this module.
 _AttrValue = str | int | float | bool
 
+# Matches the truncation length used for other large captured text
+# attributes (see agent_trace.integrations.langgraph._MAX_ATTR_LEN) so a
+# pathologically large error body can't blow up trace.json.
+_MAX_EXCEPTION_RESPONSE_BODY_LEN = 8_000
+
+
+def _http_error_response_body(exc: BaseException) -> tuple[str | None, int | None]:
+    """Best-effort extraction of ``(response_text, status_code)`` from an
+    exception exposing a ``.response`` attribute — the shape
+    ``requests.exceptions.HTTPError``, ``httpx.HTTPStatusError``, and
+    similar HTTP-error-carrying exceptions across provider SDKs all follow.
+
+    Returns ``(None, None)`` for anything that doesn't match — this must
+    never raise, since it runs inside exception-handling code itself.
+    """
+    try:
+        response = getattr(exc, "response", None)
+    except Exception:
+        return None, None
+    if response is None:
+        return None, None
+
+    status_code: Any = None
+    try:
+        status_code = getattr(response, "status_code", None)
+        if status_code is None:
+            # requests uses `.status_code`; some SDKs expose it differently.
+            status_code = getattr(response, "status", None)
+    except Exception:
+        status_code = None
+
+    text: str | None = None
+    try:
+        raw_text = getattr(response, "text", None)
+        if isinstance(raw_text, str):
+            text = raw_text
+        elif callable(raw_text):
+            # Some response-like objects expose text() as a method.
+            maybe = raw_text()
+            if isinstance(maybe, str):
+                text = maybe
+    except Exception:
+        text = None
+
+    if text is None:
+        try:
+            content = getattr(response, "content", None)
+            if isinstance(content, bytes):
+                text = content.decode("utf-8", errors="replace")
+            elif isinstance(content, str):
+                text = content
+        except Exception:
+            text = None
+
+    if text is not None and len(text) > _MAX_EXCEPTION_RESPONSE_BODY_LEN:
+        text = text[:_MAX_EXCEPTION_RESPONSE_BODY_LEN] + "...<truncated>"
+
+    return text, status_code if isinstance(status_code, int) else None
+
 
 class SpanStatus(str, Enum):
-    """Lifecycle status of a Span, modelled after OpenTelemetry's StatusCode."""
+    """Lifecycle status of a Span, modelled after OpenTelemetry's StatusCode.
+
+    CANCELLED is deliberately distinct from ERROR: a span ended because the
+    run/task it belonged to was cancelled (e.g. ``asyncio.CancelledError``)
+    did not fail — it was cut off mid-flight. Collapsing both into ERROR
+    makes a genuine application failure indistinguishable from a cancelled
+    run when reading a trace, which matters for diagnosing
+    cancellation-triggered data-loss bugs (e.g. unpersisted checkpoints).
+    """
 
     UNSET = "UNSET"
     OK = "OK"
     ERROR = "ERROR"
+    CANCELLED = "CANCELLED"
 
 
 @dataclass
@@ -114,23 +182,41 @@ class Span:
         """Set or overwrite a single attribute."""
         self.attributes[key] = value
 
-    def record_exception(self, exc: BaseException) -> None:
-        """Capture an exception as a SpanEvent and mark status ERROR.
+    def record_exception(
+        self, exc: BaseException, status: SpanStatus = SpanStatus.ERROR
+    ) -> None:
+        """Capture an exception as a SpanEvent and mark the span's status.
 
         Follows OpenTelemetry's exception semantic conventions so downstream
         exporters (e.g. the OTLP exporter) can surface the stack trace.
+
+        ``status`` defaults to ``SpanStatus.ERROR`` (the historical
+        behavior). Pass ``status=SpanStatus.CANCELLED`` for a span ended by
+        run/task cancellation so a reader of the trace can tell "this
+        failed" apart from "this was cut off mid-flight".
         """
-        self.add_event(
-            "exception",
-            attributes={
-                "exception.type": type(exc).__qualname__,
-                "exception.message": str(exc),
-                "exception.stacktrace": "".join(
-                    traceback.format_exception(type(exc), exc, exc.__traceback__)
-                ),
-            },
-        )
-        self.status = SpanStatus.ERROR
+        attributes: dict[str, _AttrValue] = {
+            "exception.type": type(exc).__qualname__,
+            "exception.message": str(exc),
+            "exception.stacktrace": "".join(
+                traceback.format_exception(type(exc), exc, exc.__traceback__)
+            ),
+        }
+
+        # requests.exceptions.HTTPError / httpx.HTTPStatusError / similar
+        # HTTP-error-carrying exceptions stringify to a generic one-liner
+        # (e.g. "400 Client Error: None for url: ...") that omits the
+        # actual provider/proxy error body — attach it explicitly so the
+        # span view alone is enough to root-cause the failure, without
+        # falling back to manually grepping fixture.db.
+        response_text, status_code = _http_error_response_body(exc)
+        if response_text is not None:
+            attributes["exception.http_response_body"] = response_text
+        if status_code is not None:
+            attributes["exception.http_status_code"] = status_code
+
+        self.add_event("exception", attributes=attributes)
+        self.status = status
 
     # ------------------------------------------------------------------
     # Computed properties
