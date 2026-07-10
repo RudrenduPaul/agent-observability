@@ -28,6 +28,14 @@ for the fixture metadata (not for span timestamps).
 
 Anti-sycophancy check: Flagged proactively in architecture design before any code was written.
 
+## 2026-07-05 — setdefault() transport patching silently loses to caller-supplied transports
+
+Pattern: `_patch_httpx` in `agent_trace/__init__.py` used `kwargs.setdefault("transport", RecordingTransport(fixture))` to inject the recorder into every `httpx.Client`/`AsyncClient` built during `start_trace(record=True)`. `setdefault` only applies when the `transport` key is absent. `langchain-openai` (a P0 integration target) always constructs its own `httpx.HTTPTransport(socket_options=..., limits=...)` for kernel-level TCP keepalive tuning and passes it explicitly on every platform (Linux, macOS, Windows) unless `LANGCHAIN_OPENAI_TCP_KEEPALIVE=0` is set. Confirmed by live reproduction: recording a `ChatOpenAI` call captured 0 exchanges with the bug present, 1 exchange after setting that env var — the LLM call itself succeeded normally either way, with no error or warning surfaced to the caller.
+
+Rule: transport-patching code must always wrap whatever transport the caller supplies (`RecordingTransport(fixture, inner=kwargs.get("transport"))`), never `setdefault`. `RecordingTransport`/`AsyncRecordingTransport` already accept an `inner` param for exactly this. Any future patch point that injects a transport/adapter into a third-party HTTP client must assume the callee may pass its own transport explicitly and chain around it, not merely default around it. Known residual gap: `mounts=`-based transport injection (e.g. `langchain_openai`'s `openai_proxy` code path, which sets `mounts={"all://": transport}` instead of `transport=`) is not wrapped by this fix and remains unrecorded — not yet reproduced or fixed.
+
+Anti-sycophancy check: Found only after being asked to build a diagnostic reproduction for an unrelated LangGraph issue — the recording silently returning 0 exchanges could easily have been misread as "nothing to record" rather than "recording is broken." Not caught by existing unit tests before this session; two regression tests now cover it (`test_explicit_transport_is_wrapped_not_bypassed`, `test_explicit_async_transport_is_wrapped_not_bypassed` in `tests/unit/test_tracer.py`).
+
 ---
 
 ## 2026-06-19 — Fixture portability requires JSON-primitive-only serialization
