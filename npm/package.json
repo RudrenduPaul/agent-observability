@@ -1,5 +1,5 @@
 {
-  "name": "agent-trace-cli",
+  "name": "@rudrendu_paul_packages/agent-trace-cli",
   "version": "0.1.0",
   "description": "npm-installable CLI wrapper for agent-trace, deterministic record/replay for LLM agents. Requires Python 3.10+ and the agent-trace PyPI package.",
   "bin": {
