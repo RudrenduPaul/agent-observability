@@ -1,4 +1,4 @@
-# agent-trace-cli
+# @rudrendu_paul_packages/agent-trace-cli
 
 An npm-installable wrapper for [`agent-trace`](https://github.com/RudrenduPaul/agent-observability), deterministic record/replay for LLM agents. This package does not reimplement the tool. It puts the real `agent-trace` command on your PATH through `npx`/`npm install`, then forwards straight through to the Python CLI.
 
@@ -22,9 +22,9 @@ pipx install agent-observability-trace
 ## Install
 
 ```bash
-npm install -g agent-trace-cli
+npm install -g @rudrendu_paul_packages/agent-trace-cli
 # or run without installing
-npx agent-trace-cli version
+npx @rudrendu_paul_packages/agent-trace-cli version
 ```
 
 ## Usage
