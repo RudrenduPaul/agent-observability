@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "agent-trace"
+name = "agent-observability-trace"
 version = "0.1.0"
 description = "AI agent observability with deterministic record/replay — capture any LangGraph or OpenAI Agents SDK run, replay it offline at zero API cost."
 readme = "README.md"
@@ -86,6 +86,14 @@ agent-trace = "agent_trace._cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_trace"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/README.md",
+    "/LICENSE",
+    "/CHANGELOG.md",
+]
 
 [tool.ruff]
 target-version = "py310"
