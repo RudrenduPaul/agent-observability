@@ -1,0 +1,4 @@
+# CI/CD and workflow changes are the highest-leverage place for a supply-chain
+# compromise to hide -- require review on any change to them regardless of
+# what other paths are covered.
+/.github/workflows/ @RudrenduPaul
