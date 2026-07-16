@@ -31,7 +31,7 @@ Recorded:
 Replay complete — same failure reproduced offline.
 ```
 
-[![PyPI](https://img.shields.io/pypi/v/agent-trace)](https://pypi.org/project/agent-trace/)
+[![PyPI](https://img.shields.io/pypi/v/agent-observability-trace)](https://pypi.org/project/agent-observability-trace/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![CI](https://github.com/RudrenduPaul/agent-observability/actions/workflows/ci.yml/badge.svg)](https://github.com/RudrenduPaul/agent-observability/actions)
@@ -42,21 +42,21 @@ Replay complete — same failure reproduced offline.
 ## Install
 
 ```bash
-pip install agent-trace
+pip install agent-observability-trace
 # or
-uv add agent-trace
+uv add agent-observability-trace
 ```
 
 LangGraph support:
 
 ```bash
-pip install agent-trace[langgraph]
+pip install agent-observability-trace[langgraph]
 ```
 
 OpenAI Agents SDK support:
 
 ```bash
-pip install agent-trace[openai-agents]
+pip install agent-observability-trace[openai-agents]
 ```
 
 ## The problem

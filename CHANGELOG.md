@@ -3,7 +3,7 @@
 All notable changes to agent-trace are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.1.2] - 2026-07-16
 
 ### Added
 - gRPC transport interception (`pip install agent-trace[grpc]`) for LLM SDKs
@@ -14,6 +14,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the replay engine alongside the existing httpx/requests patches. Covers
   both sync `grpc` and async `grpc.aio` (unary-unary only for aio).
 - HTTP transport interception for `aiohttp.ClientSession` (`pip install agent-trace[aiohttp]`), closing a silent recording gap for LLM traffic routed through aiohttp-based clients (e.g. LiteLLM's default async transport)
+
+### Fixed
+- PyPI distribution renamed to `agent-observability-trace` to match the name actually registered on PyPI (import path is unchanged: `import agent_trace`)
+- `Author` field on PyPI linked to Rudrendu's personal email under Sourav's displayed name; authors are now name-only with GitHub profile links in `project.urls`
 
 ## [0.1.0] - 2026-06-19
 
