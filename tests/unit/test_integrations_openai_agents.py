@@ -378,7 +378,7 @@ class TestToolSpanLifecycle:
             assert not any("tool:" in k and ":calc" in k for k in hook._spans)
 
     async def test_on_tool_end_persists_result_content(self, tmp_path: Path) -> None:
-        """Persist the actual result text, not just its length ([redacted])."""
+        """Persist the actual result text, not just its length."""
         t = Tracer(trace_dir=tmp_path)
         with t.start_trace("tool-result-content") as trace:
             hook = AgentTraceHook(tracer=t, trace=trace)

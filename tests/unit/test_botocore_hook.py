@@ -450,8 +450,7 @@ def local_bedrock_server() -> Iterator[str]:
 
 class TestEndToEndBotocoreRecording:
     """Proves a real boto3 client's traffic is captured with zero extra
-    wiring by the caller — the exact claim the botocore-interceptor backlog
-    item makes (see [redacted])."""
+    wiring by the caller — the exact claim the botocore interceptor makes."""
 
     def test_real_bedrock_client_call_is_captured(
         self, tmp_path, local_bedrock_server: str

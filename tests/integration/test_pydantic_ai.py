@@ -250,8 +250,8 @@ class TestPydanticAIIntegration:
                 # The AsyncOpenAI client (and its httpx.AsyncClient) must be
                 # constructed *after* start_trace(record=True) is active —
                 # agent-trace's transport patch only covers clients built
-                # after recording is installed (see the RecordingTransport
-                # init-time-only-patch [redacted]).
+                # after recording is installed (RecordingTransport only
+                # patches at init time, not retroactively).
                 model = OpenAIChatModel(
                     "gpt-4o-mini", provider=OpenAIProvider(api_key="sk-test-key")
                 )

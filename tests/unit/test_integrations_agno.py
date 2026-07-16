@@ -330,7 +330,7 @@ class TestToolCallLifecycle:
     def test_tool_call_completed_records_child_run_id(self, tmp_path: Path) -> None:
         """A delegate-to-member tool call carries child_run_id — the mechanism
         that lets a developer correlate the delegation with the member's own
-        run span (per-team-member attribution, per [redacted] #5326)."""
+        run span (per-team-member attribution, matching upstream issue #5326)."""
         _, trace, hook = _make_tracer(tmp_path)
         hook.process_event(_event("TeamRunStarted", run_id="team-r", team_id="t1", team_name="my-team"))
         hook.process_event(

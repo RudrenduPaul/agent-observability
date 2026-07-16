@@ -189,7 +189,7 @@ class TestAgnoIntegration:
     async def test_in_process_exception_produces_error_span(self, tmp_path: Path) -> None:
         """A crash entirely inside Agno's own response-processing code (no
         HTTP call ever made) must still surface as an ERROR span — this is
-        exactly the #5298 UnboundLocalError scenario the [redacted] names.
+        exactly the #5298 UnboundLocalError scenario reported upstream.
         """
         model = ScriptedModel(id="fake-crash", raise_in_process=True)
         agent = Agent(model=model, name="crash-agent")
@@ -232,7 +232,7 @@ class TestAgnoIntegration:
         """When a Team delegates to a member Agent, the member's own run span
         must be a child of the team's run span and carry the member's own
         agent identity — not be indistinguishable team-only traffic. This is
-        the exact gap [redacted] #5326 names."""
+        the exact gap upstream issue #5326 describes."""
 
         @dataclass
         class DelegatingModel(ScriptedModel):

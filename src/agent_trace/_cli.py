@@ -887,8 +887,7 @@ def cmd_replay(args: argparse.Namespace) -> None:
 # and runs every pattern check in agent_trace._inspect against them,
 # printing a flagged summary instead of requiring a developer to hand-write
 # a comparison script against Fixture.all_exchanges() (the exact manual step
-# this command replaces — see #531's [redacted] for the full mapping of
-# each check to the issue it closes).
+# this command replaces, closing the gap reported in upstream issue #531).
 # ---------------------------------------------------------------------------
 
 
@@ -930,9 +929,9 @@ def _print_flags(title: str, flags: list[dict[str, Any]]) -> None:
 
 def cmd_inspect(args: argparse.Namespace) -> None:
     """Auto-flag/search raw request-response bodies for known malformed
-    shapes, plus a set of cross-span diagnostics — the CLI command
-    #531's [redacted] asked for so a developer doesn't have to
-    hand-write a comparison script against Fixture.all_exchanges()."""
+    shapes, plus a set of cross-span diagnostics — a CLI command so a
+    developer doesn't have to hand-write a comparison script against
+    Fixture.all_exchanges()."""
     from agent_trace import _inspect as ins
 
     run_id: str = args.run_id

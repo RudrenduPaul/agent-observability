@@ -556,10 +556,10 @@ class TestAsyncGRPCReplayInterceptor:
 
 
 # ---------------------------------------------------------------------------
-# End-to-end: Tracer.start_trace(record=True) wiring (the actual backlog
-# requirement -- "wire it into Tracer._install_recording_transport /
+# End-to-end: Tracer.start_trace(record=True) wiring (the actual
+# requirement: wire it into Tracer._install_recording_transport /
 # _uninstall_recording_transport so it activates/deactivates alongside the
-# existing httpx/requests patches"). These tests never construct a
+# existing httpx/requests patches). These tests never construct a
 # GRPCRecordingInterceptor directly -- they only call the public Tracer API
 # and plain `grpc.insecure_channel(...)`, exactly as an unmodified SDK would.
 # ---------------------------------------------------------------------------

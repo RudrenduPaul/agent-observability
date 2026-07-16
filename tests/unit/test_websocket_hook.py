@@ -421,8 +421,8 @@ class TestLiveWebsocketsRoundTrip:
 class TestOpenAIAgentsRealtimeSDKIntegration:
     """Proves the interceptor intercepts the SDK's own connection path
     (`OpenAIRealtimeWebSocketModel._create_websocket_connection`), not just a
-    hand-written call to `websockets.connect` — this is the actual consumer
-    named in the [redacted]."""
+    hand-written call to `websockets.connect` — this is the real-world
+    consumer this integration targets."""
 
     async def test_realtime_model_connection_is_captured_when_patched(
         self, tmp_path

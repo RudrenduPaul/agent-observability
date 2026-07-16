@@ -163,9 +163,8 @@ def _truncate(value: str, limit: int = _TRUNCATE) -> str:
 
 
 # ---------------------------------------------------------------------------
-# recording_http_client — http_client wiring helper (backlog: "Add a
-# documented http_client wiring helper ... so config_list-based frameworks
-# route through RecordingTransport")
+# recording_http_client — a documented http_client wiring helper so
+# config_list-based frameworks route through RecordingTransport
 # ---------------------------------------------------------------------------
 
 
@@ -445,8 +444,8 @@ def instrument_team(team: Any, *, tracer: Tracer, trace: Trace) -> Any:
     Participants are discovered via the ``_participants`` attribute set by
     ``BaseGroupChat.__init__`` -- AutoGen does not expose a public accessor
     for the participant list, so this reaches into the same underscore-
-    prefixed attribute the [redacted] for this integration
-    confirmed by reading ``_base_group_chat.py`` directly.  Each participant
+    prefixed attribute confirmed by reading ``_base_group_chat.py``
+    directly.  Each participant
     is instrumented via :func:`instrument_agent` (if it looks like a
     ``BaseChatAgent``) or recursively via :func:`instrument_team` (if it
     looks like a nested ``Team``, e.g. inside a ``SocietyOfMindAgent``).

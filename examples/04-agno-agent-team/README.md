@@ -14,11 +14,11 @@ and reproducible in CI; pass `--live` to use a real OpenAI model instead.
    span (`agent:researcher`) is a *child* of the team's run span
    (`team:research-team`), and the `tool:delegate_task_to_member` span
    carries `agno.child_run_id` correlating the delegation with the member's
-   own run. This is the per-team-member attribution [redacted] #5326
-   asked for — without it, a multi-agent `Team` failure is indistinguishable
+   own run. This is the per-team-member attribution upstream issue #5326
+   describes — without it, a multi-agent `Team` failure is indistinguishable
    raw HTTP traffic with no routing context.
 3. **An in-process exception that never reaches the HTTP layer** — a model
-   that raises entirely inside its own code (the exact shape of backlog
+   that raises entirely inside its own code (the exact shape of upstream
    issue #5298's `UnboundLocalError` inside `agno/models/base.py`). Agno's
    own streaming loop catches it and re-surfaces it as a `RunErrorEvent`,
    which `AgnoTracer` turns into an `ERROR` span with the exception message

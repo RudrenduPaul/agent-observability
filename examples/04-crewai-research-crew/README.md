@@ -54,8 +54,7 @@ accidental live call during replay.
 ## What this demonstrates
 
 - A crewAI-native integration (no manual `httpx`/`requests` interceptor
-  wiring) — the value described in the [redacted] item "Add a
-  crewAI integration".
+  wiring).
 - Correct span nesting (crew → task → agent → llm) derived entirely from
   crewAI's own event-scope stack, not a hand-rolled run-id.
 - Errors (e.g. an invalid API key) are captured as `ERROR`-status spans with

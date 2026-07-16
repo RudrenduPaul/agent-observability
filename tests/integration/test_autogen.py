@@ -307,9 +307,9 @@ class TestRecordingHttpClientIntegration:
     async def test_recording_http_client_captures_real_openai_ext_client_traffic(
         self, tmp_path: Path
     ) -> None:
-        """Backlog verification: OpenAIChatCompletionClient(http_client=...)
-        actually routes through RecordingTransport with zero AutoGen-specific
-        code changes to agent-trace itself -- confirmed live against the
+        """Verifies OpenAIChatCompletionClient(http_client=...) actually
+        routes through RecordingTransport with zero AutoGen-specific code
+        changes to agent-trace itself -- confirmed live against the
         installed autogen-ext package, not just by reading source."""
         import httpx
         from autogen_core.models import UserMessage

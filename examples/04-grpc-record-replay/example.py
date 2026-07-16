@@ -5,8 +5,7 @@ Demonstrates agent-trace's gRPC interceptor: the same record/replay story
 that examples 01-03 show for HTTP, but for LLM SDKs that build their
 transport with `grpc.secure_channel()` / `grpc.insecure_channel()` instead
 of `httpx`/`requests` -- e.g. Vertex AI's mTLS-authenticated path, or
-`google-generativeai` pre-4.0 (see the [redacted] this closes:
-"Add gRPC interceptor for LLM SDKs that default to grpc transport").
+`google-generativeai` pre-4.0.
 
 No credentials or external network calls needed: this spins up a tiny local
 gRPC "echo" server on 127.0.0.1 (defined in echo.proto) to stand in for a

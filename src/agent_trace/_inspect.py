@@ -6,9 +6,8 @@ Every function here is a pure, read-only analysis over already-captured data
 (``Fixture.all_exchanges()`` rows and/or ``trace.json`` span dicts) — none of
 them touch the network, mutate the fixture, or require any framework to be
 installed. They turn the manual "read raw JSON, notice the anomaly" step a
-developer does today into an automated flag, which is the recurring gap this
-module closes across a long list of GitHub issues (see
-``[redacted]`` for the full issue-by-issue mapping).
+developer does today into an automated flag, closing a recurring gap seen
+across a long list of real-world GitHub issues from downstream frameworks.
 
 Every check function returns a ``list[dict]`` of "flags" — plain dicts with
 at least a ``"check"`` key (this function's name) and a human-readable
@@ -1109,8 +1108,8 @@ def check_markdown_fenced_json_response(
 
 
 # ---------------------------------------------------------------------------
-# Companion diagnostics (distinct [redacted]s, same "raw capture with zero
-# automated diagnosis" gap that motivates the big `inspect` cluster above).
+# Companion diagnostics (same "raw capture with zero automated diagnosis"
+# gap that motivates the big `inspect` cluster above).
 # ---------------------------------------------------------------------------
 
 
