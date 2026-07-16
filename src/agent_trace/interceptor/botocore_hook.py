@@ -30,8 +30,8 @@ and records these — mirroring httpx_hook.py's ``response.read()``/
 afterwards replaces ``response.raw`` with a fresh in-memory buffer over the
 same bytes so downstream body consumption (``StreamingBody.read()``, event
 stream iteration) keeps working transparently.  True non-buffering
-pass-through capture for streaming responses is tracked as a separate
-[redacted], exactly as it is for the httpx/SSE case.
+pass-through capture for streaming responses is a known follow-up, not
+yet implemented, exactly as it is for the httpx/SSE case.
 """
 
 from __future__ import annotations

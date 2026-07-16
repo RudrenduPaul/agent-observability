@@ -139,7 +139,7 @@ class TestOpenAIAgentsIntegration:
             f"Expected at least one tool: span. Got: {[s.name for s in trace.spans]}"
         )
         assert tool_spans[0].attributes.get("tool.name") == "get_weather"
-        # Backlog: persist the actual tool result content, not just its length.
+        # Persist the actual tool result content, not just its length.
         assert "Sunny in Paris" in tool_spans[0].attributes.get("tool.result", "")
         assert tool_spans[0].attributes.get("tool.result_length") == len(
             "Sunny in Paris"

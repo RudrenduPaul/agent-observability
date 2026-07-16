@@ -7,7 +7,7 @@ Demonstrates the Agno integration (agent_trace.integrations.agno) capturing:
     the member's own run span is a child of the team's run span)
   - An in-process exception raised entirely inside a model's own code, never
     reaching the HTTP layer at all — the exact failure class the
-    framework-agnostic HTTP interceptor alone cannot see ([redacted] #5298)
+    framework-agnostic HTTP interceptor alone cannot see (upstream issue #5298)
 
 Runs with NO API key by default (a tiny scripted fake model stands in for a
 real provider, deterministically, so this example is reproducible in CI).
@@ -203,7 +203,7 @@ async def run_team_delegation(live: bool) -> None:
 
     # The member's own run span is a *child* of the team's run span, and the
     # tool span for the delegation itself carries agno.child_run_id — the
-    # correlation this integration exists to provide ([redacted] #5326).
+    # correlation this integration exists to provide (upstream issue #5326).
     team_span = next(s for s in trace.spans if s.name.startswith("team:"))
     member_spans = [s for s in trace.spans if s.name.startswith("agent:")]
     print(f"\nTeam span:   {team_span.name} ({team_span.span_id})")
@@ -220,7 +220,7 @@ async def run_in_process_crash() -> None:
     @dataclass
     class CrashingModel(ScriptedModel):
         def _next_response(self) -> ModelResponse:  # type: ignore[override]
-            # Simulates the exact failure class behind [redacted] #5298:
+            # Simulates the exact failure class behind upstream issue #5298:
             # an UnboundLocalError raised entirely inside agno/models/base.py,
             # with zero HTTP traffic — something the framework-agnostic HTTP
             # interceptor alone could never see.

@@ -3,8 +3,7 @@ Integration test verifying agent-trace's httpx interceptor against the
 *real* ``groq`` Python SDK — not just a reproduction of its httpx-client
 construction pattern.
 
-Context ([redacted], "Verify HTTP-interceptor capture against
-the real groq Python SDK"): the claim that agent-trace's global
+Background: the claim that agent-trace's global
 ``httpx.Client``/``httpx.AsyncClient`` monkeypatch (``Tracer._patch_httpx``)
 also intercepts Groq SDK traffic previously rested only on a static read of
 the ``groq`` PyPI package's ``_base_client.py`` (confirming
@@ -16,10 +15,9 @@ actually installing the ``groq`` package, running a real ``groq.Groq``/
 asserting the exchange lands in ``fixture.db``.
 
 No live network call is made — the HTTP layer is mocked with ``respx`` so
-this test is deterministic, fast, and needs no ``GROQ_API_KEY``. This
-matches the [redacted]'s own "real or mocked" phrasing: what was missing
-was *any* reproducible test exercising the real SDK's HTTP client through
-RecordingTransport, not specifically a live API call.
+this test is deterministic, fast, and needs no ``GROQ_API_KEY``. What was
+missing was *any* reproducible test exercising the real SDK's HTTP client
+through RecordingTransport, not specifically a live API call.
 
 Run with: uv run pytest tests/integration/test_groq_integration.py
 Requires: pip install agent-trace[groq]  (or: pip install groq)
@@ -152,9 +150,9 @@ class TestGroqSdkCapturedByGlobalMonkeypatch:
     def test_groq_client_transport_is_recording_transport_while_active(
         self, tmp_path: Path
     ) -> None:
-        """Directly asserts the isinstance() check the [redacted] asked
-        for: while recording is active, the Groq SDK's internal httpx
-        client's resolved transport is a RecordingTransport instance."""
+        """Directly asserts the isinstance() check: while recording is
+        active, the Groq SDK's internal httpx client's resolved transport
+        is a RecordingTransport instance."""
         import groq
 
         respx.post(_GROQ_CHAT_URL).mock(

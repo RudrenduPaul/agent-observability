@@ -14,8 +14,8 @@ moment a node completes (e.g. a UI showing "flight booked!" as soon as
 that step is done) behaves completely differently depending on which one is
 used, even though every span in a callback-only trace looks identical
 either way — the callback layer alone cannot see this delivery-timing
-difference (see the "Add stream-yield timestamp capture" [redacted] this
-example also demonstrates).
+difference, which is exactly the stream-yield timestamp capture this
+example also demonstrates.
 
 No API key required — both nodes are plain Python stand-ins with a small,
 deliberate `time.sleep()` so the timing difference is observable without
@@ -28,8 +28,8 @@ What this example demonstrates about agent-trace's capture:
    callback-only trace that could ever show *when* the caller actually
    received output, because invoke() doesn't hand anything back until the
    whole run is done.
-2. Wrapping `graph.stream(...)` in `traced_stream()` (this [redacted]'s
-   fix, in `src/agent_trace/integrations/langgraph.py`) opens a dedicated
+2. Wrapping `graph.stream(...)` in `traced_stream()` (the fix implemented
+   in `src/agent_trace/integrations/langgraph.py`) opens a dedicated
    `graph:stream` span carrying one `stream_yield` SpanEvent per chunk,
    timestamped on the same clock as every other span, at the *exact* moment
    each chunk reaches the caller's own `for` loop — not when the underlying

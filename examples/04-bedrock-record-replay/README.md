@@ -67,4 +67,4 @@ For AWS event-stream operations (`InvokeModelWithResponseStream`,
 `ConverseStream`), the interceptor still eagerly drains the full stream
 before returning, the same non-buffering tradeoff `httpx_hook.py` makes for
 SSE responses today. True incremental pass-through capture for streaming
-responses is tracked as a separate [redacted].
+responses is a known follow-up, not yet implemented.
