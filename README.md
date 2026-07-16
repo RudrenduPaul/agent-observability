@@ -2,34 +2,7 @@
 
 **Deterministic record/replay for LLM agents.** Capture a failing agent run once, reproduce it offline in under 2 ms with zero API calls, on any Python HTTP client.
 
-```
-# Record a 12-step LangGraph run that fails at step 7
-$ uv run --extra langgraph python demos/record_replay_demo.py
-
-=== RECORD MODE ===
-Running 12-step pipeline  (will fail at step 7)
-
-  ✓ step_01  completed
-  ...
-  ✓ step_06  completed
-  ✗ step_07  Step 7: upstream dependency returned null — cannot continue pipeline
-
-Recorded:
-  8 spans captured
-  fixture → /tmp/agent-trace-demo-.../pipeline-run-001/fixture.db
-  7 node spans
-  1 error span(s)
-
-=== REPLAY MODE ===
-(No network calls — all state served from local fixture)
-
-  ✓ step_01  completed
-  ...
-  ✓ step_06  completed
-  ✗ step_07  Step 7: upstream dependency returned null — cannot continue pipeline
-
-Replay complete — same failure reproduced offline.
-```
+![Terminal recording of agent-trace recording a live HTTP call, then replaying the same run offline with zero network requests](docs/assets/dev-to-demos/demo-1-record-replay.gif)
 
 [![PyPI](https://img.shields.io/pypi/v/agent-observability-trace)](https://pypi.org/project/agent-observability-trace/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
