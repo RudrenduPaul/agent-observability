@@ -2,9 +2,13 @@ version: "3.9"
 
 # After `docker compose up -d`:
 #   Jaeger UI      → http://localhost:16686
-#   Grafana UI     → http://localhost:3000  (anonymous auth, Tempo pre-wired)
+#   Grafana UI     → http://localhost:3000  (anonymous Viewer auth, Tempo pre-wired)
 #   OTLP gRPC      → localhost:4317   (send traces here, not a browser UI)
 #   OTLP HTTP      → localhost:4318
+#
+# This stack is for local development only. It has no auth on the OTLP receivers
+# and Grafana grants anonymous read access — do not publish these ports beyond
+# localhost / an isolated dev network.
 
 services:
   jaeger:
@@ -41,9 +45,12 @@ services:
     ports:
       - "3000:3000"     # Grafana UI (primary browser UI)
     environment:
+      # Anonymous access is read-only (Viewer) so an unauthenticated visitor to this
+      # local dev instance can browse traces but not reconfigure datasources/alerts/
+      # plugins. Login form stays enabled so an operator can still sign in as admin
+      # (default admin/admin — change it if this ever runs anywhere but localhost).
       - GF_AUTH_ANONYMOUS_ENABLED=true
-      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
-      - GF_AUTH_DISABLE_LOGIN_FORM=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
     volumes:
       - ./docker/grafana/datasources:/etc/grafana/provisioning/datasources
     depends_on:
