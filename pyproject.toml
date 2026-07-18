@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "agent-observability-trace"
+name = "agent-observability-trace-cli"
 version = "0.1.2"
 description = "AI agent observability with deterministic record/replay — capture any LangGraph or OpenAI Agents SDK run, replay it offline at zero API cost."
 readme = "README.md"
