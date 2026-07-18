@@ -4,7 +4,7 @@
 
 ![Terminal recording of agent-trace recording a live HTTP call, then replaying the same run offline with zero network requests](docs/assets/dev-to-demos/demo-1-record-replay.gif)
 
-[![PyPI](https://img.shields.io/pypi/v/agent-observability-trace)](https://pypi.org/project/agent-observability-trace/)
+[![PyPI](https://img.shields.io/pypi/v/agent-observability-trace-cli)](https://pypi.org/project/agent-observability-trace-cli/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![CI](https://github.com/RudrenduPaul/agent-observability/actions/workflows/ci.yml/badge.svg)](https://github.com/RudrenduPaul/agent-observability/actions)
@@ -15,21 +15,21 @@
 ## Install
 
 ```bash
-pip install agent-observability-trace
+pip install agent-observability-trace-cli
 # or
-uv add agent-observability-trace
+uv add agent-observability-trace-cli
 ```
 
 LangGraph support:
 
 ```bash
-pip install agent-observability-trace[langgraph]
+pip install agent-observability-trace-cli[langgraph]
 ```
 
 OpenAI Agents SDK support:
 
 ```bash
-pip install agent-observability-trace[openai-agents]
+pip install agent-observability-trace-cli[openai-agents]
 ```
 
 ## The problem
@@ -243,3 +243,4 @@ Apache 2.0. Contributions welcome.
 ---
 
 *Built by Rudrendu Paul*
+
