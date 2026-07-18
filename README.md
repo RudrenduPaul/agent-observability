@@ -1,3 +1,10 @@
+# Agent Observability -- renamed to agent-observability-trace-cli
+
+**This PyPI package has been renamed.** Install [`agent-observability-trace-cli`](https://pypi.org/project/agent-observability-trace-cli/)
+instead: `pip install agent-observability-trace-cli`. This package will not receive further updates.
+
+---
+
 # Agent Observability
 
 **Deterministic record/replay for LLM agents.** Capture a failing agent run once, reproduce it offline in under 2 ms with zero API calls, on any Python HTTP client.
