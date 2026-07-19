@@ -32,6 +32,8 @@ OpenAI Agents SDK support:
 pip install agent-observability-trace-cli[openai-agents]
 ```
 
+![Terminal recording of installing agent-observability-trace-cli into a fresh virtual environment, then running agent-trace version and recording a first HTTP call with agent-trace list showing the resulting run](docs/demo.gif)
+
 ## The problem
 
 A LangGraph run fails after step 8. Your trace in LangSmith or Langfuse shows *what* broke. But to reproduce it you have to re-run the entire agent: 8 more LLM calls, 30 more seconds, another $0.15 in API cost. If the failure was caused by a specific tool response or a transient model output, you can't reproduce it at all. You're debugging against a moving target.
@@ -77,6 +79,8 @@ with replay("run_<id>") as ctx:
 > To store the input for later retrieval in replay, call `ctx.fixture.set_metadata('input', query)` inside the recording context.
 
 > **Sync and async clients:** Agent Observability intercepts `httpx.Client`, `httpx.AsyncClient`, and `requests.Session` — including the async client used by default in the OpenAI Python SDK v1.x and Anthropic SDK. The patch is installed at request-dispatch time, so it also covers clients constructed before recording/replay starts (e.g. a module-level `openai.AsyncOpenAI()` instance).
+
+![Terminal recording of replaying a previously recorded run with zero network calls, then running agent-trace show to print the replayed span tree](docs/usage.gif)
 
 ---
 
@@ -227,6 +231,42 @@ after:
 - **Vulnerability scanning:** Dependabot keeps all GitHub Actions and Python dependencies current. Secret scanning auto-enables when the repo goes public.
 - **Fixture safety:** Fixture files at `~/.agent-trace/runs/` contain full HTTP request and response bodies, including API keys and prompt contents. Add `.agent-trace/` and `*.db` to your `.gitignore`. Never commit a fixture generated against a production API key.
 - **Disclosure:** [SECURITY.md](SECURITY.md) — report vulnerabilities to `agent.obs.oss.security@gmail.com` with a 48-hour response SLA.
+
+---
+
+## FAQ
+
+**What is Agent Observability, and how is it different from a typical LLM tracing tool?**
+
+It's a Python library and CLI (`agent-trace`) that records every HTTP request and response your agent makes, verbatim, to a local SQLite fixture, then replays those exact bytes later with no network call. Most tracing tools, including LangSmith, Langfuse, Helicone, and OpenLLMetry, show you what happened during a run. Agent Observability additionally lets you reproduce that exact run offline, deterministically, without touching the live API. See "How Agent Observability compares" above for the full capability breakdown against those four tools.
+
+**How does deterministic record/replay actually work?**
+
+Recording patches `httpx.Client`, `httpx.AsyncClient`, and `requests.Session` at the transport layer (`src/agent_trace/interceptor/`) to capture every outbound request and response as raw bytes into `fixture.db`. Replay installs a `FixtureClock` (`src/agent_trace/core/clock.py`) and serves those same bytes back in the original sequence, so the code path, span tree, and timestamps all match the original recording. The benchmark numbers quoted above (0.011% recording overhead, 0.93ms mean replay latency, 100% fidelity) come from `benchmarks/test_overhead.py`, `benchmarks/test_replay_vs_live.py`, and `benchmarks/test_fidelity.py` in this repo, runnable yourself with `uv run pytest benchmarks/`.
+
+**How do I install it, and what platforms does it support?**
+
+`pip install agent-observability-trace-cli`, or `uv add agent-observability-trace-cli`. It requires Python 3.10 or newer and depends only on `httpx` and `rich`, no compiled extensions, so it installs anywhere those wheels do. CI (`.github/workflows/ci.yml`) currently runs on Ubuntu only; macOS and Windows aren't part of the automated test matrix, though nothing in the interceptor or replay engine touches OS-specific APIs. A scoped npm wrapper, `@rudrendu_paul_packages/agent-trace-cli`, is also published for teams that reach for `npx`/`npm`, but it still shells out to the Python CLI under the hood, so the Python package must be installed too.
+
+**How does this compare to LangSmith specifically?**
+
+LangSmith's `LANGSMITH_TEST_CACHE` (VCR-style cassettes, via `langsmith[vcr]`) is the closest built-in equivalent. It's Python plus LangChain only, captures HTTP calls to `api.openai.com` rather than any HTTP client, doesn't record full wire-level bytes, and requires a LangSmith account. Agent Observability works with any Python HTTP client, plus dedicated interceptors for gRPC, aiohttp, botocore, and WebSocket traffic, records full request and response bytes locally, and needs no account or hosted service. Pick LangSmith if you're already on LangChain and want dataset management, prompt versioning, and human feedback loops alongside tracing. Pick Agent Observability if the goal is reproducing one specific failed run at zero API cost, regardless of which SDK made the call.
+
+**What happens if replay can't find a matching fixture entry?**
+
+With `AGENT_TRACE_NETWORK_GUARD=1` set, any request missing from the fixture raises `NetworkGuardError` immediately instead of silently falling through to a live call. The most common cause is an HTTP client constructed before the recording or replay context was entered, since the patch only applies to clients created inside the `start_trace`/`replay` block. See "Known limitations" above for the full list of edges, including partial gRPC streaming coverage and pre-HTTP exceptions that never reach the interceptor.
+
+**Does it capture agents built on non-Python frameworks?**
+
+No. Capture is a Python HTTP-transport interceptor plus instrumented callbacks for the integrations under `src/agent_trace/integrations/` (LangGraph, CrewAI, AutoGen, LlamaIndex, Haystack, Agno, PydanticAI, Google GenAI, and others). It only sees traffic from your own Python process. Agents built in other languages, or calls made by a third-party hosted service you don't run yourself, are outside its capture surface.
+
+**Are fixture files safe to commit to version control?**
+
+Not by default. `fixture.db` contains full HTTP request and response bodies, which means API keys and prompt contents whenever they appear in headers or payloads. Add `.agent-trace/` and `*.db` to `.gitignore`, and never commit a fixture recorded against a production API key. Strip or redact secrets first if you want to keep a fixture as a committed CI test asset.
+
+**Is this free to use commercially?**
+
+Yes. The project is Apache 2.0 licensed (see [LICENSE](LICENSE)), which permits commercial use, modification, and redistribution, including inside closed-source products, subject to the license's own attribution and notice terms. There is no separate paid tier or commercial license.
 
 ---
 
