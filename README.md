@@ -246,7 +246,7 @@ Recording patches `httpx.Client`, `httpx.AsyncClient`, and `requests.Session` at
 
 **How do I install it, and what platforms does it support?**
 
-`pip install agent-observability-trace-cli`, or `uv add agent-observability-trace-cli`. It requires Python 3.10 or newer and depends only on `httpx` and `rich`, no compiled extensions, so it installs anywhere those wheels do. CI (`.github/workflows/ci.yml`) currently runs on Ubuntu only; macOS and Windows aren't part of the automated test matrix, though nothing in the interceptor or replay engine touches OS-specific APIs. A scoped npm wrapper, `@rudrendu_paul_packages/agent-trace-cli`, is also published for teams that reach for `npx`/`npm`, but it still shells out to the Python CLI under the hood, so the Python package must be installed too.
+`pip install agent-observability-trace-cli`, or `uv add agent-observability-trace-cli`. It requires Python 3.10 or newer and depends only on `httpx` and `rich`, no compiled extensions, so it installs anywhere those wheels do. CI (`.github/workflows/ci.yml`) currently runs on Ubuntu only; macOS and Windows aren't part of the automated test matrix, though nothing in the interceptor or replay engine touches OS-specific APIs. An npm wrapper, [`agent-observability-trace-cli`](npm/) (source under [`npm/`](npm/) in this repo), is also published for teams that reach for `npx`/`npm`, but it still shells out to the Python CLI under the hood, so the Python package must be installed too.
 
 **How does this compare to LangSmith specifically?**
 
