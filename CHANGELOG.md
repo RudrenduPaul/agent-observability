@@ -3,6 +3,17 @@
 All notable changes to agent-trace are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.8] - 2026-07-20
+
+### Fixed
+- The sigstore-signing fix in 0.1.7 worked (verified: `Sigstore bundle
+  written to .../*.sigstore.json` in the v0.1.7 release log, for the first
+  time ever) — but the very next step's upload glob, `dist/*.sigstore`,
+  didn't match the actual filenames the action produces
+  (`*.sigstore.json`), so the signed bundles never made it onto the GitHub
+  Release page despite genuinely existing. Fixed the glob; README's
+  Security section now states this as verified rather than aspirational.
+
 ## [0.1.7] - 2026-07-20
 
 ### Fixed
