@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-observability-trace-cli"
-version = "0.1.3"
+version = "0.1.4"
 description = "AI agent observability with deterministic record/replay — capture any LangGraph or OpenAI Agents SDK run, replay it offline at zero API cost."
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -15,7 +15,7 @@ authors = [
 ]
 keywords = ["agents", "observability", "tracing", "llm", "langgraph", "openai", "replay", "debugging"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",

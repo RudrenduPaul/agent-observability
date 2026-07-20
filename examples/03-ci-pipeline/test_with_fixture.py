@@ -42,12 +42,13 @@ def test_agent_responds_correctly() -> None:
             "It records every HTTP call and lets you replay runs offline."
         )
         result = classify_document(doc)
+        exchange_count = ctx.fixture.exchange_count()
 
     assert isinstance(result["classification"], str)
     assert len(result["classification"]) > 0
     assert isinstance(result["confidence"], float)
     assert result["confidence"] > 0.0
-    assert ctx.fixture.exchange_count() > 0
+    assert exchange_count > 0
 
 
 @pytest.mark.skipif(

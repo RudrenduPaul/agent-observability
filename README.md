@@ -1,6 +1,17 @@
 # Agent Observability
 
-**Deterministic record/replay for LLM agents.** Capture a failing agent run once, reproduce it offline in under 2 ms with zero API calls, on any Python HTTP client.
+Your LangGraph agent fails after step 8. LangSmith shows you what broke.
+To reproduce it: 8 more LLM calls. 30 more seconds. $0.15 more in API cost.
+If the failure was caused by a transient model output, you can't reproduce it at all.
+
+**Agent Observability fixes this.** Record once. Replay offline in 0.93 ms. Zero API calls. Zero cost.
+
+```
+Recording overhead:   0.011%   (0.090 ms added per LLM call)
+Replay latency:       0.93 ms  mean (vs ~8,500 ms live on GPT-4o × 10 steps)
+Replay fidelity:      100%     (response bytes byte-for-byte identical)
+CI cost per replay:   $0
+```
 
 ![Terminal recording of agent-trace recording a live HTTP call, then replaying the same run offline with zero network requests](docs/assets/dev-to-demos/demo-1-record-replay.gif)
 
@@ -34,22 +45,28 @@ pip install agent-observability-trace-cli[openai-agents]
 
 ![Terminal recording of installing agent-observability-trace-cli into a fresh virtual environment, then running agent-trace version and recording a first HTTP call with agent-trace list showing the resulting run](docs/demo.gif)
 
-## The problem
+## Supported frameworks
 
-A LangGraph run fails after step 8. Your trace in LangSmith or Langfuse shows *what* broke. But to reproduce it you have to re-run the entire agent: 8 more LLM calls, 30 more seconds, another $0.15 in API cost. If the failure was caused by a specific tool response or a transient model output, you can't reproduce it at all. You're debugging against a moving target.
+LangGraph · OpenAI Agents SDK · CrewAI · AutoGen · LlamaIndex · Haystack · Agno · PydanticAI · Google GenAI
+Plus: any `httpx.Client`, `httpx.AsyncClient`, or `requests.Session` — no framework required.
 
-**Agent Observability solves this at the HTTP transport layer.** It records every request and response verbatim to a local SQLite file. Replay serves those exact bytes back in sequence, in under 1 ms per exchange: same code path, same span tree, same failure. No API calls.
+## 30-second CLI quickstart
 
+```bash
+# Record a live run (your script just needs `import agent_trace` somewhere)
+agent-trace run --name my_agent -- python my_agent.py
+
+# List recorded runs
+agent-trace list
+
+# Replay offline — zero network, zero cost
+agent-trace replay run_<id>
+
+# Show the trace for a run
+agent-trace show run_<id>
 ```
-Recording overhead:   0.011%  (0.090 ms added per LLM call — 0.011% of GPT-4o p50)
-Replay latency:       0.93 ms mean  (vs ~8,500 ms live on GPT-4o × 10 steps)
-Replay fidelity:      100%  (response bytes byte-for-byte identical to recorded)
-CI cost per replay:   $0
-```
 
----
-
-## Quick start
+Want programmatic control instead of the CLI? Use the Python API:
 
 ```python
 from agent_trace import tracer
@@ -82,6 +99,12 @@ with replay("run_<id>") as ctx:
 
 ![Terminal recording of replaying a previously recorded run with zero network calls, then running agent-trace show to print the replayed span tree](docs/usage.gif)
 
+## The problem
+
+A LangGraph run fails after step 8. Your trace in LangSmith or Langfuse shows *what* broke. But to reproduce it you have to re-run the entire agent: 8 more LLM calls, 30 more seconds, another $0.15 in API cost. If the failure was caused by a specific tool response or a transient model output, you can't reproduce it at all. You're debugging against a moving target.
+
+**Agent Observability solves this at the HTTP transport layer.** It records every request and response verbatim to a local SQLite file. Replay serves those exact bytes back in sequence, in under 1 ms per exchange: same code path, same span tree, same failure. No API calls.
+
 ---
 
 ## Use in CI: replay at zero cost
@@ -113,9 +136,25 @@ Set `AGENT_TRACE_NETWORK_GUARD=1` in CI. Any HTTP call not in the fixture raises
 AGENT_TRACE_NETWORK_GUARD=1 uv run pytest tests/
 ```
 
+## What does this save you?
+
+```
+10-step agent × $0.15 per run × 10 debug sessions per week = $15/week in API costs
+With Agent Observability CI replay: $0/week
+
+At scale (10 engineers, each debugging 3 failures/week):
+Before: ~$45/week, ~5 hours/week waiting for live re-runs
+After: $0/week, 0.93 ms per replay
+```
+
 ---
 
-## How Agent Observability compares
+## Why not just use LangSmith, Langfuse, or Helicone?
+
+Short answer: they show you what happened. They can't reproduce it offline.
+LangSmith's VCR cassettes are Python + LangChain only, don't capture full wire bytes,
+and require a LangSmith account. Agent Observability works on any Python HTTP client,
+needs no account, and replays in 0.93 ms with 100% fidelity.
 
 Most observability tools for LLM agents are **observe-only** — they show you a trace of what happened, but reproducing a failure still requires re-running the full agent against live APIs.
 
@@ -168,6 +207,16 @@ from agent_trace.exporters.otlp import OTLPExporter
 exporter = OTLPExporter(endpoint="http://localhost:4317")
 exporter.export(trace)
 ```
+
+---
+
+## Real failures record/replay catches
+
+- Transient model output at step 6 causes a downstream tool to fail — unreproducible with a re-run, trivial to replay
+- Rate-limit response at step 3 triggers a silent fallback path — only visible in the recorded fixture bytes, not in a live re-run
+- Tool schema serialization error before HTTP dispatch — caught by `LangGraphTracer.on_llm_error` even though it never reaches the interceptor (see Known Limitations)
+- Non-deterministic tool ordering in a parallel branch — replay pins the exact sequence that produced the failure, so you're debugging the actual run instead of a fresh one
+- gRPC unary-stream response from Gemini that only fails on a specific chunk boundary — recorded once, replayed byte-for-byte instead of re-triggering a live streaming call each time
 
 ---
 
@@ -238,7 +287,7 @@ after:
 
 **What is Agent Observability, and how is it different from a typical LLM tracing tool?**
 
-It's a Python library and CLI (`agent-trace`) that records every HTTP request and response your agent makes, verbatim, to a local SQLite fixture, then replays those exact bytes later with no network call. Most tracing tools, including LangSmith, Langfuse, Helicone, and OpenLLMetry, show you what happened during a run. Agent Observability additionally lets you reproduce that exact run offline, deterministically, without touching the live API. See "How Agent Observability compares" above for the full capability breakdown against those four tools.
+It's a Python library and CLI (`agent-trace`) that records every HTTP request and response your agent makes, verbatim, to a local SQLite fixture, then replays those exact bytes later with no network call. Most tracing tools, including LangSmith, Langfuse, Helicone, and OpenLLMetry, show you what happened during a run. Agent Observability additionally lets you reproduce that exact run offline, deterministically, without touching the live API. See "Why not just use LangSmith, Langfuse, or Helicone?" above for the full capability breakdown against those four tools.
 
 **How does deterministic record/replay actually work?**
 
@@ -246,7 +295,7 @@ Recording patches `httpx.Client`, `httpx.AsyncClient`, and `requests.Session` at
 
 **How do I install it, and what platforms does it support?**
 
-`pip install agent-observability-trace-cli`, or `uv add agent-observability-trace-cli`. It requires Python 3.10 or newer and depends only on `httpx` and `rich`, no compiled extensions, so it installs anywhere those wheels do. CI (`.github/workflows/ci.yml`) currently runs on Ubuntu only; macOS and Windows aren't part of the automated test matrix, though nothing in the interceptor or replay engine touches OS-specific APIs. An npm wrapper, [`agent-observability-trace-cli`](npm/) (source under [`npm/`](npm/) in this repo), is also published for teams that reach for `npx`/`npm`, but it still shells out to the Python CLI under the hood, so the Python package must be installed too.
+`pip install agent-observability-trace-cli`, or `uv add agent-observability-trace-cli`. It requires Python 3.10 or newer and depends only on `httpx` and `rich`, no compiled extensions, so it installs anywhere those wheels do. CI (`.github/workflows/ci.yml`) passes on Ubuntu, macOS, and Windows, across Python 3.10 through 3.13. An npm wrapper, [`agent-observability-trace-cli`](npm/) (source under [`npm/`](npm/) in this repo), is also published for teams that reach for `npx`/`npm`, but it still shells out to the Python CLI under the hood, so the Python package must be installed too.
 
 **How does this compare to LangSmith specifically?**
 

@@ -163,6 +163,7 @@ def cmd_test() -> None:
 
     with replay(FIXTURE_PATH) as ctx:
         result = classify_document(doc)
+        replay_exchange_count = ctx.fixture.exchange_count()
 
     elapsed_ms = (time.perf_counter() - start) * 1000
 
@@ -175,7 +176,7 @@ def cmd_test() -> None:
         f"Expected {expected_classification!r}, got {result['classification']!r}"
     )
     assert result["confidence"] > 0.0, "Confidence should be positive"
-    assert ctx.fixture.exchange_count() == exchange_count, (
+    assert replay_exchange_count == exchange_count, (
         "Replay should consume all recorded exchanges"
     )
 
