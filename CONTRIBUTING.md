@@ -2,6 +2,8 @@
 
 Thank you for your interest in contributing. This guide covers everything you need to get started, from setting up a local dev environment to getting your PR merged quickly.
 
+The PR-and-review workflow below applies to all external contributions. The repo maintainer may push directly to `main` for small, self-reviewed fixes (docs, CI config, dependency bumps); branch protection's required review does not block admin pushes.
+
 ## Development Setup
 
 ### Prerequisites

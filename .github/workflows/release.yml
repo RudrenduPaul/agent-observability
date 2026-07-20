@@ -28,7 +28,7 @@ jobs:
       # Trusted Publishing — id-token: write above is only consumed by the sigstore
       # signing step further down. To remove the static-token risk entirely, register
       # this workflow as a trusted publisher at
-      # https://pypi.org/manage/project/agent-trace/settings/publishing/
+      # https://pypi.org/manage/project/agent-observability-trace-cli/settings/publishing/
       # (repo: RudrenduPaul/agent-observability, workflow: release.yml, environment: none),
       # then replace this step with `pypa/gh-action-pypi-publish` and drop PYPI_TOKEN —
       # that's a one-time manual step on pypi.org this workflow file can't perform for you.

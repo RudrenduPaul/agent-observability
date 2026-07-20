@@ -37,15 +37,32 @@ AI SDKs — OpenAI's Python client, the Anthropic SDK, LangChain's HTTP calls �
 all create their own HTTP client instances internally. You cannot inject a custom
 transport into them at construction time without forking each SDK.
 
-agent-trace solves this with two monkey-patches applied at the moment a recording
-or replay context is entered:
+**httpx patch — recording:** rather than patching `httpx.Client.__init__` (an
+earlier design, no longer used for recording), the recording path replaces
+`httpx.Client._transport_for_url` / `httpx.AsyncClient._transport_for_url` —
+the method httpx calls internally on every single request and redirect hop —
+so it always wraps whatever transport httpx would have used (default or
+caller-supplied, including per-URL `mounts=` transports) in a
+`RecordingTransport`/`AsyncRecordingTransport`. This fixes two problems the
+`__init__`-time patch had: a client constructed *before* recording activates
+(e.g. an LLM client built once at module-import time, as `langgraph dev`
+entry points typically do) is still captured, since `_transport_for_url` is
+looked up fresh on every `send()`; and a client constructed with an explicit
+`transport=` kwarg (e.g. langchain-openai's TCP-keepalive transport) no
+longer silently defeats the patch the way `kwargs.setdefault("transport",
+...)` could. Both `httpx.Client` (sync) and `httpx.AsyncClient` (async) are
+covered — async support is not on a roadmap, it is implemented today
+(`src/agent_trace/interceptor/httpx_hook.py`).
 
-**httpx patch:** `httpx.Client.__init__` is replaced with a wrapper that calls
-the original `__init__` but injects `RecordingTransport` (or `ReplayTransport`)
-as the `transport` keyword argument before doing so. `kwargs.setdefault(...)` is
-used so that any SDK that explicitly passes its own transport is not overridden.
-Every `httpx.Client` constructed inside the context — including those created
-inside the OpenAI or Anthropic SDK — picks up the patched transport.
+**httpx patch — replay:** the replay engine (`src/agent_trace/_replay/engine.py`)
+still patches `httpx.Client.__init__`/`httpx.AsyncClient.__init__` directly
+(injecting `ReplayTransport`/`AsyncReplayTransport` via
+`kwargs.setdefault("transport", ...)`), a genuinely different mechanism from
+recording's `_transport_for_url` patch, not just older docs describing the
+same thing two ways. The practical consequence — an httpx client constructed
+before the `replay(...)` block is entered won't be intercepted — is already
+called out in the README's FAQ ("What happens if replay can't find a
+matching fixture entry?").
 
 **requests patch:** `requests.Session.get_adapter(url)` is the method that
 selects which adapter handles a given URL scheme (`https://`, `http://`). It is
@@ -53,15 +70,23 @@ replaced with a function that always returns `RecordingAdapter` (or
 `ReplayAdapter`). This means every `Session.send()` call goes through the
 fixture regardless of which URL scheme is used.
 
-Both patches are applied as `unittest.mock.patch.object` context managers
-(in the replay engine) or direct attribute replacement (in the `Tracer`). They
-are always restored in a `finally` block to prevent leakage into sibling async
-tasks or test cases.
+**Beyond httpx and requests**, dedicated interceptors exist for traffic that
+never touches either: gRPC (`interceptor/grpc_hook.py`, patches
+`grpc.secure_channel`/`grpc.insecure_channel` and the `grpc.aio` equivalents —
+unary-unary and sync unary-stream calls are fully covered, client-streaming
+and `grpc.aio` streaming are not), `aiohttp.ClientSession`
+(`interceptor/aiohttp_hook.py`), `botocore`'s `URLLib3Session.send`
+(`interceptor/botocore_hook.py`, for AWS SDK/Bedrock traffic), WebSocket
+connections (`interceptor/websocket_hook.py`), and MCP's stdio JSON-RPC
+transport (`interceptor/stdio_hook.py`). See the README's "Known limitations"
+section for the exact coverage boundary of each.
 
-The interception layer is at the httpx transport level and the requests adapter
-level. This is below the SDK's retry logic, authentication headers, and
-serialization code. Everything the SDK does — except the actual TCP connection —
-runs as normal.
+All patches are always restored in a `finally` block to prevent leakage into
+sibling async tasks or test cases.
+
+The interception layer sits below the SDK's retry logic, authentication
+headers, and serialization code. Everything the SDK does — except the actual
+network I/O — runs as normal.
 
 ---
 
@@ -103,7 +128,7 @@ clock without interfering with each other.
 ## 4. Fixture structure
 
 Each recorded run produces a SQLite database at
-`~/.agent-trace/runs/<run_id>/fixture.db`. The schema has two tables:
+`~/.agent-trace/runs/<run_id>/fixture.db`. The schema has four tables:
 
 ```sql
 CREATE TABLE http_exchanges (
@@ -113,16 +138,52 @@ CREATE TABLE http_exchanges (
     method           TEXT NOT NULL,
     request_headers  TEXT NOT NULL DEFAULT '{}',   -- JSON
     request_body     TEXT NOT NULL DEFAULT '',
-    response_status  INTEGER NOT NULL,
+    response_status  INTEGER,
     response_headers TEXT NOT NULL DEFAULT '{}',   -- JSON
     response_body    TEXT NOT NULL DEFAULT '',
     recorded_at      REAL NOT NULL,               -- Unix timestamp, wall-clock
-    sequence_num     INTEGER NOT NULL             -- monotonically increasing
+    sequence_num     INTEGER NOT NULL,            -- monotonically increasing
+    duration_ms      REAL,
+    error_type       TEXT,
+    error_message    TEXT
 );
 
 CREATE TABLE metadata (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+
+-- WebSocket frames for persistent duplex sessions (e.g. the OpenAI Agents
+-- SDK's Realtime API). Unlike http_exchanges, a single connection_id can have
+-- many rows in each direction, so replay is served per
+-- (connection_id, direction) rather than per (method, url).
+CREATE TABLE ws_frames (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    trace_id         TEXT NOT NULL,
+    connection_id    TEXT NOT NULL,
+    url              TEXT NOT NULL,
+    direction        TEXT NOT NULL,
+    frame_type       TEXT NOT NULL DEFAULT 'text',
+    payload          TEXT NOT NULL DEFAULT '',
+    recorded_at      REAL NOT NULL,
+    sequence_num     INTEGER NOT NULL
+);
+
+-- MCP stdio-transport JSON-RPC frames -- one row per frame flowing over a
+-- child process's stdin (direction='to_server') or stdout
+-- (direction='from_server'). Distinct from http_exchanges because MCP's
+-- stdio transport has no HTTP request/response pairing.
+CREATE TABLE mcp_frames (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    trace_id       TEXT NOT NULL,
+    server_command TEXT NOT NULL,
+    direction      TEXT NOT NULL,
+    frame_type     TEXT NOT NULL,
+    rpc_id         TEXT,
+    method         TEXT,
+    payload        TEXT NOT NULL,
+    recorded_at    REAL NOT NULL,
+    sequence_num   INTEGER NOT NULL
 );
 ```
 
@@ -232,15 +293,17 @@ separate recordings of the same prompt will produce two different fixtures
 because LLM outputs are stochastic. A single fixture replayed multiple times
 will produce the same LLM "output" because it is just returning recorded bytes.
 
-**Does not intercept non-HTTP external calls.** subprocess calls (`subprocess.run`,
-`os.system`), database connections via native C drivers (psycopg2, sqlite3
-without the fixture wrapper), and any other I/O that does not go through httpx
-or requests is not intercepted.
+**Does not intercept arbitrary non-HTTP external calls.** subprocess calls
+(`subprocess.run`, `os.system`), database connections via native C drivers
+(psycopg2, sqlite3 without the fixture wrapper), and any other I/O that does
+not go through one of the dedicated interceptors is not intercepted. Traffic
+that agent frameworks actually use *is* covered beyond plain HTTP: gRPC
+(unary calls), aiohttp, botocore/AWS SDK, WebSocket, and MCP's stdio
+JSON-RPC transport each have their own interceptor — see section 2.
 
-**Does not intercept `httpx.AsyncClient`.** Only `httpx.Client` (synchronous)
-is patched in the current release. Async httpx support is on the roadmap.
-If your agent uses async LLM calls, those requests will pass through to the
-live endpoint unless you patch `AsyncClient` manually.
+**Both sync and async httpx are intercepted.** `httpx.Client` and
+`httpx.AsyncClient` are both patched (the OpenAI and Anthropic SDKs' default
+async clients included) — there is no async gap to work around.
 
 **Does not store binary response bodies cleanly.** Response bodies are decoded
 as UTF-8 text with `errors="replace"`. Binary responses (images, audio, PDF

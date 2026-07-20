@@ -13,7 +13,7 @@ Replay fidelity:      100%     (response bytes byte-for-byte identical)
 CI cost per replay:   $0
 ```
 
-![Terminal recording of agent-trace recording a live HTTP call, then replaying the same run offline with zero network requests](docs/assets/dev-to-demos/demo-1-record-replay.gif)
+![Terminal recording of agent-trace recording a live HTTP call, then replaying the same run offline with zero network requests](https://raw.githubusercontent.com/RudrenduPaul/agent-observability/main/docs/assets/dev-to-demos/demo-1-record-replay.gif)
 
 [![PyPI](https://img.shields.io/pypi/v/agent-observability-trace-cli)](https://pypi.org/project/agent-observability-trace-cli/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
@@ -43,7 +43,7 @@ OpenAI Agents SDK support:
 pip install agent-observability-trace-cli[openai-agents]
 ```
 
-![Terminal recording of installing agent-observability-trace-cli into a fresh virtual environment, then running agent-trace version and recording a first HTTP call with agent-trace list showing the resulting run](docs/demo.gif)
+![Terminal recording of installing agent-observability-trace-cli into a fresh virtual environment, then running agent-trace version and recording a first HTTP call with agent-trace list showing the resulting run](https://raw.githubusercontent.com/RudrenduPaul/agent-observability/main/docs/demo.gif)
 
 ## Supported frameworks
 
@@ -97,7 +97,7 @@ with replay("run_<id>") as ctx:
 
 > **Sync and async clients:** Agent Observability intercepts `httpx.Client`, `httpx.AsyncClient`, and `requests.Session` — including the async client used by default in the OpenAI Python SDK v1.x and Anthropic SDK. The patch is installed at request-dispatch time, so it also covers clients constructed before recording/replay starts (e.g. a module-level `openai.AsyncOpenAI()` instance).
 
-![Terminal recording of replaying a previously recorded run with zero network calls, then running agent-trace show to print the replayed span tree](docs/usage.gif)
+![Terminal recording of replaying a previously recorded run with zero network calls, then running agent-trace show to print the replayed span tree](https://raw.githubusercontent.com/RudrenduPaul/agent-observability/main/docs/usage.gif)
 
 ## The problem
 
@@ -276,8 +276,8 @@ after:
 
 ## Security
 
-- **Supply chain:** SLSA Level 2 via GitHub Actions provenance. All releases signed with Sigstore. SBOM attached to every GitHub Release.
-- **Vulnerability scanning:** Dependabot keeps all GitHub Actions and Python dependencies current. Secret scanning auto-enables when the repo goes public.
+- **Supply chain:** Releases are built and published via GitHub Actions (`release.yml`). Sigstore signing and SBOM generation are wired into that workflow but not yet producing signed, SBOM-attached release assets end to end — treat that as in progress, not shipped, until a release actually carries signed artifacts.
+- **Vulnerability scanning:** `dependabot.yml` opens weekly pip and monthly GitHub Actions version-bump PRs. Dependabot security-advisory alerts are not yet enabled on this repo, and GitHub does not auto-enable secret scanning for a public personal repo — both are manual opt-ins pending on the maintainer's side.
 - **Fixture safety:** Fixture files at `~/.agent-trace/runs/` contain full HTTP request and response bodies, including API keys and prompt contents. Add `.agent-trace/` and `*.db` to your `.gitignore`. Never commit a fixture generated against a production API key.
 - **Disclosure:** [SECURITY.md](SECURITY.md) — report vulnerabilities to `agent.obs.oss.security@gmail.com` with a 48-hour response SLA.
 
