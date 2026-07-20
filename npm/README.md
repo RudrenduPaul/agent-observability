@@ -82,7 +82,7 @@ Most observability tools for LLM agents, including LangSmith, Langfuse, Helicone
 
 The closest built-in comparison is LangSmith's `LANGSMITH_TEST_CACHE` (VCR-style cassettes via `langsmith[vcr]`). It's Python plus LangChain only, captures HTTP calls to `api.openai.com` specifically rather than any HTTP client, doesn't record full wire-level bytes, and requires a LangSmith account. `agent-trace` works with any Python HTTP client, records full request and response bytes locally, and needs no account or hosted service.
 
-The full capability table against LangSmith, Langfuse, Helicone, and OpenLLMetry lives in the [main repository's README](https://github.com/RudrenduPaul/agent-observability#how-agent-observability-compares).
+The full capability table against LangSmith, Langfuse, Helicone, and OpenLLMetry lives in the [main repository's README](https://github.com/RudrenduPaul/agent-observability#why-not-just-use-langsmith-langfuse-or-helicone).
 
 ## Known limitations
 
@@ -120,7 +120,7 @@ LangSmith's `LANGSMITH_TEST_CACHE` needs LangChain and a LangSmith account, and 
 
 **Does this wrapper work on Windows?**
 
-The wrapper itself is plain Node.js and has no OS-specific code. Whether the underlying `agent-trace` Python package works on your platform depends on that package's own support, documented in the main repository; its automated CI currently runs on Ubuntu only.
+The wrapper itself is plain Node.js and has no OS-specific code. The underlying `agent-trace` Python package's automated CI passes on Ubuntu, macOS, and Windows, documented in the main repository.
 
 **Is it safe to commit recorded fixtures to version control?**
 
