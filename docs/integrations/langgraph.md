@@ -9,7 +9,7 @@ captured verbatim and can be replayed without touching the real endpoints.
 ## 1. Install
 
 ```bash
-pip install agent-trace[langgraph]
+pip install agent-observability-trace-cli[langgraph]
 ```
 
 This installs `langgraph>=0.2,<1.0` and `langchain-core>=0.3` alongside

@@ -7,7 +7,7 @@ once against the real OpenAI API, then replayed offline at zero API cost.
 ## Prerequisites
 
 ```bash
-pip install agent-trace[crewai]
+pip install agent-observability-trace-cli[crewai]
 export OPENAI_API_KEY=your-key   # needed only for the record step
 ```
 

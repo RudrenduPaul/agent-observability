@@ -18,7 +18,7 @@ function — no LLM, no API calls, no credentials needed.
 uv run python examples/01-basic-trace/example.py
 
 # Or with plain Python:
-pip install agent-trace
+pip install agent-observability-trace-cli
 python examples/01-basic-trace/example.py
 ```
 

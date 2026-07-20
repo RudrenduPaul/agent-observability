@@ -8,7 +8,7 @@ run: an agent that calls a tool, then hands off to a second agent.
 ## Prerequisites
 
 ```bash
-pip install agent-trace[openai-agents]
+pip install agent-observability-trace-cli[openai-agents]
 export OPENAI_API_KEY=your-key   # needed only for the record/streamed steps
 ```
 

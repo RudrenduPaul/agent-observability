@@ -26,7 +26,7 @@ python example.py record   pytest examples/03-ci-pipeline/ -v
 ## Step 1 — Record (run once on your laptop)
 
 ```bash
-pip install agent-trace httpx
+pip install agent-observability-trace-cli httpx
 
 # Record a real run. This calls httpbin.org (no API key needed for this demo).
 python examples/03-ci-pipeline/example.py record
@@ -97,7 +97,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install agent-trace httpx pytest
+        run: pip install agent-observability-trace-cli httpx pytest
 
       - name: Run tests
         env:

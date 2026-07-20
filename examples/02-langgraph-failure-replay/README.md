@@ -7,7 +7,7 @@ without spending more tokens.
 ## Prerequisites
 
 ```bash
-pip install agent-trace[langgraph]
+pip install agent-observability-trace-cli[langgraph]
 export OPENAI_API_KEY=your-key   # needed only for the record step
 ```
 

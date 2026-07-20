@@ -9,7 +9,7 @@ left as opaque JSON a developer has to hand-read out of `fixture.db`.
 ## Prerequisites
 
 ```bash
-pip install agent-trace[google-genai]
+pip install agent-observability-trace-cli[google-genai]
 ```
 
 No live Gemini API key is required — the example stubs the network call

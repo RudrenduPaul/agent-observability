@@ -29,12 +29,12 @@ and reproducible in CI; pass `--live` to use a real OpenAI model instead.
 
 ```bash
 # From the repo root:
-pip install agent-trace[agno]
+pip install agent-observability-trace-cli[agno]
 python examples/04-agno-agent-team/example.py
 
 # Or against a real OpenAI model:
 export OPENAI_API_KEY=your-key
-pip install agent-trace[agno] openai
+pip install agent-observability-trace-cli[agno] openai
 python examples/04-agno-agent-team/example.py --live
 ```
 

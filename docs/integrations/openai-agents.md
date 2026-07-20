@@ -9,7 +9,7 @@ replayed offline at zero API cost.
 ## 1. Install
 
 ```bash
-pip install agent-trace[openai-agents]
+pip install agent-observability-trace-cli[openai-agents]
 ```
 
 This installs `openai-agents>=0.0.3`. The Agents SDK is a separate package
@@ -24,7 +24,7 @@ from the `openai` Python library. Check `pyproject.toml` for the pinned range.
 OpenAI Agents SDK — record and replay.
 
 Prerequisites:
-    pip install agent-trace[openai-agents]
+    pip install agent-observability-trace-cli[openai-agents]
     export OPENAI_API_KEY=your-key  # needed only for the record step
 """
 from __future__ import annotations

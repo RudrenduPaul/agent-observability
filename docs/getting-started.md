@@ -7,22 +7,22 @@ This guide walks from zero to a working record/replay in about 10 minutes.
 ## 1. Install
 
 ```bash
-pip install agent-trace
+pip install agent-observability-trace-cli
 ```
 
 or with uv:
 
 ```bash
-uv add agent-trace
+uv add agent-observability-trace-cli
 ```
 
 Optional extras for specific frameworks:
 
 ```bash
-pip install agent-trace[langgraph]        # LangGraph callback integration
-pip install agent-trace[openai-agents]    # OpenAI Agents SDK integration
-pip install agent-trace[otlp]             # OTLP exporter for Jaeger / Grafana Tempo
-pip install agent-trace[requests]         # requests adapter (httpx is bundled by default)
+pip install agent-observability-trace-cli[langgraph]        # LangGraph callback integration
+pip install agent-observability-trace-cli[openai-agents]    # OpenAI Agents SDK integration
+pip install agent-observability-trace-cli[otlp]             # OTLP exporter for Jaeger / Grafana Tempo
+pip install agent-observability-trace-cli[requests]         # requests adapter (httpx is bundled by default)
 ```
 
 Verify the install:
@@ -223,7 +223,7 @@ then the guard is always active in test runs.
 Install the extra:
 
 ```bash
-pip install agent-trace[langgraph]
+pip install agent-observability-trace-cli[langgraph]
 ```
 
 ```python
@@ -349,5 +349,5 @@ If your SDK uses `requests` and you are seeing misses, verify you installed the
 requests extra:
 
 ```bash
-pip install agent-trace[requests]
+pip install agent-observability-trace-cli[requests]
 ```

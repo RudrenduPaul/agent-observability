@@ -28,6 +28,6 @@ transport returning Anthropic's actual error body for this shape.
 ## Run
 
 ```bash
-pip install agent-trace[langgraph]
+pip install agent-observability-trace-cli[langgraph]
 python examples/12-langgraph-structured-response-tool-conflict/example.py
 ```

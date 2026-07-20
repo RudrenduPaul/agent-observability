@@ -26,6 +26,6 @@ last chunk's `usage_metadata`.
 ## Run
 
 ```bash
-pip install agent-trace[langgraph]
+pip install agent-observability-trace-cli[langgraph]
 python examples/13-langgraph-streaming-token-usage/example.py
 ```

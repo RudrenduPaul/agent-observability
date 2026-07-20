@@ -11,7 +11,7 @@ before the failure).
 ## Prerequisites
 
 ```bash
-pip install agent-trace[langgraph]
+pip install agent-observability-trace-cli[langgraph]
 ```
 
 ## The race

@@ -14,7 +14,7 @@ phase, where the pre-existing `LangGraphTracer` had no hook point at all).
 ## Prerequisites
 
 ```bash
-pip install agent-trace[langgraph]
+pip install agent-observability-trace-cli[langgraph]
 ```
 
 `langgraph-cli`/`langgraph-api` are **not** required to run this example —

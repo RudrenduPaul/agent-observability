@@ -41,11 +41,11 @@ tools:
 
 ```bash
 # From the repo root:
-pip install agent-trace[mcp]
+pip install agent-observability-trace-cli[mcp]
 uv run python examples/04-mcp-stdio-capture/example.py
 
 # Or with plain Python:
-pip install agent-trace[mcp]
+pip install agent-observability-trace-cli[mcp]
 python examples/04-mcp-stdio-capture/example.py
 ```
 

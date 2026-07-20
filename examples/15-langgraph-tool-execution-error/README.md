@@ -24,6 +24,6 @@ callback handler, not a consumer of `astream_events`.
 ## Run
 
 ```bash
-pip install agent-trace[langgraph]
+pip install agent-observability-trace-cli[langgraph]
 python examples/15-langgraph-tool-execution-error/example.py
 ```

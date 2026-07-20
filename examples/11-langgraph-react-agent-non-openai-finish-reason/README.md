@@ -30,6 +30,6 @@ dispatched (`llm.has_tool_calls=True`) despite a finish reason that isn't
 ## Run
 
 ```bash
-pip install agent-trace[langgraph]
+pip install agent-observability-trace-cli[langgraph]
 python examples/11-langgraph-react-agent-non-openai-finish-reason/example.py
 ```

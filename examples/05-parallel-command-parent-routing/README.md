@@ -11,7 +11,7 @@ No API key required — every "model" decision is a plain Python stand-in.
 ## Prerequisites
 
 ```bash
-pip install agent-trace[langgraph]
+pip install agent-observability-trace-cli[langgraph]
 ```
 
 ## Part A — the capture gap (a real, live graph run)

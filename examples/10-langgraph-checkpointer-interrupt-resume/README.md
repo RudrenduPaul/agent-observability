@@ -47,7 +47,7 @@ prints for each run — the warning fires only for the broken one.
 ## Run
 
 ```bash
-pip install agent-trace[langgraph]
+pip install agent-observability-trace-cli[langgraph]
 python examples/10-langgraph-checkpointer-interrupt-resume/example.py
 ```
 

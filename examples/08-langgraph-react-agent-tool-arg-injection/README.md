@@ -19,7 +19,7 @@ returns the same two parallel tool calls, deterministically.
 ## Prerequisites
 
 ```bash
-pip install agent-trace[langgraph]
+pip install agent-observability-trace-cli[langgraph]
 ```
 
 ## The two tools

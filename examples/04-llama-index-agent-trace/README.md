@@ -28,7 +28,7 @@ offline.
 uv run python examples/04-llama-index-agent-trace/example.py
 
 # Or with plain Python:
-pip install agent-trace[llama-index]
+pip install agent-observability-trace-cli[llama-index]
 python examples/04-llama-index-agent-trace/example.py
 ```
 
