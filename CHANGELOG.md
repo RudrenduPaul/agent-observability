@@ -3,6 +3,39 @@
 All notable changes to agent-trace are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.5] - 2026-07-20
+
+### Fixed
+- `agent-trace version` printed `0.1.0` regardless of the actually-installed
+  version (0.1.4 at the time), from two independently hardcoded version
+  constants (`_cli.py`'s `_VERSION`, `__init__.py`'s `__version__`). Both now
+  resolve via `importlib.metadata.version()` against the installed package,
+  so they can't drift from `pyproject.toml` again.
+- 39 more broken `pip install agent-trace` / `uv add agent-trace` commands
+  across 27 `.py` files (`examples/*/example.py`, `demos/`, `tests/`,
+  `src/agent_trace/integrations/langchain_core.py`) and 5
+  `examples/*/README.md` files using `uv add` or a quoted
+  `"agent-trace[extra]"` form the prior `.md`-only sweep's grep pattern
+  didn't match.
+- 3 relative image links in README.md (`docs/assets/...`, `docs/demo.gif`,
+  `docs/usage.gif`) — broken on the live PyPI project page, which (unlike
+  GitHub) does not rewrite relative markdown paths. Now absolute
+  raw.githubusercontent.com URLs.
+- `release.yml`'s Trusted Publishing setup comment pointed at the wrong,
+  nonexistent PyPI project slug (`agent-trace` instead of
+  `agent-observability-trace-cli`).
+- README's Security section claimed SLSA Level 2 provenance, Sigstore
+  signing on every release, SBOM attached to every release, and secret
+  scanning auto-enabling on going public. None of these are currently true
+  (verified via `gh release view`, the GitHub API's `security_and_analysis`
+  endpoint, and a repo-wide grep for any provenance-attestation mechanism).
+  Rewritten to state the actual current state.
+- `docs/concepts.md` described an httpx patch mechanism the source's own
+  comments say was deliberately replaced, claimed `httpx.AsyncClient` isn't
+  intercepted (it is), and documented a 2-table fixture schema when the real
+  one has 4 (`ws_frames`/`mcp_frames` were undocumented). Rewritten against
+  current source.
+
 ## [0.1.4] - 2026-07-20
 
 ### Changed
