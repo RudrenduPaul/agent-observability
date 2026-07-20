@@ -43,8 +43,8 @@ jobs:
       - name: Generate SBOM (JSON + XML)
         run: |
           pip install cyclonedx-bom==4.5.0
-          cyclonedx-py environment --format JSON --output-file sbom.json
-          cyclonedx-py environment --format XML  --output-file sbom.xml
+          cyclonedx-py environment --of JSON -o sbom.json
+          cyclonedx-py environment --of XML  -o sbom.xml
 
       # SLSA Level 2 — sign dist artifacts with Sigstore via GitHub OIDC.
       # Produces *.sigstore bundles alongside each dist file.
