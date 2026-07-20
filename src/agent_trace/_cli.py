@@ -90,11 +90,16 @@ def cmd_version(_args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 
-def cmd_list(_args: argparse.Namespace) -> None:
+def cmd_list(args: argparse.Namespace) -> None:
     """List all recorded runs in the trace directory."""
     trace_dir = _trace_dir()
+    as_json: bool = getattr(args, "json", False)
+
     if not trace_dir.exists():
-        print(f"No runs yet. Trace directory does not exist: {trace_dir}")
+        if as_json:
+            print(json.dumps({"trace_dir": str(trace_dir), "runs": []}))
+        else:
+            print(f"No runs yet. Trace directory does not exist: {trace_dir}")
         return
 
     run_dirs = sorted(
@@ -104,7 +109,23 @@ def cmd_list(_args: argparse.Namespace) -> None:
     )
 
     if not run_dirs:
-        print(f"No recorded runs in {trace_dir}")
+        if as_json:
+            print(json.dumps({"trace_dir": str(trace_dir), "runs": []}))
+        else:
+            print(f"No recorded runs in {trace_dir}")
+        return
+
+    if as_json:
+        runs = [
+            {
+                "run_id": run_dir.name,
+                "exchanges": _to_int_or_none(_count_exchanges(run_dir)),
+                "spans": _to_int_or_none(_count_spans(run_dir)),
+                "recorded_at": _format_mtime(run_dir.stat().st_mtime),
+            }
+            for run_dir in run_dirs
+        ]
+        print(json.dumps({"trace_dir": str(trace_dir), "runs": runs}, indent=2))
         return
 
     # Header
@@ -144,6 +165,16 @@ def _count_spans(run_dir: Path) -> str:
         return str(len(data.get("spans", [])))
     except Exception:
         return "?"
+
+
+def _to_int_or_none(value: str) -> int | None:
+    """Convert `_count_exchanges`/`_count_spans`'s string return ('-' for
+    absent, '?' for a read error, or a digit string) into a JSON-friendly
+    int | None, so --json output never leaks the human-display sentinels."""
+    try:
+        return int(value)
+    except ValueError:
+        return None
 
 
 def _format_mtime(ts: float) -> str:
@@ -935,86 +966,84 @@ def cmd_inspect(args: argparse.Namespace) -> None:
     run_id: str = args.run_id
     _require_run_dir(run_id)
     exchanges, spans = _load_run_exchanges_and_spans(run_id)
+    as_json: bool = getattr(args, "json", False)
+
+    checks: dict[str, list[dict[str, Any]]] = dict(
+        ins.run_all_exchange_checks(exchanges)
+    )
+    checks["known_error_pattern"] = ins.match_known_error_patterns(spans)
+    checks["reserved_kwarg_collision"] = ins.check_reserved_kwarg_collision(spans)
+    checks["near_duplicate_sibling_content"] = ins.find_near_duplicate_sibling_content(
+        spans
+    )
+    checks["phantom_tool_call"] = ins.check_phantom_tool_call(spans, exchanges)
+    checks["system_prompt_dropped"] = ins.check_system_prompt_dropped(spans)
+
+    if args.registered_tools:
+        registered = set(args.registered_tools.split(","))
+        checks["tool_call_name_fuzzy_match"] = ins.check_tool_call_name_fuzzy_match(
+            exchanges, registered
+        )
+        checks["tool_call_name_dotted_compound"] = (
+            ins.check_tool_call_name_dotted_compound(exchanges, registered)
+        )
+        checks["action_name_not_registered"] = ins.check_action_name_not_registered(
+            exchanges, registered
+        )
+        checks["tool_call_name_not_registered"] = (
+            ins.check_tool_call_name_not_registered(exchanges, registered)
+        )
+
+    if args.configured_host:
+        checks["endpoint_host_mismatch"] = ins.check_endpoint_host_mismatch(
+            exchanges, args.configured_host
+        )
+
+    if args.check_kwarg:
+        checks["missing_extra_kwarg"] = ins.check_missing_extra_kwarg(
+            exchanges, args.check_kwarg
+        )
+
+    if args.diff_field:
+        checks["field_present_on_wire_absent_downstream"] = (
+            ins.field_present_on_wire_absent_downstream(
+                exchanges, spans, args.diff_field
+            )
+        )
+
+    if args.diff_get_post_field:
+        checks["get_post_field_mismatch"] = ins.check_get_post_field_mismatch(
+            exchanges,
+            args.diff_get_post_field,
+            get_id_field=args.diff_get_post_id_field,
+            post_id_field=args.diff_get_post_post_id_field,
+        )
+
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "exchanges": len(exchanges),
+                    "spans": len(spans),
+                    "checks": checks,
+                },
+                indent=2,
+                default=str,
+            )
+        )
+        return
 
     print(f"Inspecting run: {run_id}")
     print(f"Exchanges: {len(exchanges)}  Spans: {len(spans)}")
 
-    results = ins.run_all_exchange_checks(exchanges)
-    for check_name, flags in results.items():
+    any_flagged = False
+    for check_name, flags in checks.items():
+        if flags:
+            any_flagged = True
         _print_flags(check_name, flags)
 
-    _print_flags(
-        "known_error_pattern",
-        ins.match_known_error_patterns(spans),
-    )
-    _print_flags(
-        "reserved_kwarg_collision",
-        ins.check_reserved_kwarg_collision(spans),
-    )
-    _print_flags(
-        "near_duplicate_sibling_content",
-        ins.find_near_duplicate_sibling_content(spans),
-    )
-    _print_flags(
-        "phantom_tool_call",
-        ins.check_phantom_tool_call(spans, exchanges),
-    )
-    _print_flags(
-        "system_prompt_dropped",
-        ins.check_system_prompt_dropped(spans),
-    )
-
-    if args.registered_tools:
-        registered = set(args.registered_tools.split(","))
-        _print_flags(
-            "tool_call_name_fuzzy_match",
-            ins.check_tool_call_name_fuzzy_match(exchanges, registered),
-        )
-        _print_flags(
-            "tool_call_name_dotted_compound",
-            ins.check_tool_call_name_dotted_compound(exchanges, registered),
-        )
-        _print_flags(
-            "action_name_not_registered",
-            ins.check_action_name_not_registered(exchanges, registered),
-        )
-        _print_flags(
-            "tool_call_name_not_registered",
-            ins.check_tool_call_name_not_registered(exchanges, registered),
-        )
-
-    if args.configured_host:
-        _print_flags(
-            "endpoint_host_mismatch",
-            ins.check_endpoint_host_mismatch(exchanges, args.configured_host),
-        )
-
-    if args.check_kwarg:
-        _print_flags(
-            "missing_extra_kwarg",
-            ins.check_missing_extra_kwarg(exchanges, args.check_kwarg),
-        )
-
-    if args.diff_field:
-        _print_flags(
-            "field_present_on_wire_absent_downstream",
-            ins.field_present_on_wire_absent_downstream(
-                exchanges, spans, args.diff_field
-            ),
-        )
-
-    if args.diff_get_post_field:
-        _print_flags(
-            "get_post_field_mismatch",
-            ins.check_get_post_field_mismatch(
-                exchanges,
-                args.diff_get_post_field,
-                get_id_field=args.diff_get_post_id_field,
-                post_id_field=args.diff_get_post_post_id_field,
-            ),
-        )
-
-    if not results and not spans:
+    if not any_flagged and not spans:
         print()
         print("No anomalies flagged (or nothing recorded for this run).")
 
@@ -1051,53 +1080,91 @@ def _diff_text(label_a: str, text_a: str, label_b: str, text_b: str) -> list[str
     )
 
 
-def _print_exchange_diff(
+def _compute_exchange_diff(
     exchanges_a: list[dict[str, Any]],
     exchanges_b: list[dict[str, Any]],
     run_id_a: str,
     run_id_b: str,
-) -> None:
-    """Print the field-level diff of two runs' exchanges, matched by URL."""
+) -> list[dict[str, Any]]:
+    """Return the field-level diff of two runs' exchanges, matched by URL,
+    as a list of structured entries — the shared data source for both the
+    human-readable printer and --json output."""
     by_url_a = _exchanges_by_url(exchanges_a)
     by_url_b = _exchanges_by_url(exchanges_b)
 
-    all_urls = sorted(set(by_url_a) | set(by_url_b))
-    if not all_urls:
-        print("No exchanges recorded in either run.")
-        return
-
-    any_diff = False
-    for url in all_urls:
+    entries: list[dict[str, Any]] = []
+    for url in sorted(set(by_url_a) | set(by_url_b)):
         rows_a = by_url_a.get(url, [])
         rows_b = by_url_b.get(url, [])
         if not rows_a:
-            print(f"\n{url}: only present in {run_id_b} ({len(rows_b)} exchange(s))")
-            any_diff = True
+            entries.append(
+                {
+                    "url": url,
+                    "kind": "only_in",
+                    "only_in": run_id_b,
+                    "count": len(rows_b),
+                }
+            )
             continue
         if not rows_b:
-            print(f"\n{url}: only present in {run_id_a} ({len(rows_a)} exchange(s))")
-            any_diff = True
+            entries.append(
+                {
+                    "url": url,
+                    "kind": "only_in",
+                    "only_in": run_id_a,
+                    "count": len(rows_a),
+                }
+            )
             continue
 
         for i in range(max(len(rows_a), len(rows_b))):
             row_a = rows_a[i] if i < len(rows_a) else None
             row_b = rows_b[i] if i < len(rows_b) else None
             if row_a is None or row_b is None:
-                print(f"\n{url} [{i}]: exchange count differs between runs")
-                any_diff = True
+                entries.append(
+                    {"url": url, "index": i, "kind": "exchange_count_differs"}
+                )
                 continue
             for field in ("request_body", "response_body"):
                 text_a = str(row_a.get(field, ""))
                 text_b = str(row_b.get(field, ""))
                 if text_a == text_b:
                     continue
-                any_diff = True
-                print(f"\n{url} [{i}] {field}:")
-                for line in _diff_text(f"{run_id_a}", text_a, f"{run_id_b}", text_b):
-                    print(f"  {line}")
+                entries.append(
+                    {
+                        "url": url,
+                        "index": i,
+                        "kind": "field_diff",
+                        "field": field,
+                        "diff": _diff_text(
+                            f"{run_id_a}", text_a, f"{run_id_b}", text_b
+                        ),
+                    }
+                )
 
-    if not any_diff:
+    return entries
+
+
+def _print_exchange_diff(entries: list[dict[str, Any]]) -> None:
+    """Print `_compute_exchange_diff`'s structured entries as human-readable
+    text."""
+    if not entries:
         print("\nNo differences found — every matched exchange is byte-identical.")
+        return
+
+    for entry in entries:
+        url = entry["url"]
+        if entry["kind"] == "only_in":
+            print(
+                f"\n{url}: only present in {entry['only_in']} "
+                f"({entry['count']} exchange(s))"
+            )
+        elif entry["kind"] == "exchange_count_differs":
+            print(f"\n{url} [{entry['index']}]: exchange count differs between runs")
+        elif entry["kind"] == "field_diff":
+            print(f"\n{url} [{entry['index']}] {entry['field']}:")
+            for line in entry["diff"]:
+                print(f"  {line}")
 
 
 def cmd_diff(args: argparse.Namespace) -> None:
@@ -1113,21 +1180,42 @@ def cmd_diff(args: argparse.Namespace) -> None:
 
     exchanges_a, spans_a = _load_run_exchanges_and_spans(run_id_a)
     exchanges_b, spans_b = _load_run_exchanges_and_spans(run_id_b)
+    as_json: bool = getattr(args, "json", False)
+
+    entries = _compute_exchange_diff(exchanges_a, exchanges_b, run_id_a, run_id_b)
+    # Restart-vs-resume: does run_b's root chain span for a shared
+    # LangGraph thread_id continue from run_a's last recorded
+    # langgraph_step, or did the graph start over from scratch (#161)?
+    restart_vs_resume = ins.check_restart_vs_resume(spans_a, spans_b)
+
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "run_id_a": run_id_a,
+                    "run_id_b": run_id_b,
+                    "exchanges_a": len(exchanges_a),
+                    "exchanges_b": len(exchanges_b),
+                    "diff": entries,
+                    "restart_vs_resume": restart_vs_resume,
+                },
+                indent=2,
+                default=str,
+            )
+        )
+        return
 
     print(
         f"Diffing {run_id_a} ({len(exchanges_a)} exchanges) vs "
         f"{run_id_b} ({len(exchanges_b)} exchanges)"
     )
 
-    _print_exchange_diff(exchanges_a, exchanges_b, run_id_a, run_id_b)
+    if not exchanges_a and not exchanges_b:
+        print("No exchanges recorded in either run.")
+    else:
+        _print_exchange_diff(entries)
 
-    # Restart-vs-resume: does run_b's root chain span for a shared
-    # LangGraph thread_id continue from run_a's last recorded
-    # langgraph_step, or did the graph start over from scratch (#161)?
-    _print_flags(
-        "restart_vs_resume",
-        ins.check_restart_vs_resume(spans_a, spans_b),
-    )
+    _print_flags("restart_vs_resume", restart_vs_resume)
 
 
 # ---------------------------------------------------------------------------
@@ -1171,6 +1259,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     Exits with the child process's own exit code.
     """
     command = _strip_leading_separator(args.child_command)
+    as_json: bool = getattr(args, "json", False)
     if not command:
         sys.exit(
             "error: no command given.\n"
@@ -1187,11 +1276,18 @@ def cmd_run(args: argparse.Namespace) -> None:
     env["AGENT_TRACE_AUTO_RECORD_NAME"] = args.name
     env["AGENT_TRACE_TRACE_DIR"] = str(trace_dir)
 
-    print("agent-trace: recording enabled (AGENT_TRACE_AUTO_RECORD=1)")
-    print(f"agent-trace: run_id:    {run_id}")
-    print(f"agent-trace: trace_dir: {trace_dir}")
-    print(f"agent-trace: command:   {' '.join(command)}")
-    print()
+    # In --json mode, agent-trace's own status lines go to stderr so stdout
+    # carries only the child process's own output plus one final JSON line
+    # — the child's output is never itself JSON, so it can't be merged into
+    # a single structured stream, only kept out of the way of it.
+    status_stream = sys.stderr if as_json else sys.stdout
+    print(
+        "agent-trace: recording enabled (AGENT_TRACE_AUTO_RECORD=1)", file=status_stream
+    )
+    print(f"agent-trace: run_id:    {run_id}", file=status_stream)
+    print(f"agent-trace: trace_dir: {trace_dir}", file=status_stream)
+    print(f"agent-trace: command:   {' '.join(command)}", file=status_stream)
+    print(file=status_stream)
 
     try:
         result = subprocess.run(command, env=env, check=False)  # noqa: S603
@@ -1200,9 +1296,21 @@ def cmd_run(args: argparse.Namespace) -> None:
     except KeyboardInterrupt:
         sys.exit(130)
 
-    print()
-    print(f"agent-trace: child process exited with code {result.returncode}")
-    print(f"agent-trace: inspect this run with: agent-trace show {run_id}")
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "trace_dir": str(trace_dir),
+                    "command": command,
+                    "exit_code": result.returncode,
+                }
+            )
+        )
+    else:
+        print()
+        print(f"agent-trace: child process exited with code {result.returncode}")
+        print(f"agent-trace: inspect this run with: agent-trace show {run_id}")
     sys.exit(result.returncode)
 
 
@@ -1236,7 +1344,13 @@ def main() -> None:
     sub.add_parser("version", help="Print version and exit")
 
     # list
-    sub.add_parser("list", help="List all recorded runs")
+    list_p = sub.add_parser("list", help="List all recorded runs")
+    list_p.add_argument(
+        "--json",
+        dest="json",
+        action="store_true",
+        help="Print machine-readable JSON instead of a human table",
+    )
 
     # show
     show_p = sub.add_parser("show", help="Pretty-print trace.json for a run")
@@ -1317,6 +1431,12 @@ def main() -> None:
         "resource id, if different from --diff-get-post-id-field (e.g. "
         "assistant_id)",
     )
+    inspect_p.add_argument(
+        "--json",
+        dest="json",
+        action="store_true",
+        help="Print machine-readable JSON instead of human-readable flag lists",
+    )
 
     # diff
     diff_p = sub.add_parser(
@@ -1325,6 +1445,12 @@ def main() -> None:
     )
     diff_p.add_argument("run_id_a", help="First run ID")
     diff_p.add_argument("run_id_b", help="Second run ID")
+    diff_p.add_argument(
+        "--json",
+        dest="json",
+        action="store_true",
+        help="Print machine-readable JSON instead of a human-readable diff",
+    )
 
     # run
     run_p = sub.add_parser(
@@ -1345,6 +1471,14 @@ def main() -> None:
         dest="name",
         default="auto-record",
         help="Trace name recorded in trace.json metadata (default: auto-record)",
+    )
+    run_p.add_argument(
+        "--json",
+        dest="json",
+        action="store_true",
+        help="Print agent-trace's own status as one final JSON line on stdout "
+        "(status lines go to stderr instead); must come before the child "
+        "command, e.g. agent-trace run --json -- langgraph dev",
     )
     run_p.add_argument(
         "child_command",

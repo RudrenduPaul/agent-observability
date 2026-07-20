@@ -5,6 +5,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Added
+- `--json` flag on `list`, `inspect`, `diff`, and `run` (`show` already
+  returned JSON by default). Closes the gap between what the agent-native
+  positioning claimed and what the CLI actually did — previously only `show`
+  returned machine-parseable output. `run --json` prints agent-trace's own
+  status as one final JSON line on stdout with the child process's own
+  output passed through untouched ahead of it (status lines move to stderr
+  in this mode, since the child's own output can't itself be made
+  structured).
+
 ### Security
 - Enabling Dependabot security-advisory alerts (previously disabled) surfaced
   5 real vulnerabilities: 3 in `mcp` (high), 1 in `json-repair` (high, via the

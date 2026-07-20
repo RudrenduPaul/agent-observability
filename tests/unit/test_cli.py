@@ -1504,3 +1504,227 @@ class TestShowErrorsOnlyFlag:
         assert result.returncode == 0, result.stderr
         assert "boom-details" in result.stdout
         assert "Error spans: 1 of 2 total" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# --json flag: list / inspect / diff / run
+# ---------------------------------------------------------------------------
+
+
+class TestListJsonFlag:
+    def test_no_trace_dir_yet_returns_empty_json(self, tmp_path) -> None:
+        import json as _json
+        import os
+
+        env = dict(os.environ)
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path / "does-not-exist")
+
+        result = _run_cli(["list", "--json"], env=env)
+        assert result.returncode == 0, result.stderr
+        payload = _json.loads(result.stdout)
+        assert payload["runs"] == []
+
+    def test_lists_runs_as_structured_json(self, tmp_path) -> None:
+        import json as _json
+        import os
+
+        env = dict(os.environ)
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
+        _write_run(
+            tmp_path,
+            "run1",
+            exchanges=[
+                {
+                    "url": "https://api.openai.com/v1/chat/completions",
+                    "method": "POST",
+                    "request_headers": {},
+                    "request_body": "{}",
+                    "response_status": 200,
+                    "response_headers": {},
+                    "response_body": "{}",
+                }
+            ],
+        )
+
+        result = _run_cli(["list", "--json"], env=env)
+        assert result.returncode == 0, result.stderr
+        payload = _json.loads(result.stdout)
+        assert payload["runs"] == [
+            {
+                "run_id": "run1",
+                "exchanges": 1,
+                "spans": 0,
+                "recorded_at": payload["runs"][0]["recorded_at"],
+            }
+        ]
+
+    def test_text_mode_output_unaffected(self, tmp_path) -> None:
+        import os
+
+        env = dict(os.environ)
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
+        _write_run(tmp_path, "run1")
+
+        result = _run_cli(["list"], env=env)
+        assert result.returncode == 0, result.stderr
+        assert "RUN ID" in result.stdout
+        assert not result.stdout.strip().startswith("{")
+
+
+class TestInspectJsonFlag:
+    def test_outputs_valid_json_with_checks_key(self, tmp_path) -> None:
+        import json as _json
+        import os
+
+        env = dict(os.environ)
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
+
+        request_body = _json.dumps(
+            {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "tool_calls": [{"id": "call_1", "function": {"name": "x"}}],
+                    }
+                ]
+            }
+        )
+        _write_run(
+            tmp_path,
+            "run1",
+            exchanges=[
+                {
+                    "url": "https://api.openai.com/v1/chat/completions",
+                    "method": "POST",
+                    "request_headers": {},
+                    "request_body": request_body,
+                    "response_status": 500,
+                    "response_headers": {},
+                    "response_body": "server error",
+                }
+            ],
+        )
+
+        result = _run_cli(["inspect", "run1", "--json"], env=env)
+        assert result.returncode == 0, result.stderr
+        payload = _json.loads(result.stdout)
+        assert payload["run_id"] == "run1"
+        assert payload["exchanges"] == 1
+        assert "orphaned_tool_call_ids" in payload["checks"]
+        assert payload["checks"]["orphaned_tool_call_ids"]
+
+    def test_clean_run_json_has_no_flags(self, tmp_path) -> None:
+        import json as _json
+        import os
+
+        env = dict(os.environ)
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
+        _write_run(tmp_path, "run-clean")
+
+        result = _run_cli(["inspect", "run-clean", "--json"], env=env)
+        assert result.returncode == 0, result.stderr
+        payload = _json.loads(result.stdout)
+        assert all(not flags for flags in payload["checks"].values())
+
+
+class TestDiffJsonFlag:
+    def test_field_diff_reported_as_structured_json(self, tmp_path) -> None:
+        import json as _json
+        import os
+
+        env = dict(os.environ)
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
+
+        common_kwargs = {
+            "url": "https://api.openai.com/v1/chat/completions",
+            "method": "POST",
+            "request_headers": {},
+            "response_status": 200,
+            "response_headers": {},
+            "response_body": "{}",
+        }
+        _write_run(
+            tmp_path,
+            "run-a",
+            exchanges=[{**common_kwargs, "request_body": '{"prompt": "hello"}'}],
+        )
+        _write_run(
+            tmp_path,
+            "run-b",
+            exchanges=[{**common_kwargs, "request_body": '{"prompt": "goodbye"}'}],
+        )
+
+        result = _run_cli(["diff", "run-a", "run-b", "--json"], env=env)
+        assert result.returncode == 0, result.stderr
+        payload = _json.loads(result.stdout)
+        assert payload["run_id_a"] == "run-a"
+        assert payload["run_id_b"] == "run-b"
+        assert len(payload["diff"]) == 1
+        assert payload["diff"][0]["kind"] == "field_diff"
+        assert payload["diff"][0]["field"] == "request_body"
+
+    def test_identical_runs_json_has_empty_diff(self, tmp_path) -> None:
+        import json as _json
+        import os
+
+        env = dict(os.environ)
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
+
+        common_kwargs = {
+            "url": "https://api.openai.com/v1/chat/completions",
+            "method": "POST",
+            "request_headers": {},
+            "request_body": "{}",
+            "response_status": 200,
+            "response_headers": {},
+            "response_body": "{}",
+        }
+        _write_run(tmp_path, "run-a", exchanges=[dict(common_kwargs)])
+        _write_run(tmp_path, "run-b", exchanges=[dict(common_kwargs)])
+
+        result = _run_cli(["diff", "run-a", "run-b", "--json"], env=env)
+        assert result.returncode == 0, result.stderr
+        payload = _json.loads(result.stdout)
+        assert payload["diff"] == []
+
+
+class TestRunJsonFlag:
+    def test_final_stdout_line_is_valid_json_summary(self, tmp_path) -> None:
+        import json as _json
+        import os
+        import sys
+
+        env = dict(os.environ)
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
+
+        result = _run_cli(
+            ["run", "--json", "--", sys.executable, "-c", "print('hello')"],
+            env=env,
+        )
+        assert result.returncode == 0, result.stderr
+        last_line = result.stdout.strip().splitlines()[-1]
+        payload = _json.loads(last_line)
+        assert payload["exit_code"] == 0
+        assert payload["command"] == [sys.executable, "-c", "print('hello')"]
+        # The child's own output stays on stdout, ahead of the JSON line.
+        assert "hello" in result.stdout
+        # agent-trace's own status lines move to stderr in --json mode.
+        assert "recording enabled" in result.stderr
+        assert "recording enabled" not in result.stdout
+
+    def test_nonzero_child_exit_code_reported_in_json(self, tmp_path) -> None:
+        import json as _json
+        import os
+        import sys
+
+        env = dict(os.environ)
+        env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
+
+        result = _run_cli(
+            ["run", "--json", "--", sys.executable, "-c", "import sys; sys.exit(3)"],
+            env=env,
+        )
+        assert result.returncode == 3
+        last_line = result.stdout.strip().splitlines()[-1]
+        payload = _json.loads(last_line)
+        assert payload["exit_code"] == 3
