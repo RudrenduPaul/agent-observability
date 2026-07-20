@@ -35,7 +35,7 @@ Usage::
         cb = LangChainTracer(tracer=t, trace=trace)
         result = my_runnable.invoke(input, config={"callbacks": [cb]})
 
-Requires ``langchain-core`` (``pip install agent-trace[langchain]``) —
+Requires ``langchain-core`` (``pip install agent-observability-trace-cli[langchain]``) —
 notably *not* ``langgraph``, unlike ``LangGraphTracer``.
 """
 
@@ -59,7 +59,7 @@ logger = logging.getLogger(__name__)
 _INSTALL_HINT = (
     "LangChainTracer requires langchain-core.\n"
     "Install it with:\n\n"
-    "    pip install agent-trace[langchain]\n"
+    "    pip install agent-observability-trace-cli[langchain]\n"
 )
 
 _MAX_ATTR_LEN = 8_000

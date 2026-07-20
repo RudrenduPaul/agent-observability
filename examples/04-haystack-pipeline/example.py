@@ -37,7 +37,7 @@ try:
 except ImportError:
     import sys
 
-    sys.exit("haystack-ai is not installed.\nRun: pip install agent-trace[haystack]")
+    sys.exit("haystack-ai is not installed.\nRun: pip install agent-observability-trace-cli[haystack]")
 
 from agent_trace import SpanStatus, tracer
 from agent_trace.core.trace import Trace

@@ -58,7 +58,7 @@ try:
     from langgraph.store.base import BaseStore
     from langgraph.store.memory import InMemoryStore
 except ImportError:
-    sys.exit("langgraph is not installed.\nRun: pip install agent-trace[langgraph]")
+    sys.exit("langgraph is not installed.\nRun: pip install agent-observability-trace-cli[langgraph]")
 
 from agent_trace import Tracer
 from agent_trace.integrations.langgraph import (

@@ -16,7 +16,7 @@ answer.  Instrumented via `instrument_runner()`, this produces an
         └── llm:<model>
 
 Prerequisites:
-    pip install agent-trace[openai-agents]
+    pip install agent-observability-trace-cli[openai-agents]
     export OPENAI_API_KEY=your-key   # only needed for the record step
 
 Step 1 — Record (requires API key):
@@ -41,7 +41,7 @@ try:
     from agents import Agent, function_tool
 except ImportError:
     sys.exit(
-        "openai-agents is not installed.\nRun: pip install agent-trace[openai-agents]"
+        "openai-agents is not installed.\nRun: pip install agent-observability-trace-cli[openai-agents]"
     )
 
 from agent_trace import Tracer, replay

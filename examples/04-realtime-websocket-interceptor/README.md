@@ -37,7 +37,7 @@ any SDK built on `httpx.Client`.
 uv run python examples/04-realtime-websocket-interceptor/example.py
 
 # Or with plain Python:
-pip install "agent-trace[realtime]"
+pip install "agent-observability-trace-cli[realtime]"
 python examples/04-realtime-websocket-interceptor/example.py
 ```
 

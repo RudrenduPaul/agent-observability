@@ -28,7 +28,7 @@ try:
 except ImportError:
     sys.exit(
         "langgraph is not installed.\n"
-        "Run: uv add agent-trace[langgraph] or pip install agent-trace[langgraph]"
+        "Run: uv add agent-observability-trace-cli[langgraph] or pip install agent-observability-trace-cli[langgraph]"
     )
 
 from agent_trace import Tracer, replay

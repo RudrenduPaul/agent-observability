@@ -18,7 +18,7 @@ packages, but make NO live network calls:
 
 Run with: uv run pytest tests/integration/ -m integration
 
-Requirements: pip install agent-trace[google-genai]
+Requirements: pip install agent-observability-trace-cli[google-genai]
 """
 
 from __future__ import annotations

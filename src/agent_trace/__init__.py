@@ -30,6 +30,8 @@ import uuid
 from collections.abc import Callable, Generator
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar, Token
+from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -40,7 +42,10 @@ from agent_trace.core.span import Span, SpanStatus
 from agent_trace.core.trace import Trace
 from agent_trace.plugins.base import Plugin, PluginBase, SpanPlugin, TracePlugin
 
-__version__ = "0.1.0"
+try:
+    __version__ = _pkg_version("agent-observability-trace-cli")
+except _PackageNotFoundError:
+    __version__ = "0.0.0+unknown"
 
 logger = logging.getLogger(__name__)
 

@@ -13,7 +13,7 @@ HTTP interceptor already patches. Record/replay therefore works exactly like
 the LangGraph examples: no crewAI-specific fixture handling needed.
 
 Prerequisites:
-    pip install agent-trace[crewai]
+    pip install agent-observability-trace-cli[crewai]
     export OPENAI_API_KEY=your-key  # only needed for the record step
 
 Step 1 — Record (requires API key):
@@ -34,7 +34,7 @@ from pathlib import Path
 try:
     from crewai import Agent, Crew, Process, Task  # type: ignore[import]
 except ImportError:
-    sys.exit("crewai is not installed.\nRun: pip install agent-trace[crewai]")
+    sys.exit("crewai is not installed.\nRun: pip install agent-observability-trace-cli[crewai]")
 
 from agent_trace import replay, tracer
 from agent_trace.core.trace import Trace

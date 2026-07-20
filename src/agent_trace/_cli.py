@@ -26,7 +26,8 @@ from typing import Any
 
 __all__ = ["main"]
 
-_VERSION = "0.1.0"
+from agent_trace import __version__
+
 _DEFAULT_TRACE_DIR = Path.home() / ".agent-trace" / "runs"
 
 
@@ -81,7 +82,7 @@ def _require_run_dir(run_id: str) -> Path:
 
 
 def cmd_version(_args: argparse.Namespace) -> None:
-    print(f"agent-trace {_VERSION}")
+    print(f"agent-trace {__version__}")
 
 
 # ---------------------------------------------------------------------------
@@ -598,9 +599,7 @@ def _http_sequence_confirms(
         for exchange in exchanges:
             recorded_at = exchange.get("recorded_at")
             seq = exchange.get("sequence_num")
-            if not isinstance(recorded_at, (int, float)) or not isinstance(
-                seq, int
-            ):
+            if not isinstance(recorded_at, (int, float)) or not isinstance(seq, int):
                 continue
             if start <= recorded_at < end_bound:
                 seqs.append(seq)
@@ -703,8 +702,7 @@ def _print_misattributed_spans(
         elif confirmed is False:
             suffix = "  [HTTP sequence_num ordering does NOT confirm this guess]"
         print(
-            f"  {row['span']:<30}  likely belongs under "
-            f"{row['likely_parent']}{suffix}"
+            f"  {row['span']:<30}  likely belongs under {row['likely_parent']}{suffix}"
         )
     print(
         "  (A span with no parent that started while another span was still "
@@ -1116,8 +1114,10 @@ def cmd_diff(args: argparse.Namespace) -> None:
     exchanges_a, spans_a = _load_run_exchanges_and_spans(run_id_a)
     exchanges_b, spans_b = _load_run_exchanges_and_spans(run_id_b)
 
-    print(f"Diffing {run_id_a} ({len(exchanges_a)} exchanges) vs "
-          f"{run_id_b} ({len(exchanges_b)} exchanges)")
+    print(
+        f"Diffing {run_id_a} ({len(exchanges_a)} exchanges) vs "
+        f"{run_id_b} ({len(exchanges_b)} exchanges)"
+    )
 
     _print_exchange_diff(exchanges_a, exchanges_b, run_id_a, run_id_b)
 
@@ -1307,8 +1307,7 @@ def main() -> None:
         "--diff-get-post-id-field",
         dest="diff_get_post_id_field",
         default="id",
-        help="Field name the GET response uses for the resource id "
-        "(default: id)",
+        help="Field name the GET response uses for the resource id (default: id)",
     )
     inspect_p.add_argument(
         "--diff-get-post-post-id-field",

@@ -29,7 +29,7 @@ LLM service, so the whole example runs on `127.0.0.1`.
 uv run python examples/04-grpc-record-replay/example.py
 
 # Or with plain Python:
-pip install "agent-trace[grpc]"
+pip install "agent-observability-trace-cli[grpc]"
 python examples/04-grpc-record-replay/example.py
 ```
 

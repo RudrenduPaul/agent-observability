@@ -39,7 +39,7 @@ try:
     from langchain_core.tools import tool
     from langgraph.prebuilt import create_react_agent
 except ImportError:
-    sys.exit("langgraph is not installed.\nRun: pip install agent-trace[langgraph]")
+    sys.exit("langgraph is not installed.\nRun: pip install agent-observability-trace-cli[langgraph]")
 
 from agent_trace import Tracer
 from agent_trace.exporters.stdout import StdoutExporter

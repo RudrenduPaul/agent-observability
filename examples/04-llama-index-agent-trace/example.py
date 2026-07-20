@@ -11,7 +11,7 @@ No API key or network access required — this uses llama_index's own MockLLM
 and a plain Python FunctionTool, so the example is fully reproducible offline.
 
 Run:
-    pip install agent-trace[llama-index]
+    pip install agent-observability-trace-cli[llama-index]
     python examples/04-llama-index-agent-trace/example.py
 """
 
@@ -27,7 +27,7 @@ try:
     from llama_index.core.tools import FunctionTool
 except ImportError:
     sys.exit(
-        "llama-index-core is not installed.\nRun: pip install agent-trace[llama-index]"
+        "llama-index-core is not installed.\nRun: pip install agent-observability-trace-cli[llama-index]"
     )
 
 from agent_trace import tracer

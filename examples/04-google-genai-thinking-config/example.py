@@ -3,7 +3,7 @@ Google GenAI thinking-config example.
 Run: uv run python examples/04-google-genai-thinking-config/example.py
 
 Prerequisites:
-    pip install agent-trace[google-genai]
+    pip install agent-observability-trace-cli[google-genai]
 
 Demonstrates what agent_trace.integrations.google_genai adds on top of the
 generic httpx interceptor: instead of leaving a Gemini "thinking" call as
@@ -40,7 +40,7 @@ try:
     from google.genai import types
 except ImportError:
     sys.exit(
-        "google-genai is not installed.\nRun: pip install agent-trace[google-genai]"
+        "google-genai is not installed.\nRun: pip install agent-observability-trace-cli[google-genai]"
     )
 
 from agent_trace import Tracer

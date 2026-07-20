@@ -49,7 +49,7 @@ try:
     from langgraph.graph import END, START, StateGraph
     from langgraph.types import Command, Send
 except ImportError:
-    sys.exit("langgraph is not installed.\nRun: pip install agent-trace[langgraph]")
+    sys.exit("langgraph is not installed.\nRun: pip install agent-observability-trace-cli[langgraph]")
 
 from agent_trace import Tracer
 from agent_trace.exporters.stdout import StdoutExporter

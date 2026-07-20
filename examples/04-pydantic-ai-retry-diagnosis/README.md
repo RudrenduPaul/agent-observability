@@ -20,7 +20,7 @@ payload stored as one opaque blob).
 ## Prerequisites
 
 ```bash
-pip install "agent-trace[pydantic-ai]"
+pip install "agent-observability-trace-cli[pydantic-ai]"
 ```
 
 No API key is needed — the example runs against pydantic-ai's built-in

@@ -18,7 +18,7 @@ scenario against a real provider — agent-trace's existing httpx interceptor
 records/replays that traffic exactly as it does for the other examples.
 
 Prerequisites:
-    pip install "agent-trace[pydantic-ai]"
+    pip install "agent-observability-trace-cli[pydantic-ai]"
 
 Run:
     python examples/04-pydantic-ai-retry-diagnosis/example.py
@@ -35,7 +35,7 @@ try:
     from pydantic_ai import Agent, ModelRetry
 except ImportError:
     sys.exit(
-        'pydantic-ai is not installed.\nRun: pip install "agent-trace[pydantic-ai]"'
+        'pydantic-ai is not installed.\nRun: pip install "agent-observability-trace-cli[pydantic-ai]"'
     )
 
 from agent_trace import Tracer

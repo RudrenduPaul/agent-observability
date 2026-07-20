@@ -12,7 +12,7 @@ and zero network I/O:
   local Python subprocess run through LocalCommandLineCodeExecutor.
 
 Prerequisites:
-    pip install agent-trace[autogen]
+    pip install agent-observability-trace-cli[autogen]
 
 Run:
     python examples/04-autogen-agent-observability/example.py
@@ -37,7 +37,7 @@ try:
 except ImportError:
     sys.exit(
         "autogen-agentchat / autogen-ext are not installed.\n"
-        "Run: pip install agent-trace[autogen]"
+        "Run: pip install agent-observability-trace-cli[autogen]"
     )
 
 from agent_trace import tracer

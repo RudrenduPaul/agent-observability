@@ -17,7 +17,7 @@ same `Tracer.start_trace(record=True)` patch captures it with zero code
 changes on the SDK side.
 
 Requires the `websockets` package:
-    pip install "agent-trace[realtime]"
+    pip install "agent-observability-trace-cli[realtime]"
 """
 
 from __future__ import annotations

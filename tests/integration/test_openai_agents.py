@@ -4,7 +4,7 @@ Integration tests for the OpenAI Agents SDK integration.
 Run with: uv run pytest tests/integration/ -m integration
 
 Requirements:
-  - pip install agent-trace[openai-agents]
+  - pip install agent-observability-trace-cli[openai-agents]
   - OPENAI_API_KEY set in the environment
 
 These tests are NOT run in standard CI because they make live API calls.

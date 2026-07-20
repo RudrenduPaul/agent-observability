@@ -20,7 +20,7 @@ missing was *any* reproducible test exercising the real SDK's HTTP client
 through RecordingTransport, not specifically a live API call.
 
 Run with: uv run pytest tests/integration/test_groq_integration.py
-Requires: pip install agent-trace[groq]  (or: pip install groq)
+Requires: pip install agent-observability-trace-cli[groq]  (or: pip install groq)
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ import httpx
 import pytest
 import respx
 
-pytest.importorskip("groq", reason="groq not installed (pip install agent-trace[groq])")
+pytest.importorskip("groq", reason="groq not installed (pip install agent-observability-trace-cli[groq])")
 
 from agent_trace import Tracer
 from agent_trace._replay.fixture import Fixture

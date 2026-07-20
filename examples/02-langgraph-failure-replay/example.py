@@ -5,7 +5,7 @@ This example demonstrates recording a LangGraph run that encounters an error,
 and replaying it offline without making API calls.
 
 Prerequisites:
-    pip install agent-trace[langgraph]
+    pip install agent-observability-trace-cli[langgraph]
     export OPENAI_API_KEY=your-key  # only needed for the record step
 
 Step 1 — Record (requires API key):
@@ -31,7 +31,7 @@ try:
 except ImportError:
     sys.exit(
         "langgraph is not installed.\n"
-        "Run: pip install agent-trace[langgraph]"
+        "Run: pip install agent-observability-trace-cli[langgraph]"
     )
 
 import httpx

@@ -30,7 +30,7 @@ autogen-agentchat / autogen-ext (v0.4+/v0.7.x) architecture. Runs with
 uv run --extra autogen python examples/04-autogen-agent-observability/example.py
 
 # Or with plain Python:
-pip install "agent-trace[autogen]"
+pip install "agent-observability-trace-cli[autogen]"
 python examples/04-autogen-agent-observability/example.py
 ```
 

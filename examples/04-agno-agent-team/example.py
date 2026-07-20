@@ -12,10 +12,10 @@ Demonstrates the Agno integration (agent_trace.integrations.agno) capturing:
 Runs with NO API key by default (a tiny scripted fake model stands in for a
 real provider, deterministically, so this example is reproducible in CI).
 Pass --live to use a real OpenAI model instead (requires OPENAI_API_KEY and
-`pip install agent-trace[agno] openai`).
+`pip install agent-observability-trace-cli[agno] openai`).
 
 Prerequisites:
-    pip install agent-trace[agno]
+    pip install agent-observability-trace-cli[agno]
 
 Usage:
     python examples/04-agno-agent-team/example.py
@@ -37,7 +37,7 @@ try:
     from agno.models.response import ModelResponse
     from agno.team.team import Team
 except ImportError:
-    sys.exit("agno is not installed.\nRun: pip install agent-trace[agno]")
+    sys.exit("agno is not installed.\nRun: pip install agent-observability-trace-cli[agno]")
 
 from agent_trace import Tracer
 from agent_trace.exporters.stdout import StdoutExporter

@@ -36,7 +36,7 @@ call (what this example wires up) can surface that class of bug.
 uv run python examples/04-haystack-pipeline/example.py
 
 # Or with plain Python:
-pip install "agent-trace[haystack]"
+pip install "agent-observability-trace-cli[haystack]"
 python examples/04-haystack-pipeline/example.py
 
 # With raw component input/output content also captured on the spans:

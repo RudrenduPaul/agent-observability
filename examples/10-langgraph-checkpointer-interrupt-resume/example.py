@@ -55,7 +55,7 @@ try:
     from langgraph.prebuilt import ToolNode, tools_condition
     from langgraph.types import Command, interrupt
 except ImportError:
-    sys.exit("langgraph is not installed.\nRun: pip install agent-trace[langgraph]")
+    sys.exit("langgraph is not installed.\nRun: pip install agent-observability-trace-cli[langgraph]")
 
 from agent_trace import Tracer
 from agent_trace._cli import _print_zero_task_updates

@@ -255,7 +255,7 @@ class TestRobustness:
         original = lc_module._LangChainTracerClass
         lc_module._LangChainTracerClass = None
         try:
-            with pytest.raises(ImportError, match="pip install agent-trace"):
+            with pytest.raises(ImportError, match="pip install agent-observability-trace-cli"):
                 lc_module._get_tracer_class()
         finally:
             lc_module._LangChainTracerClass = original
