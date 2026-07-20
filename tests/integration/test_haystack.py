@@ -89,8 +89,12 @@ class TestHaystackTracerIntegration:
             haystack.tracing.enable_tracing(HaystackTracer(tracer=t, trace=trace))
             pipeline.run({"doubler": {"value": 1}})
 
-        pipeline_span = next(s for s in trace.spans if s.name == "haystack.pipeline.run")
-        component_span = next(s for s in trace.spans if s.name == "haystack.component.run")
+        pipeline_span = next(
+            s for s in trace.spans if s.name == "haystack.pipeline.run"
+        )
+        component_span = next(
+            s for s in trace.spans if s.name == "haystack.component.run"
+        )
         assert component_span.parent_id == pipeline_span.span_id
 
     def test_multi_component_pipeline_produces_one_span_per_component(
@@ -128,7 +132,9 @@ class TestHaystackTracerIntegration:
             haystack.tracing.enable_tracing(HaystackTracer(tracer=t, trace=trace))
             pipeline.run({"doubler": {"value": 5}})
 
-        component_span = next(s for s in trace.spans if s.name == "haystack.component.run")
+        component_span = next(
+            s for s in trace.spans if s.name == "haystack.component.run"
+        )
         assert component_span.attributes.get("haystack.component.name") == "doubler"
         assert component_span.attributes.get("haystack.component.type") == "_Doubler"
 
@@ -159,8 +165,12 @@ class TestHaystackTracerIntegration:
                 s for s in trace.spans if s.name == "haystack.component.run"
             )
             # Real received arguments, not just their types.
-            assert "21" in str(component_span.attributes.get("haystack.component.input"))
-            assert "42" in str(component_span.attributes.get("haystack.component.output"))
+            assert "21" in str(
+                component_span.attributes.get("haystack.component.input")
+            )
+            assert "42" in str(
+                component_span.attributes.get("haystack.component.output")
+            )
         finally:
             haystack.tracing.tracer.is_content_tracing_enabled = False
 
@@ -182,7 +192,9 @@ class TestHaystackTracerIntegration:
             f"Expected at least one ERROR span. "
             f"Spans: {[(s.name, s.status) for s in trace.spans]}"
         )
-        pipeline_span = next(s for s in trace.spans if s.name == "haystack.pipeline.run")
+        pipeline_span = next(
+            s for s in trace.spans if s.name == "haystack.pipeline.run"
+        )
         assert pipeline_span.status == SpanStatus.ERROR
 
     def test_all_spans_closed_after_clean_run(self, tmp_path: Path) -> None:

@@ -171,7 +171,9 @@ class TestStartTraceRemoteBackend:
 
         backend = LocalDirRemoteFixtureBackend(tmp_path / "remote")
         t = Tracer(trace_dir=tmp_path / "local")
-        with t.start_trace("remote-test-2", record=True, remote_backend=backend) as trace:
+        with t.start_trace(
+            "remote-test-2", record=True, remote_backend=backend
+        ) as trace:
             run_id = trace.run_id
         assert backend.get_bytes(f"{run_id}/trace.json") is not None
         assert backend.get_bytes(f"{run_id}/fixture.db") is not None
@@ -693,9 +695,7 @@ class TestPreExistingClientCapture:
             exchanges = f.all_exchanges()
 
         assert len(exchanges) == 1
-        assert (
-            exchanges[0]["url"] == "https://api.example.com/pre-existing-requests"
-        )
+        assert exchanges[0]["url"] == "https://api.example.com/pre-existing-requests"
 
 
 class TestCallerSuppliedTransportWrapped:
@@ -704,9 +704,7 @@ class TestCallerSuppliedTransportWrapped:
     recorded, not silently bypassed the way `kwargs.setdefault(...)` would.
     """
 
-    def test_explicit_httpx_transport_is_still_recorded(
-        self, tmp_path: Path
-    ) -> None:
+    def test_explicit_httpx_transport_is_still_recorded(self, tmp_path: Path) -> None:
         import httpx
 
         from agent_trace._replay.fixture import Fixture
@@ -738,9 +736,7 @@ class TestCallerSuppliedTransportWrapped:
 
         t = Tracer(trace_dir=tmp_path)
         custom_transport = httpx.MockTransport(
-            lambda request: httpx.Response(
-                200, json={"via": "custom-async-transport"}
-            )
+            lambda request: httpx.Response(200, json={"via": "custom-async-transport"})
         )
 
         with t.start_trace(
@@ -1074,8 +1070,7 @@ class TestAutoRecordEnvVarActivation:
         import sys
 
         script = (
-            "import agent_trace\n"
-            "assert agent_trace.tracer._auto_record_state is None\n"
+            "import agent_trace\nassert agent_trace.tracer._auto_record_state is None\n"
         )
         env = dict(os.environ)
         env.pop("AGENT_TRACE_AUTO_RECORD", None)

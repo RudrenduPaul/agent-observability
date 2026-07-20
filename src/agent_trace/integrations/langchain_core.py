@@ -113,7 +113,7 @@ def _get_tracer_class() -> type:
         if _LangChainTracerClass is not None:
             return _LangChainTracerClass
 
-        BaseCallbackHandler = _base_callback_handler()
+        BaseCallbackHandler = _base_callback_handler()  # noqa: N806 — class ref, not a constant
 
         class _LangChainTracerImpl(BaseCallbackHandler):  # type: ignore[misc,valid-type]
             """Generic BaseCallbackHandler — see module docstring."""
@@ -211,8 +211,7 @@ def _get_tracer_class() -> type:
                         span.set_attribute("chain.outputs", _to_attr_string(outputs))
                     except Exception:
                         logger.debug(
-                            "agent-trace: failed to record chain outputs for "
-                            "run %r",
+                            "agent-trace: failed to record chain outputs for run %r",
                             run_key,
                             exc_info=True,
                         )
@@ -271,8 +270,7 @@ def _get_tracer_class() -> type:
                     span.set_attribute("llm.messages", _to_attr_string(messages))
                 except Exception:
                     logger.debug(
-                        "agent-trace: failed to record chat model messages "
-                        "for run %r",
+                        "agent-trace: failed to record chat model messages for run %r",
                         str(run_id),
                         exc_info=True,
                     )
@@ -331,8 +329,7 @@ def _get_tracer_class() -> type:
                         span.set_attribute("tool.output", _to_attr_string(output))
                     except Exception:
                         logger.debug(
-                            "agent-trace: failed to record tool output for "
-                            "run %r",
+                            "agent-trace: failed to record tool output for run %r",
                             run_key,
                             exc_info=True,
                         )

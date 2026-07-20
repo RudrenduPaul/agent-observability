@@ -164,9 +164,7 @@ class _TracingCheckpointSaverMixin:
                     attr_name,
                 )
 
-    def _record_proposed_writes(
-        self, config: Any, writes: Any, task_id: str
-    ) -> None:
+    def _record_proposed_writes(self, config: Any, writes: Any, task_id: str) -> None:
         key = _superstep_key(config)
         if key is None:
             return
@@ -242,8 +240,7 @@ class _TracingCheckpointSaverMixin:
             span.end(SpanStatus.OK)
         except Exception:
             logger.debug(
-                "agent-trace: failed to record superstep state-merge "
-                "diagnostic",
+                "agent-trace: failed to record superstep state-merge diagnostic",
                 exc_info=True,
             )
 
@@ -322,7 +319,8 @@ def _get_wrapper_class() -> type:
             raise ImportError(_INSTALL_HINT) from exc
 
         class _TracingCheckpointSaver(
-            _TracingCheckpointSaverMixin, BaseCheckpointSaver[Any]
+            _TracingCheckpointSaverMixin,
+            BaseCheckpointSaver[Any],  # type: ignore[misc]
         ):
             def __init__(self, inner: Any, tracer: Tracer) -> None:
                 super().__init__(serde=getattr(inner, "serde", None))

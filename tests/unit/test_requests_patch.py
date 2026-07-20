@@ -261,9 +261,7 @@ class TestRecordingAdapterDoubleWrapSafety:
     ``isinstance(inner, RecordingAdapter)`` guard before wrapping.
     """
 
-    def test_wrapping_an_already_recording_adapter_still_works(
-        self, tmp_path
-    ) -> None:
+    def test_wrapping_an_already_recording_adapter_still_works(self, tmp_path) -> None:
         fixture = _make_fixture(tmp_path)
         url = "https://api.example.com/double-wrap"
         req = _make_prepared_request(url, "GET")

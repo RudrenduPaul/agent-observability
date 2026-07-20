@@ -71,7 +71,9 @@ class ScriptedModel(Model):
     def invoke_stream(self, *args: Any, **kwargs: Any) -> Iterator[ModelResponse]:
         yield self._next_response()
 
-    async def ainvoke_stream(self, *args: Any, **kwargs: Any) -> AsyncIterator[ModelResponse]:
+    async def ainvoke_stream(
+        self, *args: Any, **kwargs: Any
+    ) -> AsyncIterator[ModelResponse]:
         yield self._next_response()
 
     def _parse_provider_response(self, response: Any, **kwargs: Any) -> ModelResponse:
@@ -82,7 +84,9 @@ class ScriptedModel(Model):
 
 
 def _content_model(model_id: str, content: str) -> ScriptedModel:
-    return ScriptedModel(id=model_id, script=[ModelResponse(role="assistant", content=content)])
+    return ScriptedModel(
+        id=model_id, script=[ModelResponse(role="assistant", content=content)]
+    )
 
 
 def calculator(expression: str) -> str:
@@ -109,7 +113,9 @@ class TestAgnoIntegration:
 
         agent_spans = [s for s in trace.spans if s.name.startswith("agent:")]
         llm_spans = [s for s in trace.spans if s.name.startswith("llm:")]
-        assert agent_spans, f"Expected an agent: span. Got: {[s.name for s in trace.spans]}"
+        assert agent_spans, (
+            f"Expected an agent: span. Got: {[s.name for s in trace.spans]}"
+        )
         assert llm_spans, f"Expected an llm: span. Got: {[s.name for s in trace.spans]}"
         assert agent_spans[0].attributes["agno.agent.name"] == "solo-agent"
 
@@ -123,7 +129,9 @@ class TestAgnoIntegration:
         unclosed = [s for s in trace.spans if s.end_time is None]
         non_ok = [s for s in trace.spans if s.status != SpanStatus.OK]
         assert unclosed == [], f"Spans left open: {[s.name for s in unclosed]}"
-        assert non_ok == [], f"Non-OK spans on clean run: {[(s.name, s.status) for s in non_ok]}"
+        assert non_ok == [], (
+            f"Non-OK spans on clean run: {[(s.name, s.status) for s in non_ok]}"
+        )
 
     async def test_llm_span_has_token_usage(self, tmp_path: Path) -> None:
         agent = Agent(model=_content_model("fake-1", "hello"), name="solo-agent")
@@ -167,12 +175,16 @@ class TestAgnoIntegration:
 
         t = Tracer(trace_dir=tmp_path)
         with t.start_trace("agno-tool") as trace:
-            result = await instrument_agent_arun(agent, "what is 2+2", tracer=t, trace=trace)
+            result = await instrument_agent_arun(
+                agent, "what is 2+2", tracer=t, trace=trace
+            )
 
         assert result.content == "the answer is 4"
 
         tool_spans = [s for s in trace.spans if s.name == "tool:calculator"]
-        assert tool_spans, f"Expected a tool:calculator span. Got: {[s.name for s in trace.spans]}"
+        assert tool_spans, (
+            f"Expected a tool:calculator span. Got: {[s.name for s in trace.spans]}"
+        )
         assert tool_spans[0].status == SpanStatus.OK
         assert tool_spans[0].attributes["tool.result_length"] == len("4")
 
@@ -186,7 +198,9 @@ class TestAgnoIntegration:
     # In-process exceptions (never reach the HTTP layer)
     # ------------------------------------------------------------------
 
-    async def test_in_process_exception_produces_error_span(self, tmp_path: Path) -> None:
+    async def test_in_process_exception_produces_error_span(
+        self, tmp_path: Path
+    ) -> None:
         """A crash entirely inside Agno's own response-processing code (no
         HTTP call ever made) must still surface as an ERROR span — this is
         exactly the #5298 UnboundLocalError scenario reported upstream.
@@ -201,14 +215,20 @@ class TestAgnoIntegration:
         assert result is None  # RunErrorEvent path yields no RunOutput
 
         agent_spans = [s for s in trace.spans if s.name.startswith("agent:")]
-        assert agent_spans, f"Expected an agent: span. Got: {[s.name for s in trace.spans]}"
+        assert agent_spans, (
+            f"Expected an agent: span. Got: {[s.name for s in trace.spans]}"
+        )
         error_span = agent_spans[0]
         assert error_span.status == SpanStatus.ERROR
         assert error_span.end_time is not None
-        messages = [e.attributes.get("exception.message", "") for e in error_span.events]
+        messages = [
+            e.attributes.get("exception.message", "") for e in error_span.events
+        ]
         assert any("simulated in-process crash" in m for m in messages), messages
 
-    async def test_in_process_exception_leaves_no_open_spans(self, tmp_path: Path) -> None:
+    async def test_in_process_exception_leaves_no_open_spans(
+        self, tmp_path: Path
+    ) -> None:
         """The in-flight ModelRequestStarted span (no matching Completed event
         ever arrives once the run errors) must be force-closed by the safety
         net, not leaked open forever."""
@@ -220,7 +240,9 @@ class TestAgnoIntegration:
             await instrument_agent_arun(agent, "hi", tracer=t, trace=trace)
 
         unclosed = [s for s in trace.spans if s.end_time is None]
-        assert unclosed == [], f"Spans left open after an in-process crash: {[s.name for s in unclosed]}"
+        assert unclosed == [], (
+            f"Spans left open after an in-process crash: {[s.name for s in unclosed]}"
+        )
 
     # ------------------------------------------------------------------
     # Team delegation — per-team-member attribution
@@ -289,15 +311,18 @@ class TestAgnoIntegration:
         assert delegate_tool_span.parent_id == team_span.span_id
         # The delegation tool span carries the member run's id, correlating
         # the delegation call with the member's own span.
-        assert delegate_tool_span.attributes.get("agno.child_run_id") == (
-            member_spans[0].attributes["agno.run_id"]
+        assert (
+            delegate_tool_span.attributes.get("agno.child_run_id")
+            == (member_spans[0].attributes["agno.run_id"])
         )
 
     # ------------------------------------------------------------------
     # AgnoTracer used directly (hook-based usage, not the convenience wrapper)
     # ------------------------------------------------------------------
 
-    async def test_hook_based_usage_matches_convenience_wrapper(self, tmp_path: Path) -> None:
+    async def test_hook_based_usage_matches_convenience_wrapper(
+        self, tmp_path: Path
+    ) -> None:
         agent = Agent(model=_content_model("fake-1", "hello"), name="solo-agent")
 
         t = Tracer(trace_dir=tmp_path)

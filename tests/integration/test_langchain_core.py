@@ -212,9 +212,7 @@ class TestLangChainTracerIntegration:
             if e.name == "exception"
         )
 
-    def test_classic_agent_executor_produces_nested_spans(
-        self, tmp_path: Path
-    ) -> None:
+    def test_classic_agent_executor_produces_nested_spans(self, tmp_path: Path) -> None:
         """#22358: a classic (non-LangGraph) `langchain.agents.AgentExecutor`
         ReAct agent — no framework integration existed for this population
         before LangChainTracer. AgentExecutor is itself a Chain subclass,

@@ -164,9 +164,7 @@ class TestCrewAIIntegration:
             assert span.end_time is not None, f"{span.name} was left open"
             assert span.status == SpanStatus.OK
 
-    def test_crew_run_with_tool_call_closes_every_span(
-        self, tmp_path: Path
-    ) -> None:
+    def test_crew_run_with_tool_call_closes_every_span(self, tmp_path: Path) -> None:
         """Reproduces the exact shape that exposed the close-before-open
         race: two LLM calls (one ReAct action step, one final answer) with a
         real tool invocation in between, run through the real, threaded
@@ -174,8 +172,8 @@ class TestCrewAIIntegration:
         tool) must close — none may be left at SpanStatus.UNSET."""
         llm = ScriptedLLM(
             [
-                'Thought: I should look something up.\n'
-                'Action: lookup\n'
+                "Thought: I should look something up.\n"
+                "Action: lookup\n"
                 'Action Input: {"query": "the answer"}',
                 "Final Answer: 42 is the answer",
             ]
@@ -223,8 +221,8 @@ class TestCrewAIIntegration:
         for i in range(8):
             llm = ScriptedLLM(
                 [
-                    'Thought: look it up.\n'
-                    'Action: lookup\n'
+                    "Thought: look it up.\n"
+                    "Action: lookup\n"
                     'Action Input: {"query": "q"}',
                     "Final Answer: done",
                 ]

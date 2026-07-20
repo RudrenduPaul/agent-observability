@@ -32,7 +32,9 @@ _AttrValue = str | int | float | bool
 _MAX_EXCEPTION_RESPONSE_BODY_LEN = 8_000
 
 
-def _http_error_response_body(exc: BaseException) -> tuple[str | None, int | None]:
+def _http_error_response_body(  # noqa: PLR0912 — each branch is an independent, sequential fallback for a differently-shaped SDK response; splitting them up would fragment one cohesive best-effort routine into helpers with no other caller
+    exc: BaseException,
+) -> tuple[str | None, int | None]:
     """Best-effort extraction of ``(response_text, status_code)`` from an
     exception exposing a ``.response`` attribute — the shape
     ``requests.exceptions.HTTPError``, ``httpx.HTTPStatusError``, and

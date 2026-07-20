@@ -31,7 +31,10 @@ import httpx
 import pytest
 import respx
 
-pytest.importorskip("groq", reason="groq not installed (pip install agent-observability-trace-cli[groq])")
+pytest.importorskip(
+    "groq",
+    reason="groq not installed (pip install agent-observability-trace-cli[groq])",
+)
 
 from agent_trace import Tracer
 from agent_trace._replay.fixture import Fixture
@@ -161,12 +164,12 @@ class TestGroqSdkCapturedByGlobalMonkeypatch:
 
         t = Tracer(trace_dir=tmp_path)
         client = groq.Groq(api_key="test-key")
-        inner_httpx_client = client._client  # groq.Groq._client is an httpx.Client subclass
+        inner_httpx_client = (
+            client._client
+        )  # groq.Groq._client is an httpx.Client subclass
 
         with t.start_trace("groq-isinstance-check", record=True, run_id="groq-iso"):
-            resolved = inner_httpx_client._transport_for_url(
-                httpx.URL(_GROQ_CHAT_URL)
-            )
+            resolved = inner_httpx_client._transport_for_url(httpx.URL(_GROQ_CHAT_URL))
             assert isinstance(resolved, RecordingTransport)
 
     @respx.mock
@@ -183,8 +186,8 @@ class TestGroqSdkCapturedByGlobalMonkeypatch:
         client = groq.AsyncGroq(api_key="test-key")
         inner_httpx_client = client._client
 
-        with t.start_trace("groq-async-isinstance-check", record=True, run_id="groq-aiso"):
-            resolved = inner_httpx_client._transport_for_url(
-                httpx.URL(_GROQ_CHAT_URL)
-            )
+        with t.start_trace(
+            "groq-async-isinstance-check", record=True, run_id="groq-aiso"
+        ):
+            resolved = inner_httpx_client._transport_for_url(httpx.URL(_GROQ_CHAT_URL))
             assert isinstance(resolved, AsyncRecordingTransport)

@@ -50,6 +50,7 @@ __all__ = [
     "check_non_ok_finish_reason",
     "check_null_content_with_tool_calls",
     "check_null_or_missing_sse_delta",
+    "check_orphaned_responses_api_call_ids",
     "check_orphaned_tool_call_ids",
     "check_phantom_tool_call",
     "check_reserved_kwarg_collision",
@@ -69,7 +70,6 @@ __all__ = [
     "flag_4xx_5xx_exchanges",
     "match_known_error_patterns",
     "multi_block_llm_responses",
-    "check_orphaned_responses_api_call_ids",
     "run_all_exchange_checks",
 ]
 
@@ -2002,7 +2002,9 @@ def run_all_exchange_checks(
         "duplicate_concurrent_tool_calls": check_duplicate_concurrent_tool_calls,
         "missing_tool_call_id": check_missing_tool_call_id,
         "http_error_status": flag_4xx_5xx_exchanges,
-        "all_tool_calls_no_terminal_response": check_all_tool_calls_no_terminal_response,
+        "all_tool_calls_no_terminal_response": (
+            check_all_tool_calls_no_terminal_response
+        ),
         "markdown_fenced_json_response": check_markdown_fenced_json_response,
         "tool_calling_disabled": check_tool_calling_disabled,
         "forced_tool_call_unfulfilled": check_forced_tool_call_unfulfilled,

@@ -166,7 +166,10 @@ class TestHaystackTracerInit:
         hs_module._HaystackSpanImplClass = None
         try:
             t = Tracer(trace_dir=tmp_path)
-            with t.start_trace("no-haystack") as trace, pytest.raises(ImportError, match="pip install"):
+            with (
+                t.start_trace("no-haystack") as trace,
+                pytest.raises(ImportError, match="pip install"),
+            ):
                 hs_module.HaystackTracer(tracer=t, trace=trace)
         finally:
             hs_module._HaystackTracerImplClass = original
@@ -190,7 +193,9 @@ class TestHaystackTracerTrace:
     def test_trace_sets_tags_as_span_attributes(self, tracer_and_trace):
         t, trace = tracer_and_trace
         h = _make_tracer(t, trace)
-        with h.trace("haystack.component.run", tags={"haystack.component.name": "retriever"}):
+        with h.trace(
+            "haystack.component.run", tags={"haystack.component.name": "retriever"}
+        ):
             pass
         assert trace.spans[0].attributes.get("haystack.component.name") == "retriever"
 
@@ -198,7 +203,9 @@ class TestHaystackTracerTrace:
         """Dicts/lists must be stringified — agent_trace Span only allows primitives."""
         t, trace = tracer_and_trace
         h = _make_tracer(t, trace)
-        with h.trace("haystack.pipeline.run", tags={"haystack.pipeline.input_data": {"q": "hi"}}):
+        with h.trace(
+            "haystack.pipeline.run", tags={"haystack.pipeline.input_data": {"q": "hi"}}
+        ):
             pass
         value = trace.spans[0].attributes.get("haystack.pipeline.input_data")
         assert isinstance(value, str)
@@ -208,12 +215,16 @@ class TestHaystackTracerTrace:
         t, trace = tracer_and_trace
         h = _make_tracer(t, trace)
         huge = "x" * 10_000
-        with h.trace("haystack.component.run", tags={"haystack.component.output": huge}):
+        with h.trace(
+            "haystack.component.run", tags={"haystack.component.output": huge}
+        ):
             pass
         # Strings are passed through untouched (already a primitive) —
         # truncation only applies to non-primitive (repr'd) values. Confirm
         # a non-primitive huge payload IS truncated.
-        with h.trace("haystack.component.run", tags={"payload": {"data": "y" * 10_000}}):
+        with h.trace(
+            "haystack.component.run", tags={"payload": {"data": "y" * 10_000}}
+        ):
             pass
         value = trace.spans[-1].attributes.get("payload")
         assert len(value) <= 4100
@@ -241,8 +252,12 @@ class TestHaystackTracerTrace:
         with h.trace("haystack.pipeline.run"):
             with h.trace("haystack.component.run"):
                 pass
-        pipeline_span = next(s for s in trace.spans if s.name == "haystack.pipeline.run")
-        component_span = next(s for s in trace.spans if s.name == "haystack.component.run")
+        pipeline_span = next(
+            s for s in trace.spans if s.name == "haystack.pipeline.run"
+        )
+        component_span = next(
+            s for s in trace.spans if s.name == "haystack.component.run"
+        )
         assert component_span.parent_id == pipeline_span.span_id
 
     def test_explicit_parent_span_takes_precedence(self, tracer_and_trace):
@@ -254,7 +269,9 @@ class TestHaystackTracerTrace:
                 # Explicitly parent "child" under root_span, even though
                 # "unrelated" is the innermost open span on the stack.
                 with h.trace("child", parent_span=root_span) as child_span:
-                    assert child_span.raw_span().parent_id == root_span.raw_span().span_id
+                    assert (
+                        child_span.raw_span().parent_id == root_span.raw_span().span_id
+                    )
 
     def test_span_stack_is_empty_after_all_spans_close(self, tracer_and_trace):
         t, trace = tracer_and_trace

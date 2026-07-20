@@ -441,8 +441,8 @@ def _install_runtime_capture_patch() -> None:
             _capture_runtime_from_config(config)
             return await original_ainvoke(self, input, config, **kwargs)
 
-        RunnableCallable.invoke = _patched_invoke  # type: ignore[method-assign]
-        RunnableCallable.ainvoke = _patched_ainvoke  # type: ignore[method-assign]
+        RunnableCallable.invoke = _patched_invoke
+        RunnableCallable.ainvoke = _patched_ainvoke
         _runtime_patch_installed = True
 
 
@@ -827,8 +827,8 @@ def _install_branch_dispatch_capture_patch() -> None:
                 _record_branch_dispatch(self, error=None)
             return result
 
-        RunnableCallable.invoke = _patched_invoke  # type: ignore[method-assign]
-        RunnableCallable.ainvoke = _patched_ainvoke  # type: ignore[method-assign]
+        RunnableCallable.invoke = _patched_invoke
+        RunnableCallable.ainvoke = _patched_ainvoke
         _branch_patch_installed = True
 
 
@@ -886,8 +886,7 @@ def _record_tool_arg_injection(tool_name: str, injected_keys: list[str]) -> None
         span.end(SpanStatus.OK)
     except Exception:
         logger.debug(
-            "agent-trace: failed to record tool-argument injection for "
-            "tool %r",
+            "agent-trace: failed to record tool-argument injection for tool %r",
             tool_name,
             exc_info=True,
         )
@@ -939,13 +938,12 @@ def _install_tool_arg_injection_capture_patch() -> None:
                 _record_tool_arg_injection(tool_name, injected_keys)
             except Exception:
                 logger.debug(
-                    "agent-trace: failed to observe tool-argument "
-                    "injection outcome",
+                    "agent-trace: failed to observe tool-argument injection outcome",
                     exc_info=True,
                 )
             return result
 
-        ToolNode._inject_tool_args = _patched_inject_tool_args  # type: ignore[method-assign]
+        ToolNode._inject_tool_args = _patched_inject_tool_args
         _tool_injection_patch_installed = True
 
 
@@ -1315,9 +1313,7 @@ def _get_tracer_class() -> type:
                 # e.g. LangGraph Cloud's ~180s checkpoint-sweep re-dispatch
                 # window (issue #7417). None (the default) disables the
                 # check entirely.
-                self._long_span_threshold_secs: float | None = (
-                    long_span_threshold_secs
-                )
+                self._long_span_threshold_secs: float | None = long_span_threshold_secs
                 # Thread-safe span registry: run_id (UUID str) -> open Span
                 self._spans: dict[str, Span] = {}
                 # Per-run streaming-token counters (on_llm_new_token), so
@@ -1480,13 +1476,9 @@ def _get_tracer_class() -> type:
                     return
                 try:
                     elapsed = get_time() - span.start_time
-                    span.set_attribute(
-                        "span.duration_secs_at_close", round(elapsed, 3)
-                    )
+                    span.set_attribute("span.duration_secs_at_close", round(elapsed, 3))
                     if elapsed >= self._long_span_threshold_secs:
-                        span.set_attribute(
-                            "span.exceeded_long_running_threshold", True
-                        )
+                        span.set_attribute("span.exceeded_long_running_threshold", True)
                         span.set_attribute(
                             "span.long_running_threshold_secs",
                             self._long_span_threshold_secs,
@@ -1788,8 +1780,7 @@ def _get_tracer_class() -> type:
                         span.add_event("llm_stream_delta", attributes=attrs)
                 except Exception:
                     logger.debug(
-                        "agent-trace: failed to record streaming token for "
-                        "run %r",
+                        "agent-trace: failed to record streaming token for run %r",
                         str(run_id),
                         exc_info=True,
                     )

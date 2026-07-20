@@ -537,9 +537,7 @@ class TestWiredEventBus:
     actually registered under the exact event classes crewAI emits.
     """
 
-    def test_emit_crew_kickoff_started_and_completed_pair(
-        self, tmp_path: Path
-    ) -> None:
+    def test_emit_crew_kickoff_started_and_completed_pair(self, tmp_path: Path) -> None:
         t = Tracer(trace_dir=tmp_path)
         with t.start_trace("wired-test") as trace:
             with crewai_event_bus.scoped_handlers():

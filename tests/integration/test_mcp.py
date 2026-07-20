@@ -34,7 +34,9 @@ class TestMCPStdioCapture:
         from agent_trace._replay.fixture import Fixture
         from agent_trace.interceptor.stdio_hook import recording_stdio_client
 
-        server = StdioServerParameters(command=sys.executable, args=[str(_SERVER_SCRIPT)])
+        server = StdioServerParameters(
+            command=sys.executable, args=[str(_SERVER_SCRIPT)]
+        )
         fixture = Fixture(tmp_path / "mcp_fixture.db", trace_id="mcp-it-001")
 
         async with recording_stdio_client(server, fixture) as (read, write):
@@ -91,7 +93,9 @@ class TestMCPStdioCapture:
         from agent_trace._replay.fixture import Fixture
         from agent_trace.interceptor.stdio_hook import recording_stdio_client
 
-        server = StdioServerParameters(command=sys.executable, args=[str(_SERVER_SCRIPT)])
+        server = StdioServerParameters(
+            command=sys.executable, args=[str(_SERVER_SCRIPT)]
+        )
         fixture = Fixture(tmp_path / "mcp_fixture2.db", trace_id="mcp-it-002")
 
         async with recording_stdio_client(server, fixture) as (read, write):
@@ -118,7 +122,9 @@ class TestMCPIntegrationModule:
         from agent_trace.integrations.mcp import instrument_session
         from agent_trace.interceptor.stdio_hook import recording_stdio_client
 
-        server = StdioServerParameters(command=sys.executable, args=[str(_SERVER_SCRIPT)])
+        server = StdioServerParameters(
+            command=sys.executable, args=[str(_SERVER_SCRIPT)]
+        )
         fixture = Fixture(tmp_path / "mcp_fixture3.db", trace_id="mcp-it-003")
         tracer = Tracer(trace_dir=tmp_path)
 

@@ -604,8 +604,7 @@ def _record_post_update_schedule_async(
         span.set_attribute("checkpoint.zero_tasks_scheduled", len(next_tasks) == 0)
     except Exception:
         logger.debug(
-            "agent-trace: failed to read post-update-state task schedule "
-            "(async)",
+            "agent-trace: failed to read post-update-state task schedule (async)",
             exc_info=True,
         )
 

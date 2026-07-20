@@ -56,7 +56,9 @@ def _make_prepared_request(
     return botocore.awsrequest.AWSPreparedRequest(
         method=method,
         url=url,
-        headers=headers if headers is not None else {"Content-Type": b"application/json"},
+        headers=headers
+        if headers is not None
+        else {"Content-Type": b"application/json"},
         body=body,
         stream_output=stream_output,
     )
@@ -175,9 +177,7 @@ class TestRecordingSession:
         fixture = _make_fixture(tmp_path)
         req = _make_prepared_request(stream_output=True)
         body = b'{"completion": "hello from bedrock"}'
-        resp = _make_response(
-            200, body, headers={"Content-Type": "application/json"}
-        )
+        resp = _make_response(200, body, headers={"Content-Type": "application/json"})
 
         inner = MagicMock()
         inner.send.return_value = resp
@@ -236,9 +236,7 @@ class TestRecordingSession:
     def test_response_headers_recorded(self, tmp_path) -> None:
         fixture = _make_fixture(tmp_path)
         req = _make_prepared_request()
-        resp = _make_response(
-            200, b"{}", headers={"x-amzn-requestid": "abc-123"}
-        )
+        resp = _make_response(200, b"{}", headers={"x-amzn-requestid": "abc-123"})
 
         inner = MagicMock()
         inner.send.return_value = resp
@@ -325,7 +323,9 @@ class TestReplaySession:
 
     def test_send_returns_correct_status_code(self, tmp_path) -> None:
         fixture = _make_fixture(tmp_path)
-        url = "https://sagemaker-runtime.us-east-1.amazonaws.com/endpoints/x/invocations"
+        url = (
+            "https://sagemaker-runtime.us-east-1.amazonaws.com/endpoints/x/invocations"
+        )
         _record_one(fixture, url=url, method="POST", body="created", status=201)
 
         session = ReplaySession(fixture)

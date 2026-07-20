@@ -99,7 +99,9 @@ class TestTracingCheckpointSaver:
         put_writes = [s for s in trace.spans if s.name == "checkpoint:put_writes"]
         assert put_writes
         assert all(s.attributes.get("checkpoint.task_id") for s in put_writes)
-        assert any("x" in s.attributes.get("checkpoint.channels", "") for s in put_writes)
+        assert any(
+            "x" in s.attributes.get("checkpoint.channels", "") for s in put_writes
+        )
 
     def test_serde_boundary_spans_recorded(self, tmp_path: Path) -> None:
         """dumps_typed/loads_typed calls made internally by InMemorySaver's
@@ -114,11 +116,11 @@ class TestTracingCheckpointSaver:
             graph = _build_graph(checkpointer=saver)
             graph.invoke({"x": 0}, config={"configurable": {"thread_id": "th3"}})
 
-        serde_spans = [
-            s for s in trace.spans if s.name.startswith("checkpoint:serde:")
-        ]
+        serde_spans = [s for s in trace.spans if s.name.startswith("checkpoint:serde:")]
         assert serde_spans, "expected serde-boundary spans"
-        dumps_spans = [s for s in serde_spans if s.name == "checkpoint:serde:dumps_typed"]
+        dumps_spans = [
+            s for s in serde_spans if s.name == "checkpoint:serde:dumps_typed"
+        ]
         assert dumps_spans
         for span in dumps_spans:
             assert isinstance(span.attributes.get("serde.byte_size"), int)
@@ -163,7 +165,9 @@ class TestTracingCheckpointSaver:
         trace, result = asyncio.run(_run())
         assert result["x"] == 11
         aput_spans = [s for s in trace.spans if s.name == "checkpoint:aput"]
-        aput_writes_spans = [s for s in trace.spans if s.name == "checkpoint:aput_writes"]
+        aput_writes_spans = [
+            s for s in trace.spans if s.name == "checkpoint:aput_writes"
+        ]
         assert aput_spans
         assert aput_writes_spans
         assert all(s.attributes.get("checkpoint.completed") is True for s in aput_spans)
@@ -350,7 +354,9 @@ class TestCheckpointDurabilityCliDiagnosticEndToEnd:
         assert summary["checkpoint_status"] == "durable"
         assert summary["writes_flushed_count"] == summary["writes_enqueued_count"]
 
-    def test_zero_tasks_scheduled_cli_diagnostic_end_to_end(self, tmp_path: Path) -> None:
+    def test_zero_tasks_scheduled_cli_diagnostic_end_to_end(
+        self, tmp_path: Path
+    ) -> None:
         from langgraph.checkpoint.memory import InMemorySaver
 
         from agent_trace._cli import _zero_task_update_rows

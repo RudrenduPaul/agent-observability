@@ -86,7 +86,9 @@ class TestCheckOrphanedToolCallIds:
         assert flags[0]["orphaned_ids"] == ["c1"]
 
     def test_malformed_body_not_raised(self) -> None:
-        assert ins.check_orphaned_tool_call_ids([_exchange(request_body="not json")]) == []
+        assert (
+            ins.check_orphaned_tool_call_ids([_exchange(request_body="not json")]) == []
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -96,18 +98,32 @@ class TestCheckOrphanedToolCallIds:
 
 class TestCheckOrphanedResponsesApiCallIds:
     def test_no_input_no_flag(self) -> None:
-        assert ins.check_orphaned_responses_api_call_ids([_exchange(request_body="{}")]) == []
+        assert (
+            ins.check_orphaned_responses_api_call_ids([_exchange(request_body="{}")])
+            == []
+        )
 
     def test_paired_call_id_not_flagged(self) -> None:
         body = json.dumps(
             {
                 "input": [
-                    {"type": "function_call", "call_id": "call_1", "name": "get_weather"},
-                    {"type": "function_call_output", "call_id": "call_1", "output": "sunny"},
+                    {
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "get_weather",
+                    },
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call_1",
+                        "output": "sunny",
+                    },
                 ]
             }
         )
-        assert ins.check_orphaned_responses_api_call_ids([_exchange(request_body=body)]) == []
+        assert (
+            ins.check_orphaned_responses_api_call_ids([_exchange(request_body=body)])
+            == []
+        )
 
     def test_orphaned_call_id_flagged(self) -> None:
         """The exact #33895 shape: a function_call with no matching
@@ -115,11 +131,17 @@ class TestCheckOrphanedResponsesApiCallIds:
         body = json.dumps(
             {
                 "input": [
-                    {"type": "function_call", "call_id": "call_1", "name": "get_weather"},
+                    {
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "get_weather",
+                    },
                 ]
             }
         )
-        flags = ins.check_orphaned_responses_api_call_ids([_exchange(request_body=body)])
+        flags = ins.check_orphaned_responses_api_call_ids(
+            [_exchange(request_body=body)]
+        )
         assert len(flags) == 1
         assert flags[0]["orphaned_ids"] == ["call_1"]
         assert flags[0]["check"] == "orphaned_responses_api_call_ids"
@@ -130,7 +152,10 @@ class TestCheckOrphanedResponsesApiCallIds:
         body = json.dumps(
             {"messages": [{"role": "assistant", "tool_calls": [{"id": "c1"}]}]}
         )
-        assert ins.check_orphaned_responses_api_call_ids([_exchange(request_body=body)]) == []
+        assert (
+            ins.check_orphaned_responses_api_call_ids([_exchange(request_body=body)])
+            == []
+        )
 
     def test_non_function_call_items_ignored(self) -> None:
         body = json.dumps(
@@ -141,11 +166,16 @@ class TestCheckOrphanedResponsesApiCallIds:
                 ]
             }
         )
-        assert ins.check_orphaned_responses_api_call_ids([_exchange(request_body=body)]) == []
+        assert (
+            ins.check_orphaned_responses_api_call_ids([_exchange(request_body=body)])
+            == []
+        )
 
     def test_malformed_body_not_raised(self) -> None:
         assert (
-            ins.check_orphaned_responses_api_call_ids([_exchange(request_body="not json")])
+            ins.check_orphaned_responses_api_call_ids(
+                [_exchange(request_body="not json")]
+            )
             == []
         )
 
@@ -157,7 +187,9 @@ class TestCheckOrphanedResponsesApiCallIds:
 
 class TestCheckToolCallBoundaryLeak:
     def test_no_marker_not_flagged(self) -> None:
-        assert ins.check_tool_call_boundary_leak([_exchange(response_body="hello")]) == []
+        assert (
+            ins.check_tool_call_boundary_leak([_exchange(response_body="hello")]) == []
+        )
 
     def test_marker_flagged(self) -> None:
         flags = ins.check_tool_call_boundary_leak(
@@ -187,7 +219,10 @@ class TestCheckMalformedToolCallArguments:
                 ]
             }
         )
-        assert ins.check_malformed_tool_call_arguments([_exchange(response_body=body)]) == []
+        assert (
+            ins.check_malformed_tool_call_arguments([_exchange(response_body=body)])
+            == []
+        )
 
     def test_invalid_json_arguments_flagged(self) -> None:
         body = json.dumps(
@@ -218,14 +253,24 @@ class TestCheckNullContentWithToolCalls:
         body = json.dumps(
             {"choices": [{"message": {"content": "hi", "tool_calls": [{}]}}]}
         )
-        assert ins.check_null_content_with_tool_calls([_exchange(response_body=body)]) == []
+        assert (
+            ins.check_null_content_with_tool_calls([_exchange(response_body=body)])
+            == []
+        )
 
     def test_none_content_not_flagged(self) -> None:
-        body = json.dumps({"choices": [{"message": {"content": None, "tool_calls": [{}]}}]})
-        assert ins.check_null_content_with_tool_calls([_exchange(response_body=body)]) == []
+        body = json.dumps(
+            {"choices": [{"message": {"content": None, "tool_calls": [{}]}}]}
+        )
+        assert (
+            ins.check_null_content_with_tool_calls([_exchange(response_body=body)])
+            == []
+        )
 
     def test_list_content_flagged(self) -> None:
-        body = json.dumps({"choices": [{"message": {"content": [], "tool_calls": [{}]}}]})
+        body = json.dumps(
+            {"choices": [{"message": {"content": [], "tool_calls": [{}]}}]}
+        )
         flags = ins.check_null_content_with_tool_calls([_exchange(response_body=body)])
         assert len(flags) == 1
 
@@ -238,13 +283,21 @@ class TestCheckNullContentWithToolCalls:
 class TestCheckContentBlockMissingType:
     def test_well_formed_content_block_not_flagged(self) -> None:
         body = json.dumps(
-            {"messages": [{"role": "tool", "content": [{"type": "text", "text": "ok"}]}]}
+            {
+                "messages": [
+                    {"role": "tool", "content": [{"type": "text", "text": "ok"}]}
+                ]
+            }
         )
-        assert ins.check_content_block_missing_type([_exchange(request_body=body)]) == []
+        assert (
+            ins.check_content_block_missing_type([_exchange(request_body=body)]) == []
+        )
 
     def test_string_content_not_flagged(self) -> None:
         body = json.dumps({"messages": [{"role": "user", "content": "hi"}]})
-        assert ins.check_content_block_missing_type([_exchange(request_body=body)]) == []
+        assert (
+            ins.check_content_block_missing_type([_exchange(request_body=body)]) == []
+        )
 
     def test_tavily_style_missing_type_flagged(self) -> None:
         # The exact #1069 shape: a Tavily tool result forwarded as a raw
@@ -270,8 +323,12 @@ class TestCheckContentBlockMissingType:
         assert flags[0]["content_index"] == 0
 
     def test_non_dict_content_items_not_flagged(self) -> None:
-        body = json.dumps({"messages": [{"role": "user", "content": ["plain string item"]}]})
-        assert ins.check_content_block_missing_type([_exchange(request_body=body)]) == []
+        body = json.dumps(
+            {"messages": [{"role": "user", "content": ["plain string item"]}]}
+        )
+        assert (
+            ins.check_content_block_missing_type([_exchange(request_body=body)]) == []
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -299,7 +356,9 @@ class TestCheckEndpointHostMismatch:
 class TestCheckToolsWithResponseFormat:
     def test_tools_only_not_flagged(self) -> None:
         body = json.dumps({"tools": [{}]})
-        assert ins.check_tools_with_response_format([_exchange(request_body=body)]) == []
+        assert (
+            ins.check_tools_with_response_format([_exchange(request_body=body)]) == []
+        )
 
     def test_tools_and_response_format_flagged(self) -> None:
         body = json.dumps({"tools": [{}], "response_format": {"type": "json_schema"}})
@@ -324,13 +383,19 @@ class TestCheckAnthropicThinkingInToolResult:
                 "messages": [
                     {
                         "content": [
-                            {"type": "tool_result", "content": [{"type": "text", "text": "ok"}]}
+                            {
+                                "type": "tool_result",
+                                "content": [{"type": "text", "text": "ok"}],
+                            }
                         ]
                     }
                 ]
             }
         )
-        assert ins.check_anthropic_thinking_in_tool_result([_exchange(request_body=body)]) == []
+        assert (
+            ins.check_anthropic_thinking_in_tool_result([_exchange(request_body=body)])
+            == []
+        )
 
     def test_thinking_block_in_tool_result_flagged(self) -> None:
         body = json.dumps(
@@ -347,7 +412,9 @@ class TestCheckAnthropicThinkingInToolResult:
                 ]
             }
         )
-        flags = ins.check_anthropic_thinking_in_tool_result([_exchange(request_body=body)])
+        flags = ins.check_anthropic_thinking_in_tool_result(
+            [_exchange(request_body=body)]
+        )
         assert len(flags) == 1
 
 
@@ -401,7 +468,9 @@ class TestCheckEmptyContentNotFinal:
 
 class TestCheckActionNameNotRegistered:
     def test_registered_action_not_flagged(self) -> None:
-        exchanges = [_exchange(response_body="Thought: x\nAction: search\nAction Input: y")]
+        exchanges = [
+            _exchange(response_body="Thought: x\nAction: search\nAction Input: y")
+        ]
         assert ins.check_action_name_not_registered(exchanges, {"search"}) == []
 
     def test_unregistered_action_flagged(self) -> None:
@@ -423,11 +492,16 @@ class TestCheckActionNameNotRegistered:
 class TestCheckJsonSchemaLookaroundOrAnyof:
     def test_plain_pattern_not_flagged(self) -> None:
         body = json.dumps({"schema": {"pattern": "^[a-z]+$"}})
-        assert ins.check_json_schema_lookaround_or_anyof([_exchange(request_body=body)]) == []
+        assert (
+            ins.check_json_schema_lookaround_or_anyof([_exchange(request_body=body)])
+            == []
+        )
 
     def test_lookaround_pattern_flagged(self) -> None:
         body = json.dumps({"schema": {"pattern": "(?=foo)bar"}})
-        flags = ins.check_json_schema_lookaround_or_anyof([_exchange(request_body=body)])
+        flags = ins.check_json_schema_lookaround_or_anyof(
+            [_exchange(request_body=body)]
+        )
         assert any(f["check"] == "json_schema_lookaround" for f in flags)
 
     def test_anyof_type_mismatch_under_strict_flagged(self) -> None:
@@ -437,7 +511,9 @@ class TestCheckJsonSchemaLookaroundOrAnyof:
                 "schema": {"anyOf": [{"type": "string"}, {"type": "integer"}]},
             }
         )
-        flags = ins.check_json_schema_lookaround_or_anyof([_exchange(request_body=body)])
+        flags = ins.check_json_schema_lookaround_or_anyof(
+            [_exchange(request_body=body)]
+        )
         assert any(f["check"] == "json_schema_anyof_type_mismatch" for f in flags)
 
 
@@ -495,37 +571,55 @@ def _response_with_tool_call(name: str) -> str:
 
 class TestCheckToolCallNameFuzzyMatch:
     def test_registered_name_not_flagged(self) -> None:
-        exchanges = [_exchange(response_body=_response_with_tool_call("occrra_information"))]
-        assert ins.check_tool_call_name_fuzzy_match(exchanges, {"occrra_information"}) == []
+        exchanges = [
+            _exchange(response_body=_response_with_tool_call("occrra_information"))
+        ]
+        assert (
+            ins.check_tool_call_name_fuzzy_match(exchanges, {"occrra_information"})
+            == []
+        )
 
     def test_near_miss_spelling_flagged(self) -> None:
-        exchanges = [_exchange(response_body=_response_with_tool_call("occcra_information"))]
+        exchanges = [
+            _exchange(response_body=_response_with_tool_call("occcra_information"))
+        ]
         flags = ins.check_tool_call_name_fuzzy_match(exchanges, {"occrra_information"})
         assert len(flags) == 1
         assert flags[0]["nearest_registered_name"] == "occrra_information"
 
     def test_completely_unrelated_name_not_flagged(self) -> None:
-        exchanges = [_exchange(response_body=_response_with_tool_call("totally_different_xyz"))]
-        assert ins.check_tool_call_name_fuzzy_match(exchanges, {"search"}, max_distance=3) == []
+        exchanges = [
+            _exchange(response_body=_response_with_tool_call("totally_different_xyz"))
+        ]
+        assert (
+            ins.check_tool_call_name_fuzzy_match(exchanges, {"search"}, max_distance=3)
+            == []
+        )
 
 
 class TestCheckToolCallNameDottedCompound:
     def test_single_registered_name_not_flagged(self) -> None:
         exchanges = [_exchange(response_body=_response_with_tool_call("Tool_A"))]
         assert (
-            ins.check_tool_call_name_dotted_compound(exchanges, {"Tool_A", "Tool_B"}) == []
+            ins.check_tool_call_name_dotted_compound(exchanges, {"Tool_A", "Tool_B"})
+            == []
         )
 
     def test_dotted_compound_of_two_registered_names_flagged(self) -> None:
         exchanges = [_exchange(response_body=_response_with_tool_call("Tool_A.Tool_B"))]
-        flags = ins.check_tool_call_name_dotted_compound(exchanges, {"Tool_A", "Tool_B"})
+        flags = ins.check_tool_call_name_dotted_compound(
+            exchanges, {"Tool_A", "Tool_B"}
+        )
         assert len(flags) == 1
         assert flags[0]["compound_parts"] == ["Tool_A", "Tool_B"]
 
     def test_dotted_name_with_unregistered_part_not_flagged(self) -> None:
-        exchanges = [_exchange(response_body=_response_with_tool_call("Tool_A.Unknown"))]
+        exchanges = [
+            _exchange(response_body=_response_with_tool_call("Tool_A.Unknown"))
+        ]
         assert (
-            ins.check_tool_call_name_dotted_compound(exchanges, {"Tool_A", "Tool_B"}) == []
+            ins.check_tool_call_name_dotted_compound(exchanges, {"Tool_A", "Tool_B"})
+            == []
         )
 
 
@@ -646,7 +740,10 @@ class TestCheckDuplicateConcurrentToolCalls:
                 ]
             }
         )
-        assert ins.check_duplicate_concurrent_tool_calls([_exchange(response_body=body)]) == []
+        assert (
+            ins.check_duplicate_concurrent_tool_calls([_exchange(response_body=body)])
+            == []
+        )
 
     def test_two_distinct_tools_not_flagged(self) -> None:
         body = json.dumps(
@@ -663,7 +760,10 @@ class TestCheckDuplicateConcurrentToolCalls:
                 ]
             }
         )
-        assert ins.check_duplicate_concurrent_tool_calls([_exchange(response_body=body)]) == []
+        assert (
+            ins.check_duplicate_concurrent_tool_calls([_exchange(response_body=body)])
+            == []
+        )
 
     def test_same_tool_called_twice_flagged(self) -> None:
         """The exact #6882 shape: parallel_tool_calls=True calling the same
@@ -682,7 +782,9 @@ class TestCheckDuplicateConcurrentToolCalls:
                 ]
             }
         )
-        flags = ins.check_duplicate_concurrent_tool_calls([_exchange(response_body=body)])
+        flags = ins.check_duplicate_concurrent_tool_calls(
+            [_exchange(response_body=body)]
+        )
         assert len(flags) == 1
         assert flags[0]["duplicated_tool_counts"] == {"run_team": 2}
 
@@ -702,17 +804,24 @@ class TestCheckDuplicateConcurrentToolCalls:
                 ]
             }
         )
-        flags = ins.check_duplicate_concurrent_tool_calls([_exchange(response_body=body)])
+        flags = ins.check_duplicate_concurrent_tool_calls(
+            [_exchange(response_body=body)]
+        )
         assert len(flags) == 1
         assert flags[0]["duplicated_tool_counts"] == {"run_team": 2}
 
     def test_no_tool_calls_not_flagged(self) -> None:
         body = json.dumps({"choices": [{"message": {"content": "hi"}}]})
-        assert ins.check_duplicate_concurrent_tool_calls([_exchange(response_body=body)]) == []
+        assert (
+            ins.check_duplicate_concurrent_tool_calls([_exchange(response_body=body)])
+            == []
+        )
 
     def test_malformed_body_not_raised(self) -> None:
         assert (
-            ins.check_duplicate_concurrent_tool_calls([_exchange(response_body="not json")])
+            ins.check_duplicate_concurrent_tool_calls(
+                [_exchange(response_body="not json")]
+            )
             == []
         )
 
@@ -804,7 +913,10 @@ class TestCheckAllToolCallsNoTerminalResponse:
 class TestCheckMarkdownFencedJsonResponse:
     def test_plain_content_not_flagged(self) -> None:
         body = json.dumps({"choices": [{"message": {"content": '{"a": 1}'}}]})
-        assert ins.check_markdown_fenced_json_response([_exchange(response_body=body)]) == []
+        assert (
+            ins.check_markdown_fenced_json_response([_exchange(response_body=body)])
+            == []
+        )
 
     def test_openai_shape_json_fence_flagged(self) -> None:
         body = json.dumps(
@@ -825,11 +937,7 @@ class TestCheckMarkdownFencedJsonResponse:
         body = json.dumps(
             {
                 "candidates": [
-                    {
-                        "content": {
-                            "parts": [{"text": '```json\n{"result": "ok"}\n```'}]
-                        }
-                    }
+                    {"content": {"parts": [{"text": '```json\n{"result": "ok"}\n```'}]}}
                 ]
             }
         )
@@ -840,15 +948,23 @@ class TestCheckMarkdownFencedJsonResponse:
         body = json.dumps(
             {"candidates": [{"content": {"parts": [{"text": '{"result": "ok"}'}]}}]}
         )
-        assert ins.check_markdown_fenced_json_response([_exchange(response_body=body)]) == []
+        assert (
+            ins.check_markdown_fenced_json_response([_exchange(response_body=body)])
+            == []
+        )
 
     def test_no_content_not_flagged(self) -> None:
         body = json.dumps({"choices": [{"message": {}}]})
-        assert ins.check_markdown_fenced_json_response([_exchange(response_body=body)]) == []
+        assert (
+            ins.check_markdown_fenced_json_response([_exchange(response_body=body)])
+            == []
+        )
 
     def test_malformed_body_not_raised(self) -> None:
         assert (
-            ins.check_markdown_fenced_json_response([_exchange(response_body="not json")])
+            ins.check_markdown_fenced_json_response(
+                [_exchange(response_body="not json")]
+            )
             == []
         )
 
@@ -887,7 +1003,10 @@ class TestCheckToolCallingDisabled:
 
     def test_gemini_mode_none_flagged(self) -> None:
         body = json.dumps(
-            {"tools": [{}], "tool_config": {"function_calling_config": {"mode": "NONE"}}}
+            {
+                "tools": [{}],
+                "tool_config": {"function_calling_config": {"mode": "NONE"}},
+            }
         )
         flags = ins.check_tool_calling_disabled([_exchange(request_body=body)])
         assert any(f["provider"] == "gemini" for f in flags)
@@ -985,7 +1104,9 @@ class TestCheckNonOkFinishReason:
         assert flags[0]["finish_reason"] == "max_tokens"
 
     def test_malformed_body_not_flagged(self) -> None:
-        assert ins.check_non_ok_finish_reason([_exchange(response_body="not json")]) == []
+        assert (
+            ins.check_non_ok_finish_reason([_exchange(response_body="not json")]) == []
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1001,11 +1122,7 @@ class TestCheckForcedToolCallUnfulfilled:
         response_body = json.dumps(
             {
                 "choices": [
-                    {
-                        "message": {
-                            "tool_calls": [{"function": {"name": "get_weather"}}]
-                        }
-                    }
+                    {"message": {"tool_calls": [{"function": {"name": "get_weather"}}]}}
                 ]
             }
         )
@@ -1018,7 +1135,9 @@ class TestCheckForcedToolCallUnfulfilled:
         request_body = json.dumps(
             {"tool_choice": {"type": "function", "function": {"name": "get_weather"}}}
         )
-        response_body = json.dumps({"choices": [{"message": {"content": "It's sunny."}}]})
+        response_body = json.dumps(
+            {"choices": [{"message": {"content": "It's sunny."}}]}
+        )
         exchanges = [_exchange(request_body=request_body, response_body=response_body)]
         flags = ins.check_forced_tool_call_unfulfilled(exchanges)
         assert len(flags) == 1
@@ -1036,7 +1155,9 @@ class TestCheckForcedToolCallUnfulfilled:
         for keyword in ("auto", "none", "required", "any"):
             request_body = json.dumps({"tool_choice": keyword})
             response_body = json.dumps({"choices": [{"message": {"content": "hi"}}]})
-            exchanges = [_exchange(request_body=request_body, response_body=response_body)]
+            exchanges = [
+                _exchange(request_body=request_body, response_body=response_body)
+            ]
             assert ins.check_forced_tool_call_unfulfilled(exchanges) == []
 
     def test_no_tool_choice_not_flagged(self) -> None:
@@ -1046,7 +1167,9 @@ class TestCheckForcedToolCallUnfulfilled:
         assert ins.check_forced_tool_call_unfulfilled(exchanges) == []
 
     def test_anthropic_style_dict_unfulfilled_flagged(self) -> None:
-        request_body = json.dumps({"tool_choice": {"type": "tool", "name": "get_weather"}})
+        request_body = json.dumps(
+            {"tool_choice": {"type": "tool", "name": "get_weather"}}
+        )
         response_body = json.dumps({"choices": [{"message": {"content": "hi"}}]})
         exchanges = [_exchange(request_body=request_body, response_body=response_body)]
         flags = ins.check_forced_tool_call_unfulfilled(exchanges)
@@ -1094,7 +1217,11 @@ class TestMatchKnownErrorPatterns:
         assert flags[0]["pattern"] == "cross_provider_content_block_mismatch"
 
     def test_unmatched_message_not_flagged(self) -> None:
-        spans = [_span("llm:x", status="ERROR", events=[_exception_event("some other error")])]
+        spans = [
+            _span(
+                "llm:x", status="ERROR", events=[_exception_event("some other error")]
+            )
+        ]
         assert ins.match_known_error_patterns(spans) == []
 
 
@@ -1127,7 +1254,8 @@ class TestCheckReservedKwargCollision:
                 attributes={"tool.input_str": '{"config": {...}}'},
                 events=[
                     _exception_event(
-                        "f() missing 1 required positional argument: 'config'", "TypeError"
+                        "f() missing 1 required positional argument: 'config'",
+                        "TypeError",
                     )
                 ],
             )
@@ -1144,7 +1272,8 @@ class TestCheckReservedKwargCollision:
                 attributes={"tool.input_str": '{"other": 1}'},
                 events=[
                     _exception_event(
-                        "f() missing 1 required positional argument: 'config'", "TypeError"
+                        "f() missing 1 required positional argument: 'config'",
+                        "TypeError",
                     )
                 ],
             )
@@ -1183,7 +1312,10 @@ class TestMultiBlockLlmResponses:
 
 class TestCheckStreamMergeValidity:
     def test_non_sse_exchange_not_flagged(self) -> None:
-        assert ins.check_stream_merge_validity([_exchange(response_body="plain text")]) == []
+        assert (
+            ins.check_stream_merge_validity([_exchange(response_body="plain text")])
+            == []
+        )
 
     def test_valid_merged_tool_call_not_flagged(self) -> None:
         body = (
@@ -1320,15 +1452,23 @@ class TestFieldPresentOnWireAbsentDownstream:
     def test_field_absent_from_wire_not_flagged(self) -> None:
         exchanges = [_exchange(response_body=json.dumps({"id": "1"}))]
         spans: list[dict[str, object]] = []
-        assert ins.field_present_on_wire_absent_downstream(exchanges, spans, "usage") == []
+        assert (
+            ins.field_present_on_wire_absent_downstream(exchanges, spans, "usage") == []
+        )
 
     def test_field_present_on_wire_and_downstream_not_flagged(self) -> None:
-        exchanges = [_exchange(response_body=json.dumps({"usage": {"total_tokens": 5}}))]
+        exchanges = [
+            _exchange(response_body=json.dumps({"usage": {"total_tokens": 5}}))
+        ]
         spans = [_span("llm:x", attributes={"llm.usage.total_tokens": 5})]
-        assert ins.field_present_on_wire_absent_downstream(exchanges, spans, "usage") == []
+        assert (
+            ins.field_present_on_wire_absent_downstream(exchanges, spans, "usage") == []
+        )
 
     def test_field_present_on_wire_absent_downstream_flagged(self) -> None:
-        exchanges = [_exchange(response_body=json.dumps({"usage": {"total_tokens": 5}}))]
+        exchanges = [
+            _exchange(response_body=json.dumps({"usage": {"total_tokens": 5}}))
+        ]
         spans = [_span("llm:x", attributes={})]
         flags = ins.field_present_on_wire_absent_downstream(exchanges, spans, "usage")
         assert len(flags) == 1
@@ -1375,7 +1515,9 @@ class TestFieldPresentOnWireAbsentDownstream:
         assert flags == []
 
     def test_nested_path_absent_from_wire_not_flagged(self) -> None:
-        exchanges = [_exchange(response_body=json.dumps({"choices": [{"message": {}}]}))]
+        exchanges = [
+            _exchange(response_body=json.dumps({"choices": [{"message": {}}]}))
+        ]
         spans: list[dict[str, object]] = []
         flags = ins.field_present_on_wire_absent_downstream(
             exchanges, spans, "choices.0.message.reasoning_content"
@@ -1745,7 +1887,11 @@ class TestRunAllExchangeChecks:
         assert "orphaned_tool_call_ids" not in results
 
     def test_non_ok_finish_reason_wired_in(self) -> None:
-        exchanges = [_exchange(response_body=json.dumps({"choices": [{"finish_reason": "length"}]}))]
+        exchanges = [
+            _exchange(
+                response_body=json.dumps({"choices": [{"finish_reason": "length"}]})
+            )
+        ]
         results = ins.run_all_exchange_checks(exchanges)
         assert "non_ok_finish_reason" in results
 
@@ -1759,7 +1905,9 @@ class TestRunAllExchangeChecks:
         assert "forced_tool_call_unfulfilled" in results
 
     def test_content_block_missing_type_wired_in(self) -> None:
-        request_body = json.dumps({"messages": [{"role": "tool", "content": [{"url": "x"}]}]})
+        request_body = json.dumps(
+            {"messages": [{"role": "tool", "content": [{"url": "x"}]}]}
+        )
         exchanges = [_exchange(request_body=request_body)]
         results = ins.run_all_exchange_checks(exchanges)
         assert "content_block_missing_type" in results

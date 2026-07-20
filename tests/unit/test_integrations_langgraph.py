@@ -293,9 +293,7 @@ class TestLangGraphCallbacks:
             [[]],
             run_id=run_id,
             invocation_params={
-                "tools": [
-                    {"type": "function", "function": {"name": "SimpleSchema"}}
-                ]
+                "tools": [{"type": "function", "function": {"name": "SimpleSchema"}}]
             },
         )
         span = handler._spans[str(run_id)]
@@ -414,9 +412,7 @@ class TestLangGraphCallbacks:
         handler.on_chain_end({}, run_id=run_id)
         assert current_correlation_id() is None
 
-    def test_nested_spans_push_correlation_id_of_innermost_span(
-        self, tracer_and_trace
-    ):
+    def test_nested_spans_push_correlation_id_of_innermost_span(self, tracer_and_trace):
         from agent_trace.interceptor.httpx_hook import current_correlation_id
 
         t, trace = tracer_and_trace
@@ -440,9 +436,7 @@ class TestLangGraphCallbacks:
         handler.on_chain_end({}, run_id=parent_id)
         assert current_correlation_id() is None
 
-    def test_close_span_with_exception_also_pops_correlation_id(
-        self, tracer_and_trace
-    ):
+    def test_close_span_with_exception_also_pops_correlation_id(self, tracer_and_trace):
         from agent_trace.interceptor.httpx_hook import current_correlation_id
 
         t, trace = tracer_and_trace
@@ -864,17 +858,13 @@ class TestExceptionClassification:
         from agent_trace.integrations.langgraph import _match_known_error_signature
 
         msg = "ErrorCode.INVALID_CHAT_HISTORY: messages must alternate roles"
-        assert (
-            _match_known_error_signature(msg) == "langgraph_invalid_chat_history"
-        )
+        assert _match_known_error_signature(msg) == "langgraph_invalid_chat_history"
 
     def test_match_known_error_signature_invalid_tool_selection(self):
         from agent_trace.integrations.langgraph import _match_known_error_signature
 
         msg = "Selected invalid tool(s): frobulate. Available: search, math."
-        assert (
-            _match_known_error_signature(msg) == "middleware_invalid_tool_selection"
-        )
+        assert _match_known_error_signature(msg) == "middleware_invalid_tool_selection"
 
     def test_match_known_error_signature_no_match(self):
         from agent_trace.integrations.langgraph import _match_known_error_signature
@@ -1033,9 +1023,7 @@ class TestControlFlowSignalHandling:
 class TestCancelledStatus:
     """asyncio.CancelledError must close a span CANCELLED, not ERROR."""
 
-    def test_chain_error_cancelled_error_sets_cancelled_status(
-        self, tracer_and_trace
-    ):
+    def test_chain_error_cancelled_error_sets_cancelled_status(self, tracer_and_trace):
         import asyncio
 
         from agent_trace.core.span import SpanStatus
@@ -1684,9 +1672,7 @@ class TestLongRunningSpanThreshold:
         from agent_trace.integrations.langgraph import LangGraphTracer
 
         t, trace = tracer_and_trace
-        handler = LangGraphTracer(
-            tracer=t, trace=trace, long_span_threshold_secs=180
-        )
+        handler = LangGraphTracer(tracer=t, trace=trace, long_span_threshold_secs=180)
         clock = FixtureClock(initial=1_000.0)
         token = set_clock(clock)
         try:
@@ -1704,9 +1690,7 @@ class TestLongRunningSpanThreshold:
         from agent_trace.integrations.langgraph import LangGraphTracer
 
         t, trace = tracer_and_trace
-        handler = LangGraphTracer(
-            tracer=t, trace=trace, long_span_threshold_secs=180
-        )
+        handler = LangGraphTracer(tracer=t, trace=trace, long_span_threshold_secs=180)
         clock = FixtureClock(initial=1_000.0)
         token = set_clock(clock)
         try:
@@ -1743,9 +1727,7 @@ class TestLongRunningSpanThreshold:
         from agent_trace.integrations.langgraph import LangGraphTracer
 
         t, trace = tracer_and_trace
-        handler = LangGraphTracer(
-            tracer=t, trace=trace, long_span_threshold_secs=180
-        )
+        handler = LangGraphTracer(tracer=t, trace=trace, long_span_threshold_secs=180)
         clock = FixtureClock(initial=1_000.0)
         token = set_clock(clock)
         try:
@@ -1988,9 +1970,7 @@ class TestRecordToolArgInjection:
         assert span.attributes["tool.injection_ran"] is False
         assert "tool.injected_arg_keys" not in span.attributes
 
-    def test_span_name_does_not_collide_with_tool_prefix_filter(
-        self, tracer_and_trace
-    ):
+    def test_span_name_does_not_collide_with_tool_prefix_filter(self, tracer_and_trace):
         """Regression guard: code/tests that filter spans via
         name.startswith("tool:") to find the *real* tool-call span must not
         also match the injection span."""

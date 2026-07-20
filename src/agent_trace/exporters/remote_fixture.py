@@ -135,15 +135,20 @@ class LocalDirRemoteFixtureBackend(RemoteFixtureBackend):
         return path.read_bytes()
 
     def list_keys(self, prefix: str) -> list[str]:
+        # Keys are always forward-slash-separated (matching put_bytes'
+        # f"{run_id}/exchanges/..." construction and the S3 backend's key
+        # format below) — Path.relative_to() returns backslash-separated
+        # paths on Windows, so comparing/returning via .as_posix() instead
+        # of str() is required for prefix matching to work cross-platform.
         base = self.root.resolve()
         prefix_path = self._path_for(prefix)
         search_root = prefix_path if prefix_path.is_dir() else prefix_path.parent
         if not search_root.exists():
             return []
         return sorted(
-            str(p.relative_to(base))
+            p.relative_to(base).as_posix()
             for p in search_root.rglob("*")
-            if p.is_file() and str(p.relative_to(base)).startswith(prefix)
+            if p.is_file() and p.relative_to(base).as_posix().startswith(prefix)
         )
 
 
@@ -196,9 +201,7 @@ class S3RemoteFixtureBackend(RemoteFixtureBackend):
             for obj in response.get("Contents", []):
                 remote_key = obj["Key"]
                 keys.append(
-                    remote_key[len(self.prefix) + 1 :]
-                    if self.prefix
-                    else remote_key
+                    remote_key[len(self.prefix) + 1 :] if self.prefix else remote_key
                 )
             if not response.get("IsTruncated"):
                 break
@@ -249,9 +252,7 @@ class GCSRemoteFixtureBackend(RemoteFixtureBackend):
 # ---------------------------------------------------------------------------
 
 
-def remote_sync_callback(
-    backend: RemoteFixtureBackend, run_id: str
-) -> Any:
+def remote_sync_callback(backend: RemoteFixtureBackend, run_id: str) -> Any:
     """Return an ``on_exchange_recorded`` callback (see ``Fixture.__init__``)
     that durably uploads each exchange to *backend* as it's recorded — so a
     worker killed mid-run still has every exchange recorded up to that

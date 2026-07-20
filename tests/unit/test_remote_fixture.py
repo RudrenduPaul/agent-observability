@@ -99,7 +99,10 @@ class _FakeS3Client:
         return {"Body": _FakeS3Body(self.objects[Key])}
 
     def list_objects_v2(
-        self, Bucket: str, Prefix: str, ContinuationToken: str | None = None  # noqa: N803
+        self,
+        Bucket: str,  # noqa: N803
+        Prefix: str,  # noqa: N803
+        ContinuationToken: str | None = None,  # noqa: N803
     ) -> dict:
         matching = sorted(k for k in self.objects if k.startswith(Prefix))
         return {"Contents": [{"Key": k} for k in matching], "IsTruncated": False}
@@ -115,7 +118,9 @@ class TestS3RemoteFixtureBackend:
 
     def test_prefix_applied_to_underlying_client_key(self) -> None:
         client = _FakeS3Client()
-        backend = S3RemoteFixtureBackend(bucket="b", prefix="agent-trace", client=client)
+        backend = S3RemoteFixtureBackend(
+            bucket="b", prefix="agent-trace", client=client
+        )
         backend.put_bytes("run_1/fixture.db", b"x")
         assert "agent-trace/run_1/fixture.db" in client.objects
 
@@ -131,7 +136,9 @@ class TestS3RemoteFixtureBackend:
 
     def test_list_keys_strips_prefix(self) -> None:
         client = _FakeS3Client()
-        backend = S3RemoteFixtureBackend(bucket="b", prefix="agent-trace", client=client)
+        backend = S3RemoteFixtureBackend(
+            bucket="b", prefix="agent-trace", client=client
+        )
         backend.put_bytes("run_1/exchanges/1.json", b"{}")
         backend.put_bytes("run_1/exchanges/2.json", b"{}")
         keys = backend.list_keys("run_1/")
@@ -201,7 +208,9 @@ class TestGCSRemoteFixtureBackend:
 
     def test_list_keys_strips_prefix(self) -> None:
         client = _FakeGCSBucket()
-        backend = GCSRemoteFixtureBackend(bucket="ignored", prefix="agent-trace", client=client)
+        backend = GCSRemoteFixtureBackend(
+            bucket="ignored", prefix="agent-trace", client=client
+        )
         backend.put_bytes("run_1/a.json", b"{}")
         backend.put_bytes("run_1/b.json", b"{}")
         assert backend.list_keys("run_1/") == ["run_1/a.json", "run_1/b.json"]
@@ -234,7 +243,9 @@ class TestRemoteSyncCallback:
             def put_bytes(self, key: str, data: bytes) -> None:
                 raise RuntimeError("network down")
 
-        callback = remote_sync_callback(_BoomBackend(tmp_path / "remote"), run_id="run_abc")
+        callback = remote_sync_callback(
+            _BoomBackend(tmp_path / "remote"), run_id="run_abc"
+        )
         callback({"sequence_num": 1})  # must not raise
 
 

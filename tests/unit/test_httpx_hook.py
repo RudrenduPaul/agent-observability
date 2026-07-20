@@ -1104,7 +1104,9 @@ class TestRecordingTransportCorrelationId:
     def test_correlation_id_persisted_via_mock_transport(self, tmp_path) -> None:
         fixture = _make_fixture(tmp_path)
         client = httpx.Client(
-            transport=RecordingTransport(fixture, inner=httpx.MockTransport(_ok_handler))
+            transport=RecordingTransport(
+                fixture, inner=httpx.MockTransport(_ok_handler)
+            )
         )
         with correlation_context("batch-item-1"):
             client.get("https://api.example.com/b")
@@ -1119,7 +1121,9 @@ class TestAsyncRecordingTransportCorrelationId:
 
         fixture = _make_fixture(tmp_path)
         client = httpx.AsyncClient(
-            transport=AsyncRecordingTransport(fixture, inner=httpx.MockTransport(_ok_handler))
+            transport=AsyncRecordingTransport(
+                fixture, inner=httpx.MockTransport(_ok_handler)
+            )
         )
 
         async def _call(correlation_id: str, url: str) -> None:

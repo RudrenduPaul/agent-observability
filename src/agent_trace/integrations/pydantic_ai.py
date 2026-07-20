@@ -226,9 +226,9 @@ class TracedAgentRun:
         if system_prompt_parts:
             resolved = getattr(system_prompt_parts[0], "content", None)
             if isinstance(resolved, str) and resolved:
+                truncated = "...<truncated>" if len(resolved) > 2000 else ""
                 span.set_attribute(
-                    "llm.system_prompt_content",
-                    resolved[:2000] + ("...<truncated>" if len(resolved) > 2000 else ""),
+                    "llm.system_prompt_content", resolved[:2000] + truncated
                 )
 
         retry_parts = [p for p in parts if type(p).__name__ == "RetryPromptPart"]

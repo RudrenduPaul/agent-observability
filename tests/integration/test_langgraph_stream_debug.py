@@ -33,9 +33,15 @@ class TestStreamDebugPatchAgainstRealLangGraph:
                 return "fake"
 
             def _generate(
-                self, messages: Any, stop: Any = None, run_manager: Any = None, **kwargs: Any
+                self,
+                messages: Any,
+                stop: Any = None,
+                run_manager: Any = None,
+                **kwargs: Any,
             ) -> ChatResult:
-                return ChatResult(generations=[ChatGeneration(message=AIMessage(content="hi"))])
+                return ChatResult(
+                    generations=[ChatGeneration(message=AIMessage(content="hi"))]
+                )
 
         def call_model_suppressed(state: MessagesState) -> dict[str, Any]:
             resp = FakeModel().with_config(tags=["nostream"]).invoke(state["messages"])

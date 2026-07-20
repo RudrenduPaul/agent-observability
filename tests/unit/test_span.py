@@ -362,7 +362,9 @@ class TestRecordException:
 
         class _FakeHTTPError(Exception):
             def __init__(self) -> None:
-                super().__init__("400 Client Error: None for url: https://bedrock.example.com")
+                super().__init__(
+                    "400 Client Error: None for url: https://bedrock.example.com"
+                )
                 self.response = _FakeResponse()
 
         span = Span()
@@ -390,7 +392,10 @@ class TestRecordException:
         span.record_exception(_FakeHTTPStatusError())
         attrs = span.events[0].attributes
         assert attrs["exception.http_status_code"] == 429
-        assert attrs["exception.http_response_body"] == "rate limit exceeded, retry after 30s"
+        assert (
+            attrs["exception.http_response_body"]
+            == "rate limit exceeded, retry after 30s"
+        )
 
     def test_record_exception_falls_back_to_response_content_bytes(self) -> None:
         class _FakeResponse:
@@ -424,7 +429,9 @@ class TestRecordException:
         assert len(body) < 20_000
         assert body.endswith("...<truncated>")
 
-    def test_record_exception_malformed_response_object_degrades_gracefully(self) -> None:
+    def test_record_exception_malformed_response_object_degrades_gracefully(
+        self,
+    ) -> None:
         """A .response attribute that raises when accessed must never break
         record_exception itself — best-effort only."""
 

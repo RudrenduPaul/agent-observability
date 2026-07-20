@@ -85,7 +85,7 @@ class TestParseSseEvents:
         assert parse_sse_events("") == []
 
     def test_blank_data_line_skipped(self) -> None:
-        body = "data: \n\ndata: {\"a\": 1}\n\n"
+        body = 'data: \n\ndata: {"a": 1}\n\n'
         assert parse_sse_events(body) == [{"a": 1}]
 
 

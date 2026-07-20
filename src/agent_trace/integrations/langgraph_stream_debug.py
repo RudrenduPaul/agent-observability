@@ -197,6 +197,6 @@ def install_stream_debug_patch() -> bool:
                 **kwargs,
             )
 
-        StreamMessagesHandler.on_chat_model_start = _patched_on_chat_model_start  # type: ignore[method-assign]
+        StreamMessagesHandler.on_chat_model_start = _patched_on_chat_model_start
         _installed = True
         return True

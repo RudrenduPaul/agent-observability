@@ -103,9 +103,7 @@ class TestErrorClassificationRows:
         spans = [
             _span("node:a", status="ERROR", attributes={"error.origin": "provider"}),
             _span("node:b", status="OK"),
-            _span(
-                "node:c", status="ERROR", attributes={"error.origin": "application"}
-            ),
+            _span("node:c", status="ERROR", attributes={"error.origin": "application"}),
         ]
         rows = _error_classification_rows(spans)
         assert [r["name"] for r in rows] == ["node:a", "node:c"]
@@ -228,9 +226,7 @@ class TestStreamingTimingRows:
         assert _streaming_timing_rows([_exchange(chunk_timestamps=None)]) == []
 
     def test_exchange_with_chunk_timestamps_included(self) -> None:
-        rows = _streaming_timing_rows(
-            [_exchange(chunk_timestamps=[0.0, 0.1, 0.2])]
-        )
+        rows = _streaming_timing_rows([_exchange(chunk_timestamps=[0.0, 0.1, 0.2])])
         assert len(rows) == 1
         assert rows[0]["chunk_count"] == 3
         assert rows[0]["time_to_first_chunk_ms"] == 0.0
@@ -358,7 +354,9 @@ class TestZeroTaskUpdateRows:
         assert _zero_task_update_rows(spans) == []
 
     def test_zero_task_update_included(self) -> None:
-        spans = [_update_span(zero_tasks=True, as_node="my_node", as_node_provided=True)]
+        spans = [
+            _update_span(zero_tasks=True, as_node="my_node", as_node_provided=True)
+        ]
         rows = _zero_task_update_rows(spans)
         assert len(rows) == 1
         assert rows[0]["as_node"] == "my_node"
@@ -477,7 +475,15 @@ class TestRunSubcommand:
         )
 
         result = _run_cli(
-            ["run", "--run-id", "cli-env-test", "--", sys.executable, "-c", child_script],
+            [
+                "run",
+                "--run-id",
+                "cli-env-test",
+                "--",
+                sys.executable,
+                "-c",
+                child_script,
+            ],
             env=env,
         )
         assert result.returncode == 0, result.stderr
@@ -541,7 +547,10 @@ def _error_span_with_exception(name: str, message: str) -> dict[str, object]:
         "events": [
             {
                 "name": "exception",
-                "attributes": {"exception.type": "ValueError", "exception.message": message},
+                "attributes": {
+                    "exception.type": "ValueError",
+                    "exception.message": message,
+                },
             }
         ],
     }
@@ -687,7 +696,12 @@ def _node_span(span_id: str, name: str = "node:a") -> dict[str, object]:
 
 
 def _llm_child_span(span_id: str, parent_id: str) -> dict[str, object]:
-    return {"span_id": span_id, "parent_id": parent_id, "name": "llm:gpt-4", "status": "OK"}
+    return {
+        "span_id": span_id,
+        "parent_id": parent_id,
+        "name": "llm:gpt-4",
+        "status": "OK",
+    }
 
 
 class TestRetryStormRows:
@@ -750,21 +764,51 @@ class TestPrintRetryStorms:
 class TestMisattributedSpanRows:
     def test_single_root_not_flagged(self) -> None:
         spans = [
-            {"span_id": "s1", "parent_id": None, "name": "node:a", "start_time": 0.0, "end_time": 1.0}
+            {
+                "span_id": "s1",
+                "parent_id": None,
+                "name": "node:a",
+                "start_time": 0.0,
+                "end_time": 1.0,
+            }
         ]
         assert _misattributed_span_rows(spans) == []
 
     def test_sequential_non_overlapping_roots_not_flagged(self) -> None:
         spans = [
-            {"span_id": "s1", "parent_id": None, "name": "node:a", "start_time": 0.0, "end_time": 1.0},
-            {"span_id": "s2", "parent_id": None, "name": "node:b", "start_time": 2.0, "end_time": 3.0},
+            {
+                "span_id": "s1",
+                "parent_id": None,
+                "name": "node:a",
+                "start_time": 0.0,
+                "end_time": 1.0,
+            },
+            {
+                "span_id": "s2",
+                "parent_id": None,
+                "name": "node:b",
+                "start_time": 2.0,
+                "end_time": 3.0,
+            },
         ]
         assert _misattributed_span_rows(spans) == []
 
     def test_overlapping_root_flagged_with_likely_parent(self) -> None:
         spans = [
-            {"span_id": "s1", "parent_id": None, "name": "node:a", "start_time": 0.0, "end_time": 2.0},
-            {"span_id": "s2", "parent_id": None, "name": "llm:gpt-4", "start_time": 0.5, "end_time": 1.0},
+            {
+                "span_id": "s1",
+                "parent_id": None,
+                "name": "node:a",
+                "start_time": 0.0,
+                "end_time": 2.0,
+            },
+            {
+                "span_id": "s2",
+                "parent_id": None,
+                "name": "llm:gpt-4",
+                "start_time": 0.5,
+                "end_time": 1.0,
+            },
         ]
         rows = _misattributed_span_rows(spans)
         assert len(rows) == 1
@@ -778,15 +822,33 @@ class TestMisattributedSpanRows:
 class TestPrintMisattributedSpans:
     def test_no_output_when_none_flagged(self, capsys) -> None:
         spans = [
-            {"span_id": "s1", "parent_id": None, "name": "node:a", "start_time": 0.0, "end_time": 1.0}
+            {
+                "span_id": "s1",
+                "parent_id": None,
+                "name": "node:a",
+                "start_time": 0.0,
+                "end_time": 1.0,
+            }
         ]
         _print_misattributed_spans(spans)
         assert capsys.readouterr().out == ""
 
     def test_prints_flagged_span(self, capsys) -> None:
         spans = [
-            {"span_id": "s1", "parent_id": None, "name": "node:a", "start_time": 0.0, "end_time": 2.0},
-            {"span_id": "s2", "parent_id": None, "name": "llm:gpt-4", "start_time": 0.5, "end_time": 1.0},
+            {
+                "span_id": "s1",
+                "parent_id": None,
+                "name": "node:a",
+                "start_time": 0.0,
+                "end_time": 2.0,
+            },
+            {
+                "span_id": "s2",
+                "parent_id": None,
+                "name": "llm:gpt-4",
+                "start_time": 0.5,
+                "end_time": 1.0,
+            },
         ]
         _print_misattributed_spans(spans)
         out = capsys.readouterr().out
@@ -811,9 +873,7 @@ class TestHttpSequenceConfirms:
             {"recorded_at": 0.1, "sequence_num": 1},  # inside parent's window
             {"recorded_at": 0.7, "sequence_num": 2},  # inside suspect's window
         ]
-        assert (
-            _http_sequence_confirms(_SEQ_SUSPECT, _SEQ_PARENT, exchanges) is True
-        )
+        assert _http_sequence_confirms(_SEQ_SUSPECT, _SEQ_PARENT, exchanges) is True
 
     def test_contradicts_when_http_sequence_disagrees(self) -> None:
         exchanges = [
@@ -823,9 +883,7 @@ class TestHttpSequenceConfirms:
             {"recorded_at": 0.7, "sequence_num": 1},
             {"recorded_at": 0.1, "sequence_num": 2},
         ]
-        assert (
-            _http_sequence_confirms(_SEQ_SUSPECT, _SEQ_PARENT, exchanges) is False
-        )
+        assert _http_sequence_confirms(_SEQ_SUSPECT, _SEQ_PARENT, exchanges) is False
 
     def test_none_when_no_exchanges_in_either_window(self) -> None:
         exchanges = [{"recorded_at": 10.0, "sequence_num": 1}]
@@ -845,8 +903,20 @@ class TestHttpSequenceConfirms:
 class TestMisattributedSpanRowsWithExchanges:
     def test_row_carries_confirmed_flag_when_exchanges_agree(self) -> None:
         spans = [
-            {"span_id": "s1", "parent_id": None, "name": "node:a", "start_time": 0.0, "end_time": 2.0},
-            {"span_id": "s2", "parent_id": None, "name": "llm:gpt-4", "start_time": 0.5, "end_time": 1.0},
+            {
+                "span_id": "s1",
+                "parent_id": None,
+                "name": "node:a",
+                "start_time": 0.0,
+                "end_time": 2.0,
+            },
+            {
+                "span_id": "s2",
+                "parent_id": None,
+                "name": "llm:gpt-4",
+                "start_time": 0.5,
+                "end_time": 1.0,
+            },
         ]
         exchanges = [
             {"recorded_at": 0.1, "sequence_num": 1},
@@ -858,8 +928,20 @@ class TestMisattributedSpanRowsWithExchanges:
 
     def test_row_omits_confirmed_flag_when_no_exchanges_passed(self) -> None:
         spans = [
-            {"span_id": "s1", "parent_id": None, "name": "node:a", "start_time": 0.0, "end_time": 2.0},
-            {"span_id": "s2", "parent_id": None, "name": "llm:gpt-4", "start_time": 0.5, "end_time": 1.0},
+            {
+                "span_id": "s1",
+                "parent_id": None,
+                "name": "node:a",
+                "start_time": 0.0,
+                "end_time": 2.0,
+            },
+            {
+                "span_id": "s2",
+                "parent_id": None,
+                "name": "llm:gpt-4",
+                "start_time": 0.5,
+                "end_time": 1.0,
+            },
         ]
         rows = _misattributed_span_rows(spans)
         assert "http_sequence_confirmed" not in rows[0]
@@ -868,8 +950,20 @@ class TestMisattributedSpanRowsWithExchanges:
 class TestPrintMisattributedSpansWithExchanges:
     def test_prints_confirmation_suffix(self, capsys) -> None:
         spans = [
-            {"span_id": "s1", "parent_id": None, "name": "node:a", "start_time": 0.0, "end_time": 2.0},
-            {"span_id": "s2", "parent_id": None, "name": "llm:gpt-4", "start_time": 0.5, "end_time": 1.0},
+            {
+                "span_id": "s1",
+                "parent_id": None,
+                "name": "node:a",
+                "start_time": 0.0,
+                "end_time": 2.0,
+            },
+            {
+                "span_id": "s2",
+                "parent_id": None,
+                "name": "llm:gpt-4",
+                "start_time": 0.5,
+                "end_time": 1.0,
+            },
         ]
         exchanges = [
             {"recorded_at": 0.1, "sequence_num": 1},
@@ -882,8 +976,20 @@ class TestPrintMisattributedSpansWithExchanges:
 
     def test_prints_contradiction_suffix(self, capsys) -> None:
         spans = [
-            {"span_id": "s1", "parent_id": None, "name": "node:a", "start_time": 0.0, "end_time": 2.0},
-            {"span_id": "s2", "parent_id": None, "name": "llm:gpt-4", "start_time": 0.5, "end_time": 1.0},
+            {
+                "span_id": "s1",
+                "parent_id": None,
+                "name": "node:a",
+                "start_time": 0.0,
+                "end_time": 2.0,
+            },
+            {
+                "span_id": "s2",
+                "parent_id": None,
+                "name": "llm:gpt-4",
+                "start_time": 0.5,
+                "end_time": 1.0,
+            },
         ]
         exchanges = [
             {"recorded_at": 0.7, "sequence_num": 1},
@@ -1033,7 +1139,11 @@ class TestInspectSubcommand:
         request_body = _json.dumps(
             {
                 "input": [
-                    {"type": "function_call", "call_id": "call_1", "name": "get_weather"},
+                    {
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "get_weather",
+                    },
                 ]
             }
         )
@@ -1079,11 +1189,7 @@ class TestInspectSubcommand:
                     {
                         "message": {
                             "tool_calls": [
-                                {
-                                    "function": {
-                                        "name": "transfer_back_to_supervisor"
-                                    }
-                                }
+                                {"function": {"name": "transfer_back_to_supervisor"}}
                             ]
                         }
                     }
@@ -1224,7 +1330,9 @@ class TestInspectSubcommand:
         env["AGENT_TRACE_TRACE_DIR"] = str(tmp_path)
 
         get_response = _json.dumps({"id": "asst_123", "instructions": "fresh"})
-        post_request = _json.dumps({"assistant_id": "asst_123", "instructions": "stale"})
+        post_request = _json.dumps(
+            {"assistant_id": "asst_123", "instructions": "stale"}
+        )
         _write_run(
             tmp_path,
             "run-stale-2",
@@ -1254,7 +1362,9 @@ class TestInspectSubcommand:
         assert result.returncode == 0, result.stderr
         assert "get_post_field_mismatch" not in result.stdout
 
-    def test_diff_field_nested_path_flags_deepseek_reasoning_content(self, tmp_path) -> None:
+    def test_diff_field_nested_path_flags_deepseek_reasoning_content(
+        self, tmp_path
+    ) -> None:
         """#5526: DeepSeek's `reasoning_content` lives nested at
         `choices[0].message.reasoning_content`, not at the response body's
         top level — `--diff-field` must accept a dotted/nested path
@@ -1303,7 +1413,12 @@ class TestInspectSubcommand:
         )
 
         result = _run_cli(
-            ["inspect", "run-deepseek", "--diff-field", "choices.0.message.reasoning_content"],
+            [
+                "inspect",
+                "run-deepseek",
+                "--diff-field",
+                "choices.0.message.reasoning_content",
+            ],
             env=env,
         )
         assert result.returncode == 0, result.stderr

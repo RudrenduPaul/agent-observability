@@ -81,9 +81,7 @@ class TestFlagInconsistencies:
                 node_name="n3", run_id="r3", tags=(), suppressed=False
             ),  # declared nostream but wasn't honored
         ]
-        flagged = flag_inconsistencies(
-            decisions, declared_nostream_nodes={"n1", "n3"}
-        )
+        flagged = flag_inconsistencies(decisions, declared_nostream_nodes={"n1", "n3"})
         assert [d.node_name for d in flagged] == ["n3"]
 
     def test_empty_inputs(self) -> None:

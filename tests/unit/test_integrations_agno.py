@@ -132,7 +132,13 @@ class TestRunLifecycle:
     def test_run_started_opens_span(self, tmp_path: Path) -> None:
         _, trace, hook = _make_tracer(tmp_path)
         hook.process_event(
-            _event("RunStarted", run_id="r1", agent_id="a1", agent_name="my-agent", model="gpt-4o")
+            _event(
+                "RunStarted",
+                run_id="r1",
+                agent_id="a1",
+                agent_name="my-agent",
+                model="gpt-4o",
+            )
         )
         assert len(trace.spans) == 1
         assert trace.spans[0].name == "agent:my-agent"
@@ -141,8 +147,12 @@ class TestRunLifecycle:
 
     def test_run_completed_closes_span_ok(self, tmp_path: Path) -> None:
         _, trace, hook = _make_tracer(tmp_path)
-        hook.process_event(_event("RunStarted", run_id="r1", agent_id="a1", agent_name="my-agent"))
-        hook.process_event(_event("RunCompleted", run_id="r1", agent_id="a1", agent_name="my-agent"))
+        hook.process_event(
+            _event("RunStarted", run_id="r1", agent_id="a1", agent_name="my-agent")
+        )
+        hook.process_event(
+            _event("RunCompleted", run_id="r1", agent_id="a1", agent_name="my-agent")
+        )
         assert trace.spans[0].status == SpanStatus.OK
         assert trace.spans[0].end_time is not None
         assert hook._run_spans == {}
@@ -158,7 +168,9 @@ class TestRunLifecycle:
         """A member Agent run inside a Team must parent to the team's run span."""
         _, trace, hook = _make_tracer(tmp_path)
         hook.process_event(
-            _event("TeamRunStarted", run_id="team-run", team_id="t1", team_name="my-team")
+            _event(
+                "TeamRunStarted", run_id="team-run", team_id="t1", team_name="my-team"
+            )
         )
         hook.process_event(
             _event(
@@ -177,7 +189,9 @@ class TestRunLifecycle:
 class TestRunError:
     def test_run_error_records_exception_and_closes_error(self, tmp_path: Path) -> None:
         _, trace, hook = _make_tracer(tmp_path)
-        hook.process_event(_event("RunStarted", run_id="r1", agent_id="a1", agent_name="crash-agent"))
+        hook.process_event(
+            _event("RunStarted", run_id="r1", agent_id="a1", agent_name="crash-agent")
+        )
         hook.process_event(
             _event(
                 "RunError",
@@ -191,10 +205,14 @@ class TestRunError:
         span = trace.spans[0]
         assert span.status == SpanStatus.ERROR
         assert span.end_time is not None
-        assert span.events[0].attributes["exception.message"] == "boom: UnboundLocalError"
+        assert (
+            span.events[0].attributes["exception.message"] == "boom: UnboundLocalError"
+        )
         assert hook._run_spans == {}
 
-    def test_run_error_without_matching_start_does_not_raise(self, tmp_path: Path) -> None:
+    def test_run_error_without_matching_start_does_not_raise(
+        self, tmp_path: Path
+    ) -> None:
         _, trace, hook = _make_tracer(tmp_path)
         # No RunStarted fired first -- must not raise.
         hook.process_event(
@@ -206,7 +224,9 @@ class TestRunError:
 class TestRunCancelled:
     def test_run_cancelled_closes_ok_with_attribute(self, tmp_path: Path) -> None:
         _, trace, hook = _make_tracer(tmp_path)
-        hook.process_event(_event("RunStarted", run_id="r1", agent_id="a1", agent_name="a"))
+        hook.process_event(
+            _event("RunStarted", run_id="r1", agent_id="a1", agent_name="a")
+        )
         hook.process_event(
             _event("RunCancelled", run_id="r1", agent_id="a1", reason="user requested")
         )
@@ -224,9 +244,17 @@ class TestRunCancelled:
 class TestModelRequestLifecycle:
     def test_model_request_span_is_child_of_run_span(self, tmp_path: Path) -> None:
         _, trace, hook = _make_tracer(tmp_path)
-        hook.process_event(_event("RunStarted", run_id="r1", agent_id="a1", agent_name="a"))
         hook.process_event(
-            _event("ModelRequestStarted", run_id="r1", agent_id="a1", model="gpt-4o", model_provider="openai")
+            _event("RunStarted", run_id="r1", agent_id="a1", agent_name="a")
+        )
+        hook.process_event(
+            _event(
+                "ModelRequestStarted",
+                run_id="r1",
+                agent_id="a1",
+                model="gpt-4o",
+                model_provider="openai",
+            )
         )
         run_span = next(s for s in trace.spans if s.name == "agent:a")
         llm_span = next(s for s in trace.spans if s.name.startswith("llm:"))
@@ -235,8 +263,12 @@ class TestModelRequestLifecycle:
 
     def test_model_request_completed_records_token_usage(self, tmp_path: Path) -> None:
         _, trace, hook = _make_tracer(tmp_path)
-        hook.process_event(_event("RunStarted", run_id="r1", agent_id="a1", agent_name="a"))
-        hook.process_event(_event("ModelRequestStarted", run_id="r1", agent_id="a1", model="gpt-4o"))
+        hook.process_event(
+            _event("RunStarted", run_id="r1", agent_id="a1", agent_name="a")
+        )
+        hook.process_event(
+            _event("ModelRequestStarted", run_id="r1", agent_id="a1", model="gpt-4o")
+        )
         hook.process_event(
             _event(
                 "ModelRequestCompleted",
@@ -263,15 +295,33 @@ class TestModelRequestLifecycle:
         """Two model calls within one run (a tool-calling loop) must each
         close independently via a stack, not overwrite each other."""
         _, trace, hook = _make_tracer(tmp_path)
-        hook.process_event(_event("RunStarted", run_id="r1", agent_id="a1", agent_name="a"))
-
-        hook.process_event(_event("ModelRequestStarted", run_id="r1", agent_id="a1", model="gpt-4o"))
         hook.process_event(
-            _event("ModelRequestCompleted", run_id="r1", agent_id="a1", model="gpt-4o", input_tokens=1)
+            _event("RunStarted", run_id="r1", agent_id="a1", agent_name="a")
         )
-        hook.process_event(_event("ModelRequestStarted", run_id="r1", agent_id="a1", model="gpt-4o"))
+
         hook.process_event(
-            _event("ModelRequestCompleted", run_id="r1", agent_id="a1", model="gpt-4o", input_tokens=2)
+            _event("ModelRequestStarted", run_id="r1", agent_id="a1", model="gpt-4o")
+        )
+        hook.process_event(
+            _event(
+                "ModelRequestCompleted",
+                run_id="r1",
+                agent_id="a1",
+                model="gpt-4o",
+                input_tokens=1,
+            )
+        )
+        hook.process_event(
+            _event("ModelRequestStarted", run_id="r1", agent_id="a1", model="gpt-4o")
+        )
+        hook.process_event(
+            _event(
+                "ModelRequestCompleted",
+                run_id="r1",
+                agent_id="a1",
+                model="gpt-4o",
+                input_tokens=2,
+            )
         )
 
         llm_spans = [s for s in trace.spans if s.name.startswith("llm:")]
@@ -289,7 +339,9 @@ class TestModelRequestLifecycle:
 class TestToolCallLifecycle:
     def test_tool_call_started_creates_child_span(self, tmp_path: Path) -> None:
         _, trace, hook = _make_tracer(tmp_path)
-        hook.process_event(_event("RunStarted", run_id="r1", agent_id="a1", agent_name="a"))
+        hook.process_event(
+            _event("RunStarted", run_id="r1", agent_id="a1", agent_name="a")
+        )
         hook.process_event(
             _event(
                 "ToolCallStarted",
@@ -305,7 +357,9 @@ class TestToolCallLifecycle:
 
     def test_tool_call_completed_closes_ok(self, tmp_path: Path) -> None:
         _, trace, hook = _make_tracer(tmp_path)
-        hook.process_event(_event("RunStarted", run_id="r1", agent_id="a1", agent_name="a"))
+        hook.process_event(
+            _event("RunStarted", run_id="r1", agent_id="a1", agent_name="a")
+        )
         hook.process_event(
             _event(
                 "ToolCallStarted",
@@ -319,7 +373,9 @@ class TestToolCallLifecycle:
                 "ToolCallCompleted",
                 run_id="r1",
                 agent_id="a1",
-                tool=_tool_execution(tool_call_id="call_1", tool_name="calculator", result="4"),
+                tool=_tool_execution(
+                    tool_call_id="call_1", tool_name="calculator", result="4"
+                ),
             )
         )
         tool_span = next(s for s in trace.spans if s.name == "tool:calculator")
@@ -332,13 +388,17 @@ class TestToolCallLifecycle:
         that lets a developer correlate the delegation with the member's own
         run span (per-team-member attribution, matching upstream issue #5326)."""
         _, trace, hook = _make_tracer(tmp_path)
-        hook.process_event(_event("TeamRunStarted", run_id="team-r", team_id="t1", team_name="my-team"))
+        hook.process_event(
+            _event("TeamRunStarted", run_id="team-r", team_id="t1", team_name="my-team")
+        )
         hook.process_event(
             _event(
                 "ToolCallStarted",
                 run_id="team-r",
                 team_id="t1",
-                tool=_tool_execution(tool_call_id="call_1", tool_name="delegate_task_to_member"),
+                tool=_tool_execution(
+                    tool_call_id="call_1", tool_name="delegate_task_to_member"
+                ),
             )
         )
         hook.process_event(
@@ -354,12 +414,16 @@ class TestToolCallLifecycle:
                 ),
             )
         )
-        tool_span = next(s for s in trace.spans if s.name == "tool:delegate_task_to_member")
+        tool_span = next(
+            s for s in trace.spans if s.name == "tool:delegate_task_to_member"
+        )
         assert tool_span.attributes["agno.child_run_id"] == "member-run-id"
 
     def test_tool_call_error_records_exception(self, tmp_path: Path) -> None:
         _, trace, hook = _make_tracer(tmp_path)
-        hook.process_event(_event("RunStarted", run_id="r1", agent_id="a1", agent_name="a"))
+        hook.process_event(
+            _event("RunStarted", run_id="r1", agent_id="a1", agent_name="a")
+        )
         hook.process_event(
             _event(
                 "ToolCallStarted",
@@ -379,7 +443,9 @@ class TestToolCallLifecycle:
         )
         tool_span = next(s for s in trace.spans if s.name == "tool:flaky")
         assert tool_span.status == SpanStatus.ERROR
-        assert tool_span.events[0].attributes["exception.message"] == "connection refused"
+        assert (
+            tool_span.events[0].attributes["exception.message"] == "connection refused"
+        )
         assert hook._tool_spans == {}
 
 
@@ -414,8 +480,12 @@ class TestProcessEventIsResilient:
 class TestCloseOpenSpans:
     def test_close_open_spans_force_closes_everything(self, tmp_path: Path) -> None:
         _, trace, hook = _make_tracer(tmp_path)
-        hook.process_event(_event("RunStarted", run_id="r1", agent_id="a1", agent_name="a"))
-        hook.process_event(_event("ModelRequestStarted", run_id="r1", agent_id="a1", model="gpt-4o"))
+        hook.process_event(
+            _event("RunStarted", run_id="r1", agent_id="a1", agent_name="a")
+        )
+        hook.process_event(
+            _event("ModelRequestStarted", run_id="r1", agent_id="a1", model="gpt-4o")
+        )
         hook.process_event(
             _event(
                 "ToolCallStarted",
@@ -436,7 +506,9 @@ class TestCloseOpenSpans:
 
     def test_close_open_spans_is_noop_when_nothing_open(self, tmp_path: Path) -> None:
         _, trace, hook = _make_tracer(tmp_path)
-        hook.process_event(_event("RunStarted", run_id="r1", agent_id="a1", agent_name="a"))
+        hook.process_event(
+            _event("RunStarted", run_id="r1", agent_id="a1", agent_name="a")
+        )
         hook.process_event(_event("RunCompleted", run_id="r1", agent_id="a1"))
         hook.close_open_spans()  # must not raise, must not touch the closed span
         assert trace.spans[0].status == SpanStatus.OK
@@ -453,7 +525,10 @@ class TestRequireAgno:
     ) -> None:
         monkeypatch.setitem(sys.modules, "agno", None)  # simulate "not installed"
         t = Tracer(trace_dir=tmp_path)
-        with t.start_trace("no-agno") as trace, pytest.raises(ImportError, match="pip install agno"):
+        with (
+            t.start_trace("no-agno") as trace,
+            pytest.raises(ImportError, match="pip install agno"),
+        ):
             instrument_agent_run(object(), "hi", tracer=t, trace=trace)
 
     async def test_instrument_agent_arun_raises_clear_error_without_agno(

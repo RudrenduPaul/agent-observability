@@ -280,9 +280,7 @@ class TestSystemPromptPartCapture:
     presence/absence) and the resolved instructions value are now
     persisted onto the llm: span."""
 
-    async def test_system_prompt_present_recorded_on_span(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_system_prompt_present_recorded_on_span(self, tmp_path: Path) -> None:
         agent: Agent[None, str] = Agent(
             TestModel(),
             name="sys-agent",
@@ -302,9 +300,7 @@ class TestSystemPromptPartCapture:
         part_kinds = llm_span.attributes["llm.request_part_kinds"]
         assert "SystemPromptPart" in part_kinds
 
-    async def test_system_prompt_absent_recorded_on_span(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_system_prompt_absent_recorded_on_span(self, tmp_path: Path) -> None:
         agent: Agent[None, str] = Agent(TestModel(), name="no-sys-agent")
 
         t = Tracer(trace_dir=tmp_path)

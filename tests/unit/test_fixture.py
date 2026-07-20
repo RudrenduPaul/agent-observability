@@ -560,9 +560,7 @@ class TestChunkTimestamps:
             _record(f)
             assert f.all_exchanges()[0]["chunk_timestamps"] is None
 
-    def test_next_exchange_also_carries_chunk_timestamps(
-        self, tmp_path: Path
-    ) -> None:
+    def test_next_exchange_also_carries_chunk_timestamps(self, tmp_path: Path) -> None:
         with Fixture(tmp_path / "f.db") as f:
             f.record_exchange(
                 url="https://api.example.com/stream",
@@ -998,7 +996,9 @@ class TestCorrelationId:
             )
             assert f.all_exchanges()[0]["correlation_id"] == "batch-item-0"
 
-    def test_exchanges_for_correlation_id_filters_correctly(self, tmp_path: Path) -> None:
+    def test_exchanges_for_correlation_id_filters_correctly(
+        self, tmp_path: Path
+    ) -> None:
         with Fixture(tmp_path / "f.db") as f:
             f.record_exchange(
                 url="https://a",
@@ -1023,9 +1023,15 @@ class TestCorrelationId:
             batch0 = f.exchanges_for_correlation_id("batch-0")
         assert [e["url"] for e in batch0] == ["https://a"]
 
-    def test_correlation_ids_returns_distinct_first_seen_order(self, tmp_path: Path) -> None:
+    def test_correlation_ids_returns_distinct_first_seen_order(
+        self, tmp_path: Path
+    ) -> None:
         with Fixture(tmp_path / "f.db") as f:
-            for cid, url in [("b", "https://1"), ("a", "https://2"), ("b", "https://3")]:
+            for cid, url in [
+                ("b", "https://1"),
+                ("a", "https://2"),
+                ("b", "https://3"),
+            ]:
                 f.record_exchange(
                     url=url,
                     method="GET",

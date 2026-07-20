@@ -185,7 +185,9 @@ class TestStdoutExporter:
         trace.add_span(span)
         exporter.export(trace)
 
-    def test_export_span_prints_exception_message_for_error_status(self, capsys) -> None:
+    def test_export_span_prints_exception_message_for_error_status(
+        self, capsys
+    ) -> None:
         exporter = StdoutExporter()
         span = Span(name="broken")
         span.record_exception(ValueError("boom-details"))
@@ -218,7 +220,9 @@ class TestStdoutExporter:
         assert "llm.usage.prompt_tokens=100" in captured.out
         assert "llm.usage.completion_tokens=20" in captured.out
 
-    def test_export_span_no_attribute_suffix_when_no_tracked_attrs(self, capsys) -> None:
+    def test_export_span_no_attribute_suffix_when_no_tracked_attrs(
+        self, capsys
+    ) -> None:
         exporter = StdoutExporter()
         span = Span(name="tool:x")
         span.set_attribute("tool.output", "some output")
@@ -227,7 +231,9 @@ class TestStdoutExporter:
         captured = capsys.readouterr()
         assert "tool.output" not in captured.out
 
-    def test_rich_export_includes_exception_message_for_error_span(self, capsys) -> None:
+    def test_rich_export_includes_exception_message_for_error_span(
+        self, capsys
+    ) -> None:
         exporter = StdoutExporter()
         trace = Trace(trace_id="t-err2", run_id="run-err2")
         trace.metadata["name"] = "error-trace"
@@ -283,7 +289,9 @@ class TestStdoutExporter:
 
         return _FakeHTTPError()
 
-    def test_export_span_prints_http_response_body_for_error_status(self, capsys) -> None:
+    def test_export_span_prints_http_response_body_for_error_status(
+        self, capsys
+    ) -> None:
         exporter = StdoutExporter()
         span = Span(name="llm:bedrock")
         span.record_exception(self._http_error_exc())
@@ -432,9 +440,7 @@ class TestExportSpanUnaccountedTime:
         exporter = StdoutExporter()
         trace = Trace(trace_id="t-unacc", run_id="run-unacc")
         trace.metadata["name"] = "unaccounted-trace"
-        parent = _span_with_duration(
-            "node:respond", 0.0, 1.050, span_id="p1"
-        )
+        parent = _span_with_duration("node:respond", 0.0, 1.050, span_id="p1")
         child = Span(
             name="llm:gpt-4",
             span_id="c1",

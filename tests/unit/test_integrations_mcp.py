@@ -273,9 +273,7 @@ class TestInstrumentMultiServerClient:
         t, trace, cm = _tracer_and_trace(tmp_path)
         underlying_session = _fake_session()
         client = MagicMock(spec=["session"])
-        client.session = MagicMock(
-            return_value=_FakeSessionContext(underlying_session)
-        )
+        client.session = MagicMock(return_value=_FakeSessionContext(underlying_session))
 
         instrument_multi_server_client(client, tracer=t, trace=trace)
 
@@ -291,9 +289,7 @@ class TestInstrumentMultiServerClient:
     ) -> None:
         t, trace, cm = _tracer_and_trace(tmp_path)
         client = MagicMock(spec=["session"])
-        client.session = MagicMock(
-            return_value=_FakeSessionContext(_fake_session())
-        )
+        client.session = MagicMock(return_value=_FakeSessionContext(_fake_session()))
 
         instrument_multi_server_client(client, tracer=t, trace=trace)
         wrapped_once = client.session

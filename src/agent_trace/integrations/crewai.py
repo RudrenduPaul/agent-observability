@@ -132,9 +132,7 @@ __all__ = ["CrewAITracer"]
 logger = logging.getLogger(__name__)
 
 _INSTALL_HINT = (
-    "CrewAITracer requires crewai.\n"
-    "Install it with:\n\n"
-    "    pip install crewai\n"
+    "CrewAITracer requires crewai.\nInstall it with:\n\n    pip install crewai\n"
 )
 
 

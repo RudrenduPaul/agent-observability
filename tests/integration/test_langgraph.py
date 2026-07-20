@@ -998,8 +998,7 @@ class TestControlFlowSignalNotMarkedError:
             )
             assert span.attributes.get("langgraph.handoff") is True
             assert (
-                span.attributes.get("langgraph.control_flow_signal")
-                == "ParentCommand"
+                span.attributes.get("langgraph.control_flow_signal") == "ParentCommand"
             )
 
     def test_no_error_status_span_anywhere_on_handoff_run(self, tmp_path: Path) -> None:
@@ -1259,11 +1258,21 @@ class TestStreamingCallbackHooksAgainstRealLangGraph:
                 return "fake-streaming"
 
             def _generate(
-                self, messages: Any, stop: Any = None, run_manager: Any = None, **kwargs: Any
+                self,
+                messages: Any,
+                stop: Any = None,
+                run_manager: Any = None,
+                **kwargs: Any,
             ) -> ChatResult:
                 raise AssertionError("expected _stream, not _generate, to be used")
 
-            def _stream(self, messages: Any, stop: Any = None, run_manager: Any = None, **kwargs: Any):
+            def _stream(
+                self,
+                messages: Any,
+                stop: Any = None,
+                run_manager: Any = None,
+                **kwargs: Any,
+            ):
                 for tok in ["hel", "lo"]:
                     chunk = ChatGenerationChunk(message=AIMessageChunk(content=tok))
                     if run_manager:
@@ -1296,7 +1305,9 @@ class TestStreamingCallbackHooksAgainstRealLangGraph:
         assert llm_span.attributes.get("llm.streamed") is True
         assert llm_span.attributes.get("llm.stream_token_count", 0) >= 2
         delta_events = [e for e in llm_span.events if e.name == "llm_stream_delta"]
-        tokens = [e.attributes.get("token") for e in delta_events if "token" in e.attributes]
+        tokens = [
+            e.attributes.get("token") for e in delta_events if "token" in e.attributes
+        ]
         assert "hel" in tokens
         assert "lo" in tokens
 
@@ -1788,9 +1799,7 @@ class TestPerRequestTraceLifecycleAgainstRealGraph:
 
         async def one_request(i: int) -> tuple[int, list[str], str]:
             with t.start_trace(f"async-request-{i}") as trace:
-                await graph.ainvoke(
-                    {"x": i}, config={"callbacks": [static_handler]}
-                )
+                await graph.ainvoke({"x": i}, config={"callbacks": [static_handler]})
                 return i, [s.span_id for s in trace.spans], trace.trace_id
 
         results = await asyncio.gather(*[one_request(i) for i in range(5)])
@@ -1919,11 +1928,11 @@ class TestHttpExchangeCorrelationToOriginatingSpan:
         from typing import TypedDict
 
         import httpx
+        from langgraph.graph import END, StateGraph
 
         from agent_trace import Tracer
         from agent_trace._replay.fixture import Fixture
         from agent_trace.integrations.langgraph import LangGraphTracer
-        from langgraph.graph import END, StateGraph
 
         class S(TypedDict):
             log: list[str]
@@ -1980,11 +1989,11 @@ class TestHttpExchangeCorrelationToOriginatingSpan:
         from typing import TypedDict
 
         import httpx
+        from langgraph.graph import END, StateGraph
 
         from agent_trace import Tracer
         from agent_trace._replay.fixture import Fixture
         from agent_trace.integrations.langgraph import LangGraphTracer
-        from langgraph.graph import END, StateGraph
 
         class S(TypedDict):
             log: list[str]
@@ -2042,11 +2051,11 @@ class TestHttpExchangeCorrelationToOriginatingSpan:
         from typing import TypedDict
 
         import httpx
+        from langgraph.graph import END, StateGraph
 
         from agent_trace import Tracer
         from agent_trace._replay.fixture import Fixture
         from agent_trace.integrations.langgraph import LangGraphTracer
-        from langgraph.graph import END, StateGraph
 
         class S(TypedDict):
             log: list[str]
@@ -2099,15 +2108,15 @@ class TestHttpExchangeCorrelationToOriginatingSpan:
         on_chain_start. This test pins that current, known-limited
         behavior so a future fix (or regression) is visible rather than
         silently assumed away."""
-        from typing import Annotated, TypedDict
+        from typing import TypedDict
 
         import httpx
+        from langgraph.graph import END, StateGraph
+        from langgraph.types import Send
 
         from agent_trace import Tracer
         from agent_trace._replay.fixture import Fixture
         from agent_trace.integrations.langgraph import LangGraphTracer
-        from langgraph.graph import END, StateGraph
-        from langgraph.types import Send
 
         class PState(TypedDict):
             results: Annotated[list, operator.add]

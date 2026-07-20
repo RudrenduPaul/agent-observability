@@ -238,9 +238,7 @@ class StdoutExporter:
 
         def _print_subtree(parent_id: str | None, depth: int) -> None:
             for span in children.get(parent_id, []):
-                self.export_span(
-                    span, depth=depth, children=children.get(span.span_id)
-                )
+                self.export_span(span, depth=depth, children=children.get(span.span_id))
                 _print_subtree(span.span_id, depth + 1)
 
         _print_subtree(None, depth=1)
