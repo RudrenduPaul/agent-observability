@@ -841,6 +841,14 @@ def _final_answer_handler(request: httpx.Request) -> httpx.Response:
     return httpx.Response(200, content=_FINAL_ANSWER_BODY)
 
 
+def _loop_guard_warnings(recwarn: pytest.WarningsRecorder) -> list[object]:
+    """Filter *recwarn* down to loop-guard warnings specifically. Asserting
+    on this instead of raw `len(recwarn)` keeps these tests from failing on
+    unrelated warnings (e.g. ResourceWarning from a prior test's delayed
+    GC) that have nothing to do with what's actually being tested here."""
+    return [w for w in recwarn.list if "runaway tool-call loop" in str(w.message)]
+
+
 class TestRecordingTransportLoopGuardDisabledByDefault:
     def test_no_warning_without_threshold(self, tmp_path, recwarn) -> None:
         """loop_guard_threshold=None (the default) must never warn/raise,
@@ -856,7 +864,7 @@ class TestRecordingTransportLoopGuardDisabledByDefault:
                 client.get("https://api.example.com/chat")
 
         assert fixture.exchange_count() == 10
-        assert len(recwarn) == 0
+        assert _loop_guard_warnings(recwarn) == []
 
 
 class TestRecordingTransportLoopGuardWarns:
@@ -890,7 +898,7 @@ class TestRecordingTransportLoopGuardWarns:
             for _ in range(4):
                 client.get("https://api.example.com/chat")
 
-        assert len(recwarn) == 0
+        assert _loop_guard_warnings(recwarn) == []
 
     def test_final_answer_resets_the_consecutive_count(self, tmp_path, recwarn) -> None:
         """A tool-call-free response in between must reset the streak, not
@@ -920,7 +928,7 @@ class TestRecordingTransportLoopGuardWarns:
             for _ in range(5):
                 client.get("https://api.example.com/chat")
 
-        assert len(recwarn) == 0
+        assert _loop_guard_warnings(recwarn) == []
 
     def test_different_hosts_counted_independently(self, tmp_path, recwarn) -> None:
         fixture = _make_fixture(tmp_path)
@@ -938,7 +946,7 @@ class TestRecordingTransportLoopGuardWarns:
             client.get("https://api.other.com/chat")
 
         # 2 consecutive per host — below threshold=3 for either host.
-        assert len(recwarn) == 0
+        assert _loop_guard_warnings(recwarn) == []
 
 
 class TestRecordingTransportLoopGuardRaises:

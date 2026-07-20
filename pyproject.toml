@@ -70,6 +70,7 @@ dev = [
     "aioresponses>=0.7",  # aiohttp mocking for unit tests
     "boto3>=1.34",  # AWS SDK — botocore interceptor unit tests
     "websockets>=13.0",  # WebSocket interceptor unit tests
+    "mcp>=1.28.1",  # MCP stdio-transport interceptor unit tests
     "langchain-core>=0.3",  # generic LangChain callback integration unit tests
     "langchain-classic>=1.0",  # classic Chain/BaseMemory integration tests (#6761)
 ]
