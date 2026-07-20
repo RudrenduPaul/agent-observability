@@ -48,8 +48,20 @@ jobs:
 
       # SLSA Level 2 — sign dist artifacts with Sigstore via GitHub OIDC.
       # Produces *.sigstore bundles alongside each dist file.
+      #
+      # UV_PYTHON is unset for this step only: astral-sh/setup-uv above sets
+      # it job-wide (python-version: "3.12"), and this action's own internal
+      # `uv pip install` runs in a fresh temp directory it doesn't associate
+      # with the venv it just created at .action-env — with UV_PYTHON=3.12
+      # inherited, uv looks for an existing venv for that version in the temp
+      # dir instead of creating one there, failing with "No virtual
+      # environment found for Python 3.12; run `uv venv`...". Every prior
+      # tagged release hit this. Unsetting it here lets the action's own
+      # venv-creation logic run uncontested by our job-wide pin.
       - name: Sign release artifacts (sigstore / SLSA Level 2)
         uses: sigstore/gh-action-sigstore-python@5b79a39c381910c090341a2c9b0bf022c8b387e1 # v3.4.0
+        env:
+          UV_PYTHON: ""
         with:
           inputs: dist/*.whl dist/*.tar.gz
 
