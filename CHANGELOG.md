@@ -3,7 +3,7 @@
 All notable changes to agent-trace are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## [0.1.6] - 2026-07-20
 
 ### Added
 - `--json` flag on `list`, `inspect`, `diff`, and `run` (`show` already

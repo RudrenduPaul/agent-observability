@@ -66,6 +66,8 @@ agent-trace replay run_<id>
 agent-trace show run_<id>
 ```
 
+`list`, `show`, `inspect`, `diff`, and `run` all support `--json` for machine-parseable output — an orchestrating agent or CI job can call any of them the same way a person would and parse the result. (`run --json` prints its own status to stderr and the child process's output to stdout, ending with one final JSON summary line, since the child's own output can't be made structured.)
+
 Want programmatic control instead of the CLI? Use the Python API:
 
 ```python
