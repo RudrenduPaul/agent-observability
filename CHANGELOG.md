@@ -23,6 +23,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `examples/03-ci-pipeline/example.py` and `test_with_fixture.py` read
   `fixture.exchange_count()` after the `replay()` context had already closed
   the database connection, raising `sqlite3.ProgrammingError` on every run.
+- Every `pip install`/`uv add` command in `docs/getting-started.md`,
+  `docs/integrations/`, and all 20 `examples/*/README.md` files referenced
+  `agent-trace` as the distribution name, which 404s on PyPI (`agent-trace`
+  is only the CLI command / import module name). All now install the real
+  package, `agent-observability-trace-cli`.
+- `npm/README.md` linked to the comparison section's old anchor
+  (`#how-agent-observability-compares`), broken since the README rename
+  above, and still claimed CI ran on Ubuntu only.
 - `release.yml`'s SBOM step used an outdated `cyclonedx-py` CLI flag syntax
   (`--format`/`--output-file` instead of `--of`/`-o`), silently failing on
   every prior tagged release before the signing/GitHub-release steps ran.
