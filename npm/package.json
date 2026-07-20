@@ -1,6 +1,6 @@
 {
   "name": "agent-observability-trace-cli",
-  "version": "0.1.0",
+  "version": "0.1.5",
   "description": "npm-installable CLI wrapper for agent-trace, deterministic record/replay for LLM agents. Requires Python 3.10+ and the agent-observability-trace-cli PyPI package.",
   "bin": {
     "agent-trace": "bin/agent-trace.js"

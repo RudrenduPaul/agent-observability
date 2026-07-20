@@ -277,7 +277,7 @@ after:
 ## Security
 
 - **Supply chain:** Releases are built and published via GitHub Actions (`release.yml`). Sigstore signing and SBOM generation are wired into that workflow but not yet producing signed, SBOM-attached release assets end to end — treat that as in progress, not shipped, until a release actually carries signed artifacts.
-- **Vulnerability scanning:** `dependabot.yml` opens weekly pip and monthly GitHub Actions version-bump PRs. Dependabot security-advisory alerts are not yet enabled on this repo, and GitHub does not auto-enable secret scanning for a public personal repo — both are manual opt-ins pending on the maintainer's side.
+- **Vulnerability scanning:** `dependabot.yml` opens weekly pip and monthly GitHub Actions version-bump PRs. Dependabot security-advisory alerts, secret scanning, and secret scanning push protection are all enabled on this repo.
 - **Fixture safety:** Fixture files at `~/.agent-trace/runs/` contain full HTTP request and response bodies, including API keys and prompt contents. Add `.agent-trace/` and `*.db` to your `.gitignore`. Never commit a fixture generated against a production API key.
 - **Disclosure:** [SECURITY.md](SECURITY.md) — report vulnerabilities to `agent.obs.oss.security@gmail.com` with a 48-hour response SLA.
 
