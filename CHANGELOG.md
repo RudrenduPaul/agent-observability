@@ -3,6 +3,23 @@
 All notable changes to agent-trace are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Security
+- Enabling Dependabot security-advisory alerts (previously disabled) surfaced
+  5 real vulnerabilities: 3 in `mcp` (high), 1 in `json-repair` (high, via the
+  `crewai` extra), 1 in `chromadb` (critical, pre-auth code injection, also
+  via `crewai`). Bumped `mcp` to `>=1.28.1` (patched) and `crewai` to its
+  latest release — this patches all 3 `mcp` alerts. `json-repair` and
+  `chromadb` remain vulnerable: both are transitive pins inside `crewai`
+  itself (confirmed by attempting to force a patched `json-repair` version,
+  which `uv` reports as unsatisfiable against `crewai`'s own requirements),
+  and `chromadb`'s advisory currently has no upstream patched version at
+  all. The critical chromadb CVE requires an exposed ChromaDB *server* with
+  `trust_remote_code=true` — this package never runs a ChromaDB server, only
+  pulls it in transitively, which lowers real-world exploitability but
+  doesn't close the alert. Tracked as upstream-blocked, not fixed.
+
 ## [0.1.5] - 2026-07-20
 
 ### Fixed

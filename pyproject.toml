@@ -36,7 +36,7 @@ dependencies = [
 autogen = ["autogen-agentchat>=0.4", "autogen-ext[openai]>=0.4"]
 langgraph = ["langgraph>=1.0.10", "langchain-core>=0.3"]
 langchain = ["langchain-core>=0.3"]
-mcp = ["mcp>=1.26"]
+mcp = ["mcp>=1.28.1"]
 openai-agents = ["openai-agents>=0.0.3"]
 crewai = ["crewai>=1.0.0"]
 llama-index = ["llama-index-core>=0.14"]
