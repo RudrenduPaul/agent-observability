@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784601957055,
+  "lastUpdate": 1784602233260,
   "repoUrl": "https://github.com/RudrenduPaul/agent-observability",
   "entries": {
     "Benchmark": [
@@ -282,6 +282,100 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.00009792340907092537",
             "extra": "mean: 1.633799550178701 msec\nrounds: 558"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "RudrenduPaul@users.noreply.github.com",
+            "name": "Rudrendu",
+            "username": "RudrenduPaul"
+          },
+          "committer": {
+            "email": "RudrenduPaul@users.noreply.github.com",
+            "name": "Rudrendu",
+            "username": "RudrenduPaul"
+          },
+          "distinct": true,
+          "id": "316d401de15ba8ac9b099d9e58c8cea34171b8c9",
+          "message": "Stop hard-failing CI on single-sample benchmark noise\n\nalert-threshold 120% + fail-on-alert true was comparing one run\nagainst exactly one prior run with no statistical tolerance, and has\nbeen failing repeatedly on commits unrelated to the flagged tests\n(observed ratios 1.24-1.54 from shared-runner variance alone). Widen\nthe threshold to 160% and stop hard-failing; comment-on-alert stays\non so real regressions are still visible.",
+          "timestamp": "2026-07-20T19:49:56-07:00",
+          "tree_id": "fbce8d3e2c90281bf8caa7fcaec2ac83010e9506",
+          "url": "https://github.com/RudrenduPaul/agent-observability/commit/316d401de15ba8ac9b099d9e58c8cea34171b8c9"
+        },
+        "date": 1784602232860,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "benchmarks/test_fidelity.py::test_fidelity_exchange_count",
+            "value": 957.8787977127474,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000022649392762956754",
+            "extra": "mean: 1.0439734154131304 msec\nrounds: 532"
+          },
+          {
+            "name": "benchmarks/test_fidelity.py::test_replay_speed",
+            "value": 970.4268414882575,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000026411092731632653",
+            "extra": "mean: 1.0304743822485256 msec\nrounds: 845"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_span_serialization_speed",
+            "value": 934766.7919185954,
+            "unit": "iter/sec",
+            "range": "stddev: 4.670796386486171e-7",
+            "extra": "mean: 1.0697855429240424 usec\nrounds: 123717"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_span_from_dict_speed",
+            "value": 382529.07352791977,
+            "unit": "iter/sec",
+            "range": "stddev: 5.226141101377693e-7",
+            "extra": "mean: 2.61418038314678 usec\nrounds: 73100"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_fixture_write_latency",
+            "value": 4340.390328625364,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00009340390936988449",
+            "extra": "mean: 230.3940254877279 usec\nrounds: 2511"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_fixture_read_cursor_speed",
+            "value": 33059.15313517688,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000028675325259916797",
+            "extra": "mean: 30.248808731157162 usec\nrounds: 8773"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_baseline",
+            "value": 5.968742198480555,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002706614744862953",
+            "extra": "mean: 167.53948600000967 msec\nrounds: 6"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_instrumented",
+            "value": 5.259267791505575,
+            "unit": "iter/sec",
+            "range": "stddev: 0.01461177775650172",
+            "extra": "mean: 190.14053660000627 msec\nrounds: 5"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_pct_within_budget",
+            "value": 16290774.432123723,
+            "unit": "iter/sec",
+            "range": "stddev: 8.369952167833733e-9",
+            "extra": "mean: 61.3844359681332 nsec\nrounds: 151516"
+          },
+          {
+            "name": "benchmarks/test_replay_vs_live.py::test_replay_10step_agent_run",
+            "value": 500.1134827465725,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000897932092443193",
+            "extra": "mean: 1.9995461720170018 msec\nrounds: 436"
           }
         ]
       }
