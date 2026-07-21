@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784591887685,
+  "lastUpdate": 1784600674675,
   "repoUrl": "https://github.com/RudrenduPaul/agent-observability",
   "entries": {
     "Benchmark": [
@@ -94,6 +94,100 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.00003606157527543158",
             "extra": "mean: 2.497814462365355 msec\nrounds: 372"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "RudrenduPaul@users.noreply.github.com",
+            "name": "Rudrendu",
+            "username": "RudrenduPaul"
+          },
+          "committer": {
+            "email": "RudrenduPaul@users.noreply.github.com",
+            "name": "Rudrendu",
+            "username": "RudrenduPaul"
+          },
+          "distinct": true,
+          "id": "038ce4c1e5f944ebf6013a02faca631c195b9f5f",
+          "message": "Fix demo-1-record-replay.gif: remove leaked private repo path\n\nThe recorded command referenced an absolute scratchpad path inside a\nprivate, unrelated repo. Rebuilt the terminal mockup with the real\nagent-trace CLI syntax (agent-trace run --name ... -- <cmd>, then\nagent-trace replay <run_id>) cd'd into this public repo instead, and\nmatched the '>' prompt style already used by demo-2/demo-3. Same\nrecord/replay content as before, no leaked path.",
+          "timestamp": "2026-07-20T19:23:57-07:00",
+          "tree_id": "c67492f63054f762b56e16d611362d823b0c2a66",
+          "url": "https://github.com/RudrenduPaul/agent-observability/commit/038ce4c1e5f944ebf6013a02faca631c195b9f5f"
+        },
+        "date": 1784600674389,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "benchmarks/test_fidelity.py::test_fidelity_exchange_count",
+            "value": 942.2202374066458,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00004013404836457129",
+            "extra": "mean: 1.0613229904214183 msec\nrounds: 522"
+          },
+          {
+            "name": "benchmarks/test_fidelity.py::test_replay_speed",
+            "value": 949.4736598902748,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00003262584582812166",
+            "extra": "mean: 1.0532151045828528 msec\nrounds: 851"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_span_serialization_speed",
+            "value": 964266.5190696772,
+            "unit": "iter/sec",
+            "range": "stddev: 4.373492915471483e-7",
+            "extra": "mean: 1.037057680862754 usec\nrounds: 122519"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_span_from_dict_speed",
+            "value": 353939.2006648458,
+            "unit": "iter/sec",
+            "range": "stddev: 6.089118330958627e-7",
+            "extra": "mean: 2.825344008579953 usec\nrounds: 61638"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_fixture_write_latency",
+            "value": 4120.342993651645,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00011535638145930198",
+            "extra": "mean: 242.6982417582067 usec\nrounds: 2002"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_fixture_read_cursor_speed",
+            "value": 32516.814857153902,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000027909802704910888",
+            "extra": "mean: 30.753319609961544 usec\nrounds: 8307"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_baseline",
+            "value": 5.945156796544792,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00041790440397424195",
+            "extra": "mean: 168.2041423333326 msec\nrounds: 6"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_instrumented",
+            "value": 5.482484466520621,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0005276063499013042",
+            "extra": "mean: 182.3990576 msec\nrounds: 5"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_pct_within_budget",
+            "value": 16049669.5637403,
+            "unit": "iter/sec",
+            "range": "stddev: 8.182890654192334e-9",
+            "extra": "mean: 62.30657871357164 nsec\nrounds: 149701"
+          },
+          {
+            "name": "benchmarks/test_replay_vs_live.py::test_replay_10step_agent_run",
+            "value": 479.20137822922027,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00024290507889896456",
+            "extra": "mean: 2.0868053503837416 msec\nrounds: 391"
           }
         ]
       }
