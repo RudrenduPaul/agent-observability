@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784600674675,
+  "lastUpdate": 1784601957055,
   "repoUrl": "https://github.com/RudrenduPaul/agent-observability",
   "entries": {
     "Benchmark": [
@@ -188,6 +188,100 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.00024290507889896456",
             "extra": "mean: 2.0868053503837416 msec\nrounds: 391"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "RudrenduPaul@users.noreply.github.com",
+            "name": "Rudrendu",
+            "username": "RudrenduPaul"
+          },
+          "committer": {
+            "email": "RudrenduPaul@users.noreply.github.com",
+            "name": "Rudrendu",
+            "username": "RudrenduPaul"
+          },
+          "distinct": true,
+          "id": "00947952c4e1f61af2ff747aea8f89f3328bea12",
+          "message": "Fix chronically flaky P99 assertion in recording-overhead benchmark\n\ntest_recording_overhead_per_exchange has been failing intermittently\non CI for a while (10+ failures across unrelated commits going back\nthrough this session's history), most recently on the json-repair\nfix push. The P99 write latency on a single SQLite WAL fsync, over\nonly 200 samples, is dominated by shared-runner I/O jitter rather\nthan actual code performance -- observed failures ranged from 8ms to\n262ms with no code change in between. Report P99 but stop asserting\non it; P50 (already asserted, never the failing check) is the\nstable, meaningful regression signal.",
+          "timestamp": "2026-07-20T19:45:18-07:00",
+          "tree_id": "2e935ec3444b02a1ee66342e072d1b17cc6fd704",
+          "url": "https://github.com/RudrenduPaul/agent-observability/commit/00947952c4e1f61af2ff747aea8f89f3328bea12"
+        },
+        "date": 1784601956313,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "benchmarks/test_fidelity.py::test_fidelity_exchange_count",
+            "value": 1329.3086437666734,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000038877435456370805",
+            "extra": "mean: 752.2707421554425 usec\nrounds: 733"
+          },
+          {
+            "name": "benchmarks/test_fidelity.py::test_replay_speed",
+            "value": 1361.3098458979407,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000033594328167459804",
+            "extra": "mean: 734.5866211232644 usec\nrounds: 1193"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_span_serialization_speed",
+            "value": 1189773.8414807557,
+            "unit": "iter/sec",
+            "range": "stddev: 3.738803396746666e-7",
+            "extra": "mean: 840.4958700011683 nsec\nrounds: 114286"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_span_from_dict_speed",
+            "value": 469513.7020281133,
+            "unit": "iter/sec",
+            "range": "stddev: 4.526404141742932e-7",
+            "extra": "mean: 2.1298632940431683 usec\nrounds: 79777"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_fixture_write_latency",
+            "value": 3317.0579566872584,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0005694988693444944",
+            "extra": "mean: 301.47197096269576 usec\nrounds: 1963"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_fixture_read_cursor_speed",
+            "value": 48504.89948989109,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000001949994220715875",
+            "extra": "mean: 20.616474016370454 usec\nrounds: 9506"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_baseline",
+            "value": 6.674660774383125,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0009084949700997256",
+            "extra": "mean: 149.82034799999562 msec\nrounds: 7"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_instrumented",
+            "value": 3.5639826327240107,
+            "unit": "iter/sec",
+            "range": "stddev: 0.21762435381049197",
+            "extra": "mean: 280.58498120000195 msec\nrounds: 5"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_pct_within_budget",
+            "value": 25590271.299118537,
+            "unit": "iter/sec",
+            "range": "stddev: 4.347869185795725e-9",
+            "extra": "mean: 39.07735046304278 nsec\nrounds: 199721"
+          },
+          {
+            "name": "benchmarks/test_replay_vs_live.py::test_replay_10step_agent_run",
+            "value": 612.07018932685,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00009792340907092537",
+            "extra": "mean: 1.633799550178701 msec\nrounds: 558"
           }
         ]
       }
