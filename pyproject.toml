@@ -168,3 +168,8 @@ exclude_lines = [
     "raise NotImplementedError",
     "\\.\\.\\.",
 ]
+
+[tool.uv]
+# crewai (crewai extra) pins json-repair~=0.25.2, which is GHSA-xf7x-x43h-rpqh
+# (unbounded CPU DoS via circular $ref). Force the patched release instead.
+override-dependencies = ["json-repair>=0.60.1"]
