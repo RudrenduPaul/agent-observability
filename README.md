@@ -66,7 +66,7 @@ agent-trace replay run_<id>
 agent-trace show run_<id>
 ```
 
-`list`, `inspect`, `diff`, and `run` all support `--json` for machine-parseable output — an orchestrating agent or CI job can call any of them the same way a person would and parse the result. (`run --json` prints its own status to stderr and the child process's output to stdout, ending with one final JSON summary line, since the child's own output can't be made structured.) `show` has no `--json` mode of its own — it accepts `--errors-only` to filter its output to failed spans instead. See the full [CLI reference](#cli-reference) below for every subcommand's flags.
+`list`, `inspect`, `diff`, `replay`, and `run` all support `--json` for machine-parseable output — an orchestrating agent or CI job can call any of them the same way a person would and parse the result. (`run --json` prints its own status to stderr and the child process's output to stdout, ending with one final JSON summary line, since the child's own output can't be made structured.) `show` has no `--json` mode of its own — it accepts `--errors-only` to filter its output to failed spans instead. See the full [CLI reference](#cli-reference) below for every subcommand's flags.
 
 Want programmatic control instead of the CLI? Use the Python API:
 
@@ -146,6 +146,8 @@ misattributed spans, checkpoint durability, zero-task updates).
 | Argument | Required | Description |
 |---|---|---|
 | `run_id` | yes | Run ID, e.g. `run_abc123def456`. |
+| `--json` | no | Print a structured JSON summary (fixture path, span/exchange counts, the original trace) instead of the human-readable span tree. |
+
 
 No flags.
 
