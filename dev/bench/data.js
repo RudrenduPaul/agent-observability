@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784602233260,
+  "lastUpdate": 1784687207412,
   "repoUrl": "https://github.com/RudrenduPaul/agent-observability",
   "entries": {
     "Benchmark": [
@@ -376,6 +376,100 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.0000897932092443193",
             "extra": "mean: 1.9995461720170018 msec\nrounds: 436"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "38769913+RudrenduPaul@users.noreply.github.com",
+            "name": "Rudrendu Paul",
+            "username": "RudrenduPaul"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bb877abcd73d21753314f20474e7adeca7ac74da",
+          "message": "Document all _cli.py subcommand flags in README CLI reference (#18)\n\ninspect had 7 undocumented flags (--registered-tools, --configured-host,\n--check-kwarg, --diff-field, --diff-get-post-field,\n--diff-get-post-id-field, --diff-get-post-post-id-field) and run had 2\n(--run-id, --name), none previously listed in README.md or npm/README.md.\nAdds a complete CLI reference covering all 7 subcommands (version, list,\nshow, replay, inspect, diff, run) with every flag, default, and behavior,\nverified directly against argparse definitions in src/agent_trace/_cli.py.\nAlso corrects an existing inaccuracy: README claimed `show` supports\n--json, but it has no such flag.\n\nCo-authored-by: Rudrendu <RudrenduPaul@users.noreply.github.com>",
+          "timestamp": "2026-07-21T19:26:11-07:00",
+          "tree_id": "a40f6597b788ddabb4c3404bd7750ba2f1efe841",
+          "url": "https://github.com/RudrenduPaul/agent-observability/commit/bb877abcd73d21753314f20474e7adeca7ac74da"
+        },
+        "date": 1784687207111,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "benchmarks/test_fidelity.py::test_fidelity_exchange_count",
+            "value": 940.0852441757709,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00004623606959615255",
+            "extra": "mean: 1.063733322265642 msec\nrounds: 512"
+          },
+          {
+            "name": "benchmarks/test_fidelity.py::test_replay_speed",
+            "value": 962.8049104095506,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000037247320612441406",
+            "extra": "mean: 1.0386320106890892 msec\nrounds: 842"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_span_serialization_speed",
+            "value": 934287.243285838,
+            "unit": "iter/sec",
+            "range": "stddev: 4.344188987071899e-7",
+            "extra": "mean: 1.0703346397870679 usec\nrounds: 115835"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_span_from_dict_speed",
+            "value": 379424.8336568058,
+            "unit": "iter/sec",
+            "range": "stddev: 6.424474174580671e-7",
+            "extra": "mean: 2.6355681318015987 usec\nrounds: 60405"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_fixture_write_latency",
+            "value": 3744.2064047368744,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00016102883739441907",
+            "extra": "mean: 267.0792931540523 usec\nrounds: 1709"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_fixture_read_cursor_speed",
+            "value": 32502.840007632636,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000035509838556563344",
+            "extra": "mean: 30.766542239544922 usec\nrounds: 8144"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_baseline",
+            "value": 5.902331552290075,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0005651345458091877",
+            "extra": "mean: 169.42457249999876 msec\nrounds: 6"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_instrumented",
+            "value": 4.703779119533583,
+            "unit": "iter/sec",
+            "range": "stddev: 0.06017168080500136",
+            "extra": "mean: 212.59501660000524 msec\nrounds: 5"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_pct_within_budget",
+            "value": 16227461.445180295,
+            "unit": "iter/sec",
+            "range": "stddev: 8.329005476492638e-9",
+            "extra": "mean: 61.62393319363019 nsec\nrounds: 153847"
+          },
+          {
+            "name": "benchmarks/test_replay_vs_live.py::test_replay_10step_agent_run",
+            "value": 498.5082765856667,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000042823641626266156",
+            "extra": "mean: 2.0059847488372724 msec\nrounds: 430"
           }
         ]
       }
