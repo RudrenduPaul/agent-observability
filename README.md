@@ -66,7 +66,7 @@ agent-trace replay run_<id>
 agent-trace show run_<id>
 ```
 
-`list`, `show`, `inspect`, `diff`, and `run` all support `--json` for machine-parseable output — an orchestrating agent or CI job can call any of them the same way a person would and parse the result. (`run --json` prints its own status to stderr and the child process's output to stdout, ending with one final JSON summary line, since the child's own output can't be made structured.)
+`list`, `inspect`, `diff`, and `run` all support `--json` for machine-parseable output — an orchestrating agent or CI job can call any of them the same way a person would and parse the result. (`run --json` prints its own status to stderr and the child process's output to stdout, ending with one final JSON summary line, since the child's own output can't be made structured.) `show` has no `--json` mode of its own — it accepts `--errors-only` to filter its output to failed spans instead. See the full [CLI reference](#cli-reference) below for every subcommand's flags.
 
 Want programmatic control instead of the CLI? Use the Python API:
 
@@ -100,6 +100,106 @@ with replay("run_<id>") as ctx:
 > **Sync and async clients:** Agent Observability intercepts `httpx.Client`, `httpx.AsyncClient`, and `requests.Session` — including the async client used by default in the OpenAI Python SDK v1.x and Anthropic SDK. The patch is installed at request-dispatch time, so it also covers clients constructed before recording/replay starts (e.g. a module-level `openai.AsyncOpenAI()` instance).
 
 ![Terminal recording of replaying a previously recorded run with zero network calls, then running agent-trace show to print the replayed span tree](https://raw.githubusercontent.com/RudrenduPaul/agent-observability/main/docs/usage.gif)
+
+---
+
+## CLI reference
+
+`agent-trace` has 7 subcommands. Every subcommand accepts `-h`/`--help` for the
+same detail shown here.
+
+### `agent-trace version`
+
+Print the installed version and exit. No arguments.
+
+### `agent-trace list`
+
+List all recorded runs in the trace directory (`~/.agent-trace/runs` by
+default, or `$AGENT_TRACE_TRACE_DIR`).
+
+| Flag | Default | Description |
+|---|---|---|
+| `--json` | off | Print machine-readable JSON instead of a human-readable table. |
+
+### `agent-trace show <run_id>`
+
+Pretty-print the stored `trace.json` for a run.
+
+| Argument | Required | Description |
+|---|---|---|
+| `run_id` | yes | Run ID, e.g. `run_abc123def456`. |
+
+| Flag | Default | Description |
+|---|---|---|
+| `--errors-only` | off | Only print ERROR-status spans, each with its captured exception text. |
+
+`show` has no `--json` mode — it prints the trace (colorized via `rich` when
+installed, plain `json.dumps` otherwise), not a structured summary object.
+
+### `agent-trace replay <run_id>`
+
+Enter replay mode for a run and print the resulting span tree, plus streaming
+timing, HTTP error exchanges, and the same cross-span diagnostics `show`
+prints (error classification, duplicate node spans, retry storms,
+misattributed spans, checkpoint durability, zero-task updates).
+
+| Argument | Required | Description |
+|---|---|---|
+| `run_id` | yes | Run ID, e.g. `run_abc123def456`. |
+
+No flags.
+
+### `agent-trace inspect <run_id>`
+
+Auto-flag known malformed request/response shapes and cross-span anomalies
+for a run.
+
+| Argument | Required | Description |
+|---|---|---|
+| `run_id` | yes | Run ID, e.g. `run_abc123def456`. |
+
+| Flag | Default | Description |
+|---|---|---|
+| `--registered-tools` | none | Comma-separated list of registered tool names. Enables the tool-call name fuzzy-match, dotted-compound, ReAct action-name-not-registered, and tool-call-name-not-registered checks. |
+| `--configured-host` | none | The framework's configured LLM endpoint host. Enables the endpoint-host-mismatch check. |
+| `--check-kwarg` | none | Dotted kwarg path (e.g. `extra_body.chat_template_kwargs.thinking`) expected to be present on the wire. Flags requests where it's absent. |
+| `--diff-field` | none | Response field to check for wire-present-but-downstream-absent — a top-level key (e.g. `usage`) or a dotted/nested path with numeric list-index segments (e.g. `choices.0.message.reasoning_content`, for provider fields like DeepSeek's `reasoning_content`). |
+| `--diff-get-post-field` | none | Dotted field path (e.g. `instructions`) to compare between an earlier GET response and a later, causally-related POST request body referencing the same resource id (see issue #2620). Flags stale-value mismatches, such as a `GPTAssistantAgent` POST `/runs` still sending `instructions` that no longer match what GET `/assistants/{id}` returns. |
+| `--diff-get-post-id-field` | `id` | Field name the GET response uses for the resource id. |
+| `--diff-get-post-post-id-field` | same as `--diff-get-post-id-field` | Field name the POST request body uses to reference the same resource id, if different (e.g. `assistant_id`). |
+| `--json` | off | Print machine-readable JSON instead of human-readable flag lists. |
+
+### `agent-trace diff <run_id_a> <run_id_b>`
+
+Diff two recorded runs' exchanges, matched by URL, highlighting field-level
+differences between request/response bodies, plus a restart-vs-resume check
+for a shared LangGraph `thread_id` (see issue #161).
+
+| Argument | Required | Description |
+|---|---|---|
+| `run_id_a` | yes | First run ID. |
+| `run_id_b` | yes | Second run ID. |
+
+| Flag | Default | Description |
+|---|---|---|
+| `--json` | off | Print machine-readable JSON instead of a human-readable diff. |
+
+### `agent-trace run -- <command> [args...]`
+
+Exec a child process with recording pre-enabled process-wide
+(`AGENT_TRACE_AUTO_RECORD=1`), so the first `import agent_trace` inside that
+process — even one owned by a third-party CLI like `langgraph dev` — starts
+recording with zero code changes required in your own agent code. Exits with
+the child process's own exit code.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--run-id` | random (`run_<12-hex-chars>`), printed on start | Explicit run ID. |
+| `--name` | `auto-record` | Trace name recorded in `trace.json` metadata. |
+| `--json` | off | Print agent-trace's own status as one final JSON line on stdout (status lines go to stderr instead). Must come before the child command, e.g. `agent-trace run --json -- langgraph dev`. |
+| `child_command` (positional) | — | Everything after `--` is exec'd as the child process, e.g. `-- langgraph dev`. This captures the remainder of the command line, so `--run-id`/`--name`/`--json` must be given before it, not after. |
+
+---
 
 ## The problem
 

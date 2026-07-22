@@ -65,7 +65,7 @@ result = fetch_data("hello")
 # Trace and fixture saved to ~/.agent-trace/runs/run_<id>/
 ```
 
-Full command reference, the record/replay model, and framework integrations (LangGraph, OpenAI Agents SDK, CrewAI, and more) are documented in the [main repository](https://github.com/RudrenduPaul/agent-observability).
+Full command reference — every subcommand's flags, defaults, and `--json` support — is in the [main repository's CLI reference](https://github.com/RudrenduPaul/agent-observability#cli-reference). The record/replay model and framework integrations (LangGraph, OpenAI Agents SDK, CrewAI, and more) are also documented in the [main repository](https://github.com/RudrenduPaul/agent-observability).
 
 ## How it works
 
