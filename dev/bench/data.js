@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784688960300,
+  "lastUpdate": 1784689338719,
   "repoUrl": "https://github.com/RudrenduPaul/agent-observability",
   "entries": {
     "Benchmark": [
@@ -564,6 +564,100 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.00004379516477685291",
             "extra": "mean: 2.0104993217594718 msec\nrounds: 432"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "38769913+RudrenduPaul@users.noreply.github.com",
+            "name": "Rudrendu Paul",
+            "username": "RudrenduPaul"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f471dabe993b17d13a95e2192fd129d099d4ca36",
+          "message": "Add Sourav Nandy as npm contributor (#20)\n\n* Add --json to the replay command\n\nreplay was the one data-returning subcommand with no structured\noutput mode, unlike list/inspect/diff/run. Adds a JSON summary\n(fixture path, span/exchange counts, the original trace) alongside\nthe existing human-readable span tree, gated the same way the other\nsubcommands already do.\n\nVerified: 113/113 CLI unit tests pass; both modes smoke-tested\nagainst a real recorded run in a fresh venv.\n\n* Add Sourav Nandy as npm contributor, matching PyPI's author listing\n\n---------\n\nCo-authored-by: Rudrendu <RudrenduPaul@users.noreply.github.com>",
+          "timestamp": "2026-07-21T20:01:35-07:00",
+          "tree_id": "c67bb1a5a291b7790982c5384bd249fd1dc67d8e",
+          "url": "https://github.com/RudrenduPaul/agent-observability/commit/f471dabe993b17d13a95e2192fd129d099d4ca36"
+        },
+        "date": 1784689338223,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "benchmarks/test_fidelity.py::test_fidelity_exchange_count",
+            "value": 958.5584355570244,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000022544965216741118",
+            "extra": "mean: 1.0432332165736915 msec\nrounds: 531"
+          },
+          {
+            "name": "benchmarks/test_fidelity.py::test_replay_speed",
+            "value": 964.6538791252476,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00002156496119314993",
+            "extra": "mean: 1.0366412468136286 msec\nrounds: 863"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_span_serialization_speed",
+            "value": 971099.1353319694,
+            "unit": "iter/sec",
+            "range": "stddev: 3.345234595185693e-7",
+            "extra": "mean: 1.0297609828044496 usec\nrounds: 146843"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_span_from_dict_speed",
+            "value": 376966.2255522086,
+            "unit": "iter/sec",
+            "range": "stddev: 5.56350255679586e-7",
+            "extra": "mean: 2.6527575475365848 usec\nrounds: 65386"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_fixture_write_latency",
+            "value": 4275.436894426954,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00008748307798511317",
+            "extra": "mean: 233.89422524362445 usec\nrounds: 2353"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_fixture_read_cursor_speed",
+            "value": 32911.00124135539,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000002824751880704947",
+            "extra": "mean: 30.38497652096398 usec\nrounds: 8859"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_baseline",
+            "value": 5.972970040836491,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0002934765367589128",
+            "extra": "mean: 167.4208966666697 msec\nrounds: 6"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_instrumented",
+            "value": 5.533813613828711,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00045664389673365794",
+            "extra": "mean: 180.70720659999324 msec\nrounds: 5"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_pct_within_budget",
+            "value": 16268245.751561007,
+            "unit": "iter/sec",
+            "range": "stddev: 7.99494228129163e-9",
+            "extra": "mean: 61.46944269661318 nsec\nrounds: 154799"
+          },
+          {
+            "name": "benchmarks/test_replay_vs_live.py::test_replay_10step_agent_run",
+            "value": 487.82252195454004,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00021639761334513928",
+            "extra": "mean: 2.049925854167901 msec\nrounds: 432"
           }
         ]
       }
