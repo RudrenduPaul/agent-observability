@@ -840,6 +840,7 @@ def _print_replay_span_diagnostics(
 def cmd_replay(args: argparse.Namespace) -> None:
     """Replay a recorded run and print the resulting span tree."""
     run_id: str = args.run_id
+    as_json: bool = getattr(args, "json", False)
     _require_run_dir(run_id)
 
     fixture = _fixture_path(run_id)
@@ -853,19 +854,22 @@ def cmd_replay(args: argparse.Namespace) -> None:
 
     trace_json_path = _trace_json_path(run_id)
 
-    print(f"Replaying run: {run_id}")
-    print(f"Fixture:       {fixture}")
+    if not as_json:
+        print(f"Replaying run: {run_id}")
+        print(f"Fixture:       {fixture}")
 
     # Load the original trace to find span names
     original_spans: list[dict[str, object]] = []
+    trace_data: dict[str, object] | None = None
     if trace_json_path.exists():
         try:
-            data = json.loads(trace_json_path.read_text(encoding="utf-8"))
-            original_spans = data.get("spans", [])
+            trace_data = json.loads(trace_json_path.read_text(encoding="utf-8"))
+            original_spans = trace_data.get("spans", [])
         except Exception:  # noqa: S110
             pass
 
-    print(f"Original span count: {len(original_spans)}")
+    if not as_json:
+        print(f"Original span count: {len(original_spans)}")
 
     # Count exchanges via Fixture (honours WAL mode + schema)
     from agent_trace._replay.fixture import Fixture
@@ -878,18 +882,38 @@ def cmd_replay(args: argparse.Namespace) -> None:
         exchange_count = 0
         all_exchanges = []
 
-    print(f"Recorded exchanges: {exchange_count}")
-    _print_streaming_timing(all_exchanges)
-    _print_http_error_exchanges(all_exchanges)
-    print()
+    if not as_json:
+        print(f"Recorded exchanges: {exchange_count}")
+        _print_streaming_timing(all_exchanges)
+        _print_http_error_exchanges(all_exchanges)
+        print()
 
     # Enter replay mode
     from agent_trace import replay as _replay
 
     with _replay(run_id, trace_dir=_trace_dir()) as ctx:
-        print(f"Replay active — {ctx.fixture.exchange_count()} exchange(s) available")
-        print("(No HTTP requests were made — fixture is ready for agent code)")
-        print()
+        replay_exchange_count = ctx.fixture.exchange_count()
+        if not as_json:
+            print(f"Replay active — {replay_exchange_count} exchange(s) available")
+            print("(No HTTP requests were made — fixture is ready for agent code)")
+            print()
+
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "fixture": str(fixture),
+                    "original_span_count": len(original_spans),
+                    "recorded_exchanges": exchange_count,
+                    "replay_exchanges_available": replay_exchange_count,
+                    "trace": trace_data,
+                },
+                indent=2,
+                default=str,
+            )
+        )
+        return
 
     # Load and print the original trace
     if trace_json_path.exists():
@@ -897,11 +921,10 @@ def cmd_replay(args: argparse.Namespace) -> None:
             from agent_trace.core.trace import Trace
             from agent_trace.exporters.stdout import StdoutExporter
 
-            trace_data = json.loads(trace_json_path.read_text(encoding="utf-8"))
-            trace_obj = Trace.from_dict(trace_data)
+            trace_obj = Trace.from_dict(trace_data or {})
             print("--- Original span tree (from trace.json) ---")
             StdoutExporter().export(trace_obj)
-            _print_replay_span_diagnostics(trace_data.get("spans", []), all_exchanges)
+            _print_replay_span_diagnostics((trace_data or {}).get("spans", []), all_exchanges)
         except Exception as exc:
             print(f"Could not render span tree: {exc}")
     else:
@@ -1368,6 +1391,12 @@ def main() -> None:
         help="Enter replay mode for a run and print the span tree",
     )
     replay_p.add_argument("run_id", help="Run ID (e.g. run_abc123def456)")
+    replay_p.add_argument(
+        "--json",
+        dest="json",
+        action="store_true",
+        help="Print a structured JSON summary instead of the human-readable span tree",
+    )
 
     # inspect
     inspect_p = sub.add_parser(
