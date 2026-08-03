@@ -15,7 +15,7 @@ overrides = [{ name = "json-repair", specifier = ">=0.60.1" }]
 
 [[package]]
 name = "agent-observability-trace-cli"
-version = "0.1.8"
+version = "0.1.9"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
