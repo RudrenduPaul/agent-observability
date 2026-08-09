@@ -1,5 +1,18 @@
 # Agent Observability
 
+[![PyPI](https://img.shields.io/pypi/v/agent-observability-trace-cli)](https://pypi.org/project/agent-observability-trace-cli/)
+[![npm](https://img.shields.io/npm/v/agent-observability-trace-cli)](https://www.npmjs.com/package/agent-observability-trace-cli)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![CI](https://github.com/RudrenduPaul/agent-observability/actions/workflows/ci.yml/badge.svg)](https://github.com/RudrenduPaul/agent-observability/actions)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/RudrenduPaul/agent-observability/badge)](https://securityscorecards.dev/viewer/?uri=github.com/RudrenduPaul/agent-observability)
+
+**Record your agent's LLM calls once, replay them offline in under 1 ms, zero API calls, zero cost.**
+
+![Terminal recording of agent-trace recording a live HTTP call, then replaying the same run offline with zero network requests](https://raw.githubusercontent.com/RudrenduPaul/agent-observability/main/docs/assets/dev-to-demos/demo-1-record-replay.gif)
+
+---
+
 Your LangGraph agent fails after step 8. LangSmith shows you what broke.
 To reproduce it: 8 more LLM calls. 30 more seconds. $0.15 more in API cost.
 If the failure was caused by a transient model output, you can't reproduce it at all.
@@ -12,15 +25,6 @@ Replay latency:       0.93 ms  mean (vs ~8,500 ms live on GPT-4o × 10 steps)
 Replay fidelity:      100%     (response bytes byte-for-byte identical)
 CI cost per replay:   $0
 ```
-
-[![PyPI](https://img.shields.io/pypi/v/agent-observability-trace-cli)](https://pypi.org/project/agent-observability-trace-cli/)
-[![npm](https://img.shields.io/npm/v/agent-observability-trace-cli)](https://www.npmjs.com/package/agent-observability-trace-cli)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![CI](https://github.com/RudrenduPaul/agent-observability/actions/workflows/ci.yml/badge.svg)](https://github.com/RudrenduPaul/agent-observability/actions)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/RudrenduPaul/agent-observability/badge)](https://securityscorecards.dev/viewer/?uri=github.com/RudrenduPaul/agent-observability)
-
-![Terminal recording of agent-trace recording a live HTTP call, then replaying the same run offline with zero network requests](https://raw.githubusercontent.com/RudrenduPaul/agent-observability/main/docs/assets/dev-to-demos/demo-1-record-replay.gif)
 
 ---
 
@@ -45,11 +49,6 @@ pip install agent-observability-trace-cli[openai-agents]
 ```
 
 ![Terminal recording of installing agent-observability-trace-cli into a fresh virtual environment, then running agent-trace version and recording a first HTTP call with agent-trace list showing the resulting run](https://raw.githubusercontent.com/RudrenduPaul/agent-observability/main/docs/demo.gif)
-
-## Supported frameworks
-
-LangGraph · OpenAI Agents SDK · CrewAI · AutoGen · LlamaIndex · Haystack · Agno · PydanticAI · Google GenAI
-Plus: any `httpx.Client`, `httpx.AsyncClient`, or `requests.Session` — no framework required.
 
 ## 30-second CLI quickstart
 
@@ -98,11 +97,20 @@ with replay("run_<id>") as ctx:
     print(result)                 # identical to the original run
 ```
 
+> [!TIP]
 > To store the input for later retrieval in replay, call `ctx.fixture.set_metadata('input', query)` inside the recording context.
 
+> [!NOTE]
 > **Sync and async clients:** Agent Observability intercepts `httpx.Client`, `httpx.AsyncClient`, and `requests.Session` — including the async client used by default in the OpenAI Python SDK v1.x and Anthropic SDK. The patch is installed at request-dispatch time, so it also covers clients constructed before recording/replay starts (e.g. a module-level `openai.AsyncOpenAI()` instance).
 
 ![Terminal recording of replaying a previously recorded run with zero network calls, then running agent-trace show to print the replayed span tree](https://raw.githubusercontent.com/RudrenduPaul/agent-observability/main/docs/usage.gif)
+
+---
+
+## Supported frameworks
+
+LangGraph · OpenAI Agents SDK · CrewAI · AutoGen · LlamaIndex · Haystack · Agno · PydanticAI · Google GenAI
+Plus: any `httpx.Client`, `httpx.AsyncClient`, or `requests.Session` — no framework required.
 
 ---
 
@@ -387,8 +395,11 @@ after:
 
 - **Supply chain:** Releases are built and published via GitHub Actions (`release.yml`). SLSA Level 2 provenance via Sigstore OIDC signing is verified working (`.sigstore.json` bundles genuinely produced for every dist artifact); SBOM (CycloneDX JSON + XML) is generated and attached to the GitHub Release alongside the signed artifacts.
 - **Vulnerability scanning:** `dependabot.yml` opens weekly pip and monthly GitHub Actions version-bump PRs. Dependabot security-advisory alerts, secret scanning, and secret scanning push protection are all enabled on this repo.
-- **Fixture safety:** Fixture files at `~/.agent-trace/runs/` contain full HTTP request and response bodies, including API keys and prompt contents. Add `.agent-trace/` and `*.db` to your `.gitignore`. Never commit a fixture generated against a production API key.
+- **Fixture safety:** Fixture files at `~/.agent-trace/runs/` contain full HTTP request and response bodies, including API keys and prompt contents. Add `.agent-trace/` and `*.db` to your `.gitignore`.
 - **Disclosure:** [SECURITY.md](SECURITY.md) — report vulnerabilities to `agent.obs.oss.security@gmail.com` with a 48-hour response SLA.
+
+> [!WARNING]
+> Never commit a fixture generated against a production API key. Fixture files capture full request/response bodies verbatim, so a committed fixture can leak real API keys and prompt contents into your git history.
 
 ### Known upstream advisories
 
