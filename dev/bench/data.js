@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786309316950,
+  "lastUpdate": 1786309326125,
   "repoUrl": "https://github.com/RudrenduPaul/agent-observability",
   "entries": {
     "Benchmark": [
@@ -1786,6 +1786,100 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.00006229570276467286",
             "extra": "mean: 1.6443435616698687 msec\nrounds: 527"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8e6d57ee1dd9ddf764832702b3a800b79116069e",
+          "message": "Bump softprops/action-gh-release from 2.6.2 to 3.0.2 (#26)\n\nBumps [softprops/action-gh-release](https://github.com/softprops/action-gh-release) from 2.6.2 to 3.0.2.\n- [Release notes](https://github.com/softprops/action-gh-release/releases)\n- [Changelog](https://github.com/softprops/action-gh-release/blob/master/CHANGELOG.md)\n- [Commits](https://github.com/softprops/action-gh-release/compare/3bb12739c298aeb8a4eeaf626c5b8d85266b0e65...3d0d9888cb7fd7b750713d6e236d1fcb99157228)\n\n---\nupdated-dependencies:\n- dependency-name: softprops/action-gh-release\n  dependency-version: 3.0.2\n  dependency-type: direct:production\n  update-type: version-update:semver-major\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>\nCo-authored-by: Rudrendu Paul <38769913+RudrenduPaul@users.noreply.github.com>",
+          "timestamp": "2026-08-09T20:52:09Z",
+          "tree_id": "207bc2d248139086750002d06c400d6d39bcc5ec",
+          "url": "https://github.com/RudrenduPaul/agent-observability/commit/8e6d57ee1dd9ddf764832702b3a800b79116069e"
+        },
+        "date": 1786309325434,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "benchmarks/test_fidelity.py::test_fidelity_exchange_count",
+            "value": 1109.2766029093943,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00002983247715573883",
+            "extra": "mean: 901.4884090922089 usec\nrounds: 616"
+          },
+          {
+            "name": "benchmarks/test_fidelity.py::test_replay_speed",
+            "value": 1132.7257636207098,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000025133202076058196",
+            "extra": "mean: 882.8262162975286 usec\nrounds: 994"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_span_serialization_speed",
+            "value": 938821.9289451988,
+            "unit": "iter/sec",
+            "range": "stddev: 2.313713639596107e-7",
+            "extra": "mean: 1.0651647231158492 usec\nrounds: 150671"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_span_from_dict_speed",
+            "value": 382164.8135831994,
+            "unit": "iter/sec",
+            "range": "stddev: 3.6048512869180455e-7",
+            "extra": "mean: 2.616672086118924 usec\nrounds: 71348"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_fixture_write_latency",
+            "value": 5020.222181674759,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00009175118751808255",
+            "extra": "mean: 199.19437104801554 usec\nrounds: 2404"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_fixture_read_cursor_speed",
+            "value": 38161.127720452736,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000019231039327817014",
+            "extra": "mean: 26.20467632207951 usec\nrounds: 8907"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_baseline",
+            "value": 5.594761953354159,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0039830812859901355",
+            "extra": "mean: 178.73861450002929 msec\nrounds: 6"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_instrumented",
+            "value": 5.240340426516397,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0003722352333779434",
+            "extra": "mean: 190.82729719999634 msec\nrounds: 5"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_pct_within_budget",
+            "value": 17351031.932444785,
+            "unit": "iter/sec",
+            "range": "stddev: 5.089720479006122e-9",
+            "extra": "mean: 57.63345972121086 nsec\nrounds: 169953"
+          },
+          {
+            "name": "benchmarks/test_replay_vs_live.py::test_replay_10step_agent_run",
+            "value": 502.3144837499199,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00003077165809580463",
+            "extra": "mean: 1.9907847222216586 msec\nrounds: 450"
           }
         ]
       }
