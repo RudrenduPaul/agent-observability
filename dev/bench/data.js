@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786309330738,
+  "lastUpdate": 1786309499098,
   "repoUrl": "https://github.com/RudrenduPaul/agent-observability",
   "entries": {
     "Benchmark": [
@@ -1974,6 +1974,100 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.000048728922609279595",
             "extra": "mean: 2.0033756357141237 msec\nrounds: 420"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d8803cac4b45c056e570af76a67552548e279aa4",
+          "message": "Bump aiohttp from 3.14.1 to 3.14.3 (#32)\n\nBumps [aiohttp](https://github.com/aio-libs/aiohttp) from 3.14.1 to 3.14.3.\n- [Changelog](https://github.com/aio-libs/aiohttp/blob/master/CHANGES.rst)\n- [Commits](https://github.com/aio-libs/aiohttp/compare/v3.14.1...v3.14.3)\n\n---\nupdated-dependencies:\n- dependency-name: aiohttp\n  dependency-version: 3.14.3\n  dependency-type: direct:production\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>\nCo-authored-by: Rudrendu Paul <38769913+RudrenduPaul@users.noreply.github.com>",
+          "timestamp": "2026-08-09T20:52:40Z",
+          "tree_id": "70bb1ccedee7b13bf7d21e690e23169ff3a77fa5",
+          "url": "https://github.com/RudrenduPaul/agent-observability/commit/d8803cac4b45c056e570af76a67552548e279aa4"
+        },
+        "date": 1786309498175,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "benchmarks/test_fidelity.py::test_fidelity_exchange_count",
+            "value": 871.6857756716829,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000042012062642455625",
+            "extra": "mean: 1.1472023840579981 msec\nrounds: 552"
+          },
+          {
+            "name": "benchmarks/test_fidelity.py::test_replay_speed",
+            "value": 882.6620953839272,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000024008454912609123",
+            "extra": "mean: 1.132936381011167 msec\nrounds: 811"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_span_serialization_speed",
+            "value": 923758.9254719596,
+            "unit": "iter/sec",
+            "range": "stddev: 3.948303417270104e-7",
+            "extra": "mean: 1.0825335186765184 usec\nrounds: 134880"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_span_from_dict_speed",
+            "value": 373662.71368601796,
+            "unit": "iter/sec",
+            "range": "stddev: 7.585446518543435e-7",
+            "extra": "mean: 2.6762102917238937 usec\nrounds: 70892"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_fixture_write_latency",
+            "value": 3495.569710001279,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00016960591308819696",
+            "extra": "mean: 286.076400404452 usec\nrounds: 1978"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_fixture_read_cursor_speed",
+            "value": 31785.677500929738,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000004018366298318791",
+            "extra": "mean: 31.46071056596952 usec\nrounds: 8641"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_baseline",
+            "value": 5.5302790974616505,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0024104945682686028",
+            "extra": "mean: 180.8227003333324 msec\nrounds: 6"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_instrumented",
+            "value": 5.082060291798778,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0012777270487250487",
+            "extra": "mean: 196.77058960000124 msec\nrounds: 5"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_pct_within_budget",
+            "value": 16692569.438881597,
+            "unit": "iter/sec",
+            "range": "stddev: 8.095917754077555e-9",
+            "extra": "mean: 59.90689472111611 nsec\nrounds: 160488"
+          },
+          {
+            "name": "benchmarks/test_replay_vs_live.py::test_replay_10step_agent_run",
+            "value": 388.84378067659384,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00003740806326428286",
+            "extra": "mean: 2.571726872575885 msec\nrounds: 361"
           }
         ]
       }
