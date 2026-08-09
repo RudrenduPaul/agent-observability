@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786312362940,
+  "lastUpdate": 1786313561197,
   "repoUrl": "https://github.com/RudrenduPaul/agent-observability",
   "entries": {
     "Benchmark": [
@@ -2726,6 +2726,100 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.00005235745036830704",
             "extra": "mean: 2.606846938953723 msec\nrounds: 344"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "RudrenduPaul@users.noreply.github.com",
+            "name": "Rudrendu",
+            "username": "RudrenduPaul"
+          },
+          "committer": {
+            "email": "RudrenduPaul@users.noreply.github.com",
+            "name": "Rudrendu",
+            "username": "RudrenduPaul"
+          },
+          "distinct": true,
+          "id": "387aa569ddc69a332124088d815f30983c4e493b",
+          "message": "Improve README structure and searchability per portfolio design study",
+          "timestamp": "2026-08-09T15:11:59-07:00",
+          "tree_id": "b376b434ae7084d4fe97acb2d9115feb578536fb",
+          "url": "https://github.com/RudrenduPaul/agent-observability/commit/387aa569ddc69a332124088d815f30983c4e493b"
+        },
+        "date": 1786313560488,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "benchmarks/test_fidelity.py::test_fidelity_exchange_count",
+            "value": 867.7217659769534,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00003361150750489342",
+            "extra": "mean: 1.1524431438850873 msec\nrounds: 556"
+          },
+          {
+            "name": "benchmarks/test_fidelity.py::test_replay_speed",
+            "value": 868.5778550479686,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00004211364848206054",
+            "extra": "mean: 1.1513072710618135 msec\nrounds: 819"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_span_serialization_speed",
+            "value": 905453.9569490526,
+            "unit": "iter/sec",
+            "range": "stddev: 4.4449002893542134e-7",
+            "extra": "mean: 1.1044183885059407 usec\nrounds: 141383"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_span_from_dict_speed",
+            "value": 368132.60822940373,
+            "unit": "iter/sec",
+            "range": "stddev: 6.332992449438548e-7",
+            "extra": "mean: 2.716412449333597 usec\nrounds: 49834"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_fixture_write_latency",
+            "value": 3149.779979564523,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00020920927404000683",
+            "extra": "mean: 317.4824929004268 usec\nrounds: 1479"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_fixture_read_cursor_speed",
+            "value": 31135.23465886048,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000004618205385349471",
+            "extra": "mean: 32.117952890244865 usec\nrounds: 6177"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_baseline",
+            "value": 5.479278018913173,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0007208037543342045",
+            "extra": "mean: 182.50579666668423 msec\nrounds: 6"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_instrumented",
+            "value": 4.449992184434406,
+            "unit": "iter/sec",
+            "range": "stddev: 0.054573447408628815",
+            "extra": "mean: 224.7194957999909 msec\nrounds: 5"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_pct_within_budget",
+            "value": 16458872.986050647,
+            "unit": "iter/sec",
+            "range": "stddev: 8.014800436901249e-9",
+            "extra": "mean: 60.75750149159835 nsec\nrounds: 162549"
+          },
+          {
+            "name": "benchmarks/test_replay_vs_live.py::test_replay_10step_agent_run",
+            "value": 390.74856069314524,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00004555764573569146",
+            "extra": "mean: 2.5591904887022725 msec\nrounds: 354"
           }
         ]
       }
