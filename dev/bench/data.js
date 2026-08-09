@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786309637235,
+  "lastUpdate": 1786309699365,
   "repoUrl": "https://github.com/RudrenduPaul/agent-observability",
   "entries": {
     "Benchmark": [
@@ -2162,6 +2162,100 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.000014496113926014352",
             "extra": "mean: 1.061253575342485 msec\nrounds: 803"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7a0f57eefef4bf60ad64a2262c26172f2b5ac208",
+          "message": "Bump setuptools from 82.0.1 to 83.0.0 (#22)\n\nBumps [setuptools](https://github.com/pypa/setuptools) from 82.0.1 to 83.0.0.\n- [Release notes](https://github.com/pypa/setuptools/releases)\n- [Changelog](https://github.com/pypa/setuptools/blob/main/NEWS.rst)\n- [Commits](https://github.com/pypa/setuptools/compare/v82.0.1...v83.0.0)\n\n---\nupdated-dependencies:\n- dependency-name: setuptools\n  dependency-version: 83.0.0\n  dependency-type: indirect\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>\nCo-authored-by: Rudrendu Paul <38769913+RudrenduPaul@users.noreply.github.com>",
+          "timestamp": "2026-08-09T20:53:33Z",
+          "tree_id": "7a4313cf99c8ca6bd05a00d950481b9d81181321",
+          "url": "https://github.com/RudrenduPaul/agent-observability/commit/7a0f57eefef4bf60ad64a2262c26172f2b5ac208"
+        },
+        "date": 1786309698390,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "benchmarks/test_fidelity.py::test_fidelity_exchange_count",
+            "value": 870.9184912937084,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000235360882404334",
+            "extra": "mean: 1.1482130761910303 msec\nrounds: 525"
+          },
+          {
+            "name": "benchmarks/test_fidelity.py::test_replay_speed",
+            "value": 875.0473871067484,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000025063203750266584",
+            "extra": "mean: 1.142795252844985 msec\nrounds: 791"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_span_serialization_speed",
+            "value": 914240.6904923581,
+            "unit": "iter/sec",
+            "range": "stddev: 3.659351261541493e-7",
+            "extra": "mean: 1.0938038641240708 usec\nrounds: 134157"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_span_from_dict_speed",
+            "value": 360519.48581286287,
+            "unit": "iter/sec",
+            "range": "stddev: 9.486025804748127e-7",
+            "extra": "mean: 2.773775175411951 usec\nrounds: 74378"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_fixture_write_latency",
+            "value": 3115.7839494709424,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0004119685861390254",
+            "extra": "mean: 320.94651497572517 usec\nrounds: 2070"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_fixture_read_cursor_speed",
+            "value": 31535.55010808747,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000044455166050570824",
+            "extra": "mean: 31.710244361443507 usec\nrounds: 8291"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_baseline",
+            "value": 5.522785977118213,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0024516306918380354",
+            "extra": "mean: 181.0680341666616 msec\nrounds: 6"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_instrumented",
+            "value": 4.851584066261463,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0028385745629314106",
+            "extra": "mean: 206.11824640000123 msec\nrounds: 5"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_pct_within_budget",
+            "value": 16818500.159477536,
+            "unit": "iter/sec",
+            "range": "stddev: 8.276800725475788e-9",
+            "extra": "mean: 59.45833400824874 nsec\nrounds: 160463"
+          },
+          {
+            "name": "benchmarks/test_replay_vs_live.py::test_replay_10step_agent_run",
+            "value": 386.72723746042095,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00003984600693514456",
+            "extra": "mean: 2.5858018343027713 msec\nrounds: 344"
           }
         ]
       }
