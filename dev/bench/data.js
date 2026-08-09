@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786304146238,
+  "lastUpdate": 1786305046337,
   "repoUrl": "https://github.com/RudrenduPaul/agent-observability",
   "entries": {
     "Benchmark": [
@@ -1598,6 +1598,100 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.00003798464741035407",
             "extra": "mean: 1.8685219504504889 msec\nrounds: 444"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "RudrenduPaul@users.noreply.github.com",
+            "name": "Rudrendu",
+            "username": "RudrenduPaul"
+          },
+          "committer": {
+            "email": "RudrenduPaul@users.noreply.github.com",
+            "name": "Rudrendu",
+            "username": "RudrenduPaul"
+          },
+          "distinct": true,
+          "id": "ae631854f29de25b4439b95c5f4973753a361772",
+          "message": "Add CodeQL security scanning workflow",
+          "timestamp": "2026-08-09T12:45:02-07:00",
+          "tree_id": "dec5c85566c3fe60ab35f8975c2b85c2d732570d",
+          "url": "https://github.com/RudrenduPaul/agent-observability/commit/ae631854f29de25b4439b95c5f4973753a361772"
+        },
+        "date": 1786305045680,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "benchmarks/test_fidelity.py::test_fidelity_exchange_count",
+            "value": 871.8267230426047,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000024189138899308533",
+            "extra": "mean: 1.1470169169741447 msec\nrounds: 542"
+          },
+          {
+            "name": "benchmarks/test_fidelity.py::test_replay_speed",
+            "value": 877.7362423187883,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000033585647617275295",
+            "extra": "mean: 1.139294416461849 msec\nrounds: 814"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_span_serialization_speed",
+            "value": 898404.2430739191,
+            "unit": "iter/sec",
+            "range": "stddev: 3.706005305355851e-7",
+            "extra": "mean: 1.1130846806538535 usec\nrounds: 138237"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_span_from_dict_speed",
+            "value": 373138.9686166119,
+            "unit": "iter/sec",
+            "range": "stddev: 5.783517335900402e-7",
+            "extra": "mean: 2.6799666722225073 usec\nrounds: 66011"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_fixture_write_latency",
+            "value": 3067.6038685937374,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0007314519797716352",
+            "extra": "mean: 325.98733175363475 usec\nrounds: 2110"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_fixture_read_cursor_speed",
+            "value": 31548.67326042048,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000004534774840992642",
+            "extra": "mean: 31.69705400114414 usec\nrounds: 8685"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_baseline",
+            "value": 5.5812082875027,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00037820208992813575",
+            "extra": "mean: 179.17267166666662 msec\nrounds: 6"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_instrumented",
+            "value": 5.095535761781566,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0020606542172487024",
+            "extra": "mean: 196.25021720000007 msec\nrounds: 5"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_pct_within_budget",
+            "value": 16706960.554963127,
+            "unit": "iter/sec",
+            "range": "stddev: 7.842679578398678e-9",
+            "extra": "mean: 59.8552918533665 nsec\nrounds: 164963"
+          },
+          {
+            "name": "benchmarks/test_replay_vs_live.py::test_replay_10step_agent_run",
+            "value": 389.5311587669827,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00006319763500812829",
+            "extra": "mean: 2.567188728022139 msec\nrounds: 364"
           }
         ]
       }
