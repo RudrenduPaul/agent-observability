@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786302468503,
+  "lastUpdate": 1786304146238,
   "repoUrl": "https://github.com/RudrenduPaul/agent-observability",
   "entries": {
     "Benchmark": [
@@ -1504,6 +1504,100 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.00008480704441531362",
             "extra": "mean: 2.572224272221864 msec\nrounds: 360"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "RudrenduPaul@users.noreply.github.com",
+            "name": "Rudrendu",
+            "username": "RudrenduPaul"
+          },
+          "committer": {
+            "email": "RudrenduPaul@users.noreply.github.com",
+            "name": "Rudrendu",
+            "username": "RudrenduPaul"
+          },
+          "distinct": true,
+          "id": "d6126617a2e0a1bcb684fa9da85e041fba795e86",
+          "message": "Move demo GIF above the fold for engagement",
+          "timestamp": "2026-08-09T12:34:53-07:00",
+          "tree_id": "59dbd3e665bf5d6c35c4bfdc049ef0d8ed297284",
+          "url": "https://github.com/RudrenduPaul/agent-observability/commit/d6126617a2e0a1bcb684fa9da85e041fba795e86"
+        },
+        "date": 1786304145621,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "benchmarks/test_fidelity.py::test_fidelity_exchange_count",
+            "value": 1124.100063492104,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00003544204990109111",
+            "extra": "mean: 889.6005190974035 usec\nrounds: 576"
+          },
+          {
+            "name": "benchmarks/test_fidelity.py::test_replay_speed",
+            "value": 1130.6207304569568,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00006414354399279382",
+            "extra": "mean: 884.4698961037407 usec\nrounds: 847"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_span_serialization_speed",
+            "value": 1040389.7649569417,
+            "unit": "iter/sec",
+            "range": "stddev: 2.681847572526166e-7",
+            "extra": "mean: 961.1782369287213 nsec\nrounds: 136240"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_span_from_dict_speed",
+            "value": 428218.1340684932,
+            "unit": "iter/sec",
+            "range": "stddev: 4.583557447784155e-7",
+            "extra": "mean: 2.3352584125735567 usec\nrounds: 65527"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_fixture_write_latency",
+            "value": 3476.1721882001502,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0008422242958837552",
+            "extra": "mean: 287.67274630252643 usec\nrounds: 1758"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_fixture_read_cursor_speed",
+            "value": 42166.87031372249,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000021560032199075023",
+            "extra": "mean: 23.715300484953637 usec\nrounds: 7012"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_baseline",
+            "value": 5.812842441269276,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0007615125668928434",
+            "extra": "mean: 172.03287550000113 msec\nrounds: 6"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_instrumented",
+            "value": 4.818229367623023,
+            "unit": "iter/sec",
+            "range": "stddev: 0.007234174538634143",
+            "extra": "mean: 207.54512159999763 msec\nrounds: 5"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_pct_within_budget",
+            "value": 22026999.187526304,
+            "unit": "iter/sec",
+            "range": "stddev: 5.391131234214678e-9",
+            "extra": "mean: 45.398830384771216 nsec\nrounds: 196426"
+          },
+          {
+            "name": "benchmarks/test_replay_vs_live.py::test_replay_10step_agent_run",
+            "value": 535.1823668750085,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00003798464741035407",
+            "extra": "mean: 1.8685219504504889 msec\nrounds: 444"
           }
         ]
       }
