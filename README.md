@@ -390,6 +390,10 @@ after:
 - **Fixture safety:** Fixture files at `~/.agent-trace/runs/` contain full HTTP request and response bodies, including API keys and prompt contents. Add `.agent-trace/` and `*.db` to your `.gitignore`. Never commit a fixture generated against a production API key.
 - **Disclosure:** [SECURITY.md](SECURITY.md) — report vulnerabilities to `agent.obs.oss.security@gmail.com` with a 48-hour response SLA.
 
+### Known upstream advisories
+
+- **`chromadb` (optional `[crewai]` extra only):** GHSA for a pre-authentication code injection vulnerability affecting chromadb 1.0.0 through the current latest release (1.5.9). The upstream fix (chroma-core/chroma PR #7237) merged 2026-07-07 but has not shipped in any PyPI release since — there is currently no patched version to pin to. `chromadb` is pulled in only by the optional `crewai` integration extra (`pip install agent-observability-trace-cli[crewai]`), not installed by default, and this project never runs a Chroma server with an exposed HTTP API, so the actual exploit path (an attacker-reachable `/api/v2/.../collections` endpoint) does not apply to normal usage of this package. If you install the `[crewai]` extra and run your own Chroma server elsewhere, track [the upstream advisory](https://github.com/advisories/GHSA-f4j7-r4q5-qw2c) and update `chromadb` as soon as a fixed release ships.
+
 ---
 
 ## FAQ
