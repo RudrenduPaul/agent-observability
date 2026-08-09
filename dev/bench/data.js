@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1786309699365,
+  "lastUpdate": 1786309802358,
   "repoUrl": "https://github.com/RudrenduPaul/agent-observability",
   "entries": {
     "Benchmark": [
@@ -2256,6 +2256,100 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.00003984600693514456",
             "extra": "mean: 2.5858018343027713 msec\nrounds: 344"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a8bddd3033ec698822175c5ad5fe0f6fe3e80c95",
+          "message": "Bump ossf/scorecard-action from 2.4.0 to 2.4.4 (#25)\n\nBumps [ossf/scorecard-action](https://github.com/ossf/scorecard-action) from 2.4.0 to 2.4.4.\n- [Release notes](https://github.com/ossf/scorecard-action/releases)\n- [Changelog](https://github.com/ossf/scorecard-action/blob/main/RELEASE.md)\n- [Commits](https://github.com/ossf/scorecard-action/compare/62b2cac7ed8198b15735ed49ab1e5cf35480ba46...2d1146689b8cda280b9bc96326124645441f03bc)\n\n---\nupdated-dependencies:\n- dependency-name: ossf/scorecard-action\n  dependency-version: 2.4.4\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>\nCo-authored-by: Rudrendu Paul <38769913+RudrenduPaul@users.noreply.github.com>",
+          "timestamp": "2026-08-09T20:54:08Z",
+          "tree_id": "6fce4ab524a0a696d6632330461f55b7bd3504a8",
+          "url": "https://github.com/RudrenduPaul/agent-observability/commit/a8bddd3033ec698822175c5ad5fe0f6fe3e80c95"
+        },
+        "date": 1786309801671,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "benchmarks/test_fidelity.py::test_fidelity_exchange_count",
+            "value": 866.324046112871,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000024525866917241847",
+            "extra": "mean: 1.1543024858734128 msec\nrounds: 531"
+          },
+          {
+            "name": "benchmarks/test_fidelity.py::test_replay_speed",
+            "value": 871.7748210427287,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00003561591961176869",
+            "extra": "mean: 1.1470852057919054 msec\nrounds: 656"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_span_serialization_speed",
+            "value": 927885.9509714537,
+            "unit": "iter/sec",
+            "range": "stddev: 4.0658540708511395e-7",
+            "extra": "mean: 1.077718655997589 usec\nrounds: 137099"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_span_from_dict_speed",
+            "value": 377215.5194807081,
+            "unit": "iter/sec",
+            "range": "stddev: 6.740133166618224e-7",
+            "extra": "mean: 2.6510043949852466 usec\nrounds: 70537"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_fixture_write_latency",
+            "value": 3480.194494899116,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00015604593440145815",
+            "extra": "mean: 287.3402625817866 usec\nrounds: 2007"
+          },
+          {
+            "name": "benchmarks/test_ingestion.py::test_fixture_read_cursor_speed",
+            "value": 31098.209633260765,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000004357329496566199",
+            "extra": "mean: 32.156192005679344 usec\nrounds: 8406"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_baseline",
+            "value": 5.368989494111024,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00038929405354622463",
+            "extra": "mean: 186.25478800002307 msec\nrounds: 6"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_instrumented",
+            "value": 4.869410474809129,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000757435436752951",
+            "extra": "mean: 205.3636688000097 msec\nrounds: 5"
+          },
+          {
+            "name": "benchmarks/test_overhead.py::test_overhead_pct_within_budget",
+            "value": 16794158.524792414,
+            "unit": "iter/sec",
+            "range": "stddev: 8.361443310251177e-9",
+            "extra": "mean: 59.544513559506285 nsec\nrounds: 95058"
+          },
+          {
+            "name": "benchmarks/test_replay_vs_live.py::test_replay_10step_agent_run",
+            "value": 391.16160877202947,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00006515423234487329",
+            "extra": "mean: 2.55648810510646 msec\nrounds: 333"
           }
         ]
       }
