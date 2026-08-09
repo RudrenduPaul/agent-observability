@@ -69,6 +69,8 @@ agent-trace show run_<id>
 
 `list`, `inspect`, `diff`, `replay`, and `run` all support `--json` for machine-parseable output — an orchestrating agent or CI job can call any of them the same way a person would and parse the result. (`run --json` prints its own status to stderr and the child process's output to stdout, ending with one final JSON summary line, since the child's own output can't be made structured.) `show` has no `--json` mode of its own — it accepts `--errors-only` to filter its output to failed spans instead. See the full [CLI reference](#cli-reference) below for every subcommand's flags.
 
+![Terminal recording of agent-trace subcommands run with --json, producing structured output an agent or CI job can parse directly](https://raw.githubusercontent.com/RudrenduPaul/agent-observability/main/docs/assets/dev-to-demos/demo-3-agent-native-json.gif)
+
 Want programmatic control instead of the CLI? Use the Python API:
 
 ```python
@@ -171,6 +173,8 @@ for a run.
 | `--diff-get-post-id-field` | `id` | Field name the GET response uses for the resource id. |
 | `--diff-get-post-post-id-field` | same as `--diff-get-post-id-field` | Field name the POST request body uses to reference the same resource id, if different (e.g. `assistant_id`). |
 | `--json` | off | Print machine-readable JSON instead of human-readable flag lists. |
+
+![Terminal recording of agent-trace inspect auto-flagging malformed request/response shapes and cross-span anomalies for a recorded run](https://raw.githubusercontent.com/RudrenduPaul/agent-observability/main/docs/assets/dev-to-demos/demo-2-inspect.gif)
 
 ### `agent-trace diff <run_id_a> <run_id_b>`
 
