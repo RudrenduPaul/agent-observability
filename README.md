@@ -394,6 +394,8 @@ after:
 
 - **`chromadb` (optional `[crewai]` extra only):** GHSA for a pre-authentication code injection vulnerability affecting chromadb 1.0.0 through the current latest release (1.5.9). The upstream fix (chroma-core/chroma PR #7237) merged 2026-07-07 but has not shipped in any PyPI release since — there is currently no patched version to pin to. `chromadb` is pulled in only by the optional `crewai` integration extra (`pip install agent-observability-trace-cli[crewai]`), not installed by default, and this project never runs a Chroma server with an exposed HTTP API, so the actual exploit path (an attacker-reachable `/api/v2/.../collections` endpoint) does not apply to normal usage of this package. If you install the `[crewai]` extra and run your own Chroma server elsewhere, track [the upstream advisory](https://github.com/advisories/GHSA-f4j7-r4q5-qw2c) and update `chromadb` as soon as a fixed release ships.
 
+  **Future roadmap:** once chromadb ships a release containing the fix, pin `chromadb` to that version immediately. If no fix has shipped by the next scheduled security review and the `[crewai]` extra sees negligible real-world usage, removing the extra entirely is the fallback under consideration to close this out for good.
+
 ---
 
 ## FAQ
