@@ -13,13 +13,14 @@ Replay fidelity:      100%     (response bytes byte-for-byte identical)
 CI cost per replay:   $0
 ```
 
-![Terminal recording of agent-trace recording a live HTTP call, then replaying the same run offline with zero network requests](https://raw.githubusercontent.com/RudrenduPaul/agent-observability/main/docs/assets/dev-to-demos/demo-1-record-replay.gif)
-
 [![PyPI](https://img.shields.io/pypi/v/agent-observability-trace-cli)](https://pypi.org/project/agent-observability-trace-cli/)
+[![npm](https://img.shields.io/npm/v/agent-observability-trace-cli)](https://www.npmjs.com/package/agent-observability-trace-cli)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![CI](https://github.com/RudrenduPaul/agent-observability/actions/workflows/ci.yml/badge.svg)](https://github.com/RudrenduPaul/agent-observability/actions)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/RudrenduPaul/agent-observability/badge)](https://securityscorecards.dev/viewer/?uri=github.com/RudrenduPaul/agent-observability)
+
+![Terminal recording of agent-trace recording a live HTTP call, then replaying the same run offline with zero network requests](https://raw.githubusercontent.com/RudrenduPaul/agent-observability/main/docs/assets/dev-to-demos/demo-1-record-replay.gif)
 
 ---
 
@@ -67,6 +68,8 @@ agent-trace show run_<id>
 ```
 
 `list`, `inspect`, `diff`, `replay`, and `run` all support `--json` for machine-parseable output — an orchestrating agent or CI job can call any of them the same way a person would and parse the result. (`run --json` prints its own status to stderr and the child process's output to stdout, ending with one final JSON summary line, since the child's own output can't be made structured.) `show` has no `--json` mode of its own — it accepts `--errors-only` to filter its output to failed spans instead. See the full [CLI reference](#cli-reference) below for every subcommand's flags.
+
+![Terminal recording of agent-trace subcommands run with --json, producing structured output an agent or CI job can parse directly](https://raw.githubusercontent.com/RudrenduPaul/agent-observability/main/docs/assets/dev-to-demos/demo-3-agent-native-json.gif)
 
 Want programmatic control instead of the CLI? Use the Python API:
 
@@ -170,6 +173,8 @@ for a run.
 | `--diff-get-post-id-field` | `id` | Field name the GET response uses for the resource id. |
 | `--diff-get-post-post-id-field` | same as `--diff-get-post-id-field` | Field name the POST request body uses to reference the same resource id, if different (e.g. `assistant_id`). |
 | `--json` | off | Print machine-readable JSON instead of human-readable flag lists. |
+
+![Terminal recording of agent-trace inspect auto-flagging malformed request/response shapes and cross-span anomalies for a recorded run](https://raw.githubusercontent.com/RudrenduPaul/agent-observability/main/docs/assets/dev-to-demos/demo-2-inspect.gif)
 
 ### `agent-trace diff <run_id_a> <run_id_b>`
 
@@ -380,7 +385,7 @@ after:
 
 ## Security
 
-- **Supply chain:** Releases are built and published via GitHub Actions (`release.yml`). SLSA Level 2 provenance via Sigstore OIDC signing is verified working as of v0.1.7 (`.sigstore.json` bundles genuinely produced for every dist artifact); SBOM (CycloneDX JSON + XML) is generated and attached to the GitHub Release alongside the signed artifacts.
+- **Supply chain:** Releases are built and published via GitHub Actions (`release.yml`). SLSA Level 2 provenance via Sigstore OIDC signing is verified working (`.sigstore.json` bundles genuinely produced for every dist artifact); SBOM (CycloneDX JSON + XML) is generated and attached to the GitHub Release alongside the signed artifacts.
 - **Vulnerability scanning:** `dependabot.yml` opens weekly pip and monthly GitHub Actions version-bump PRs. Dependabot security-advisory alerts, secret scanning, and secret scanning push protection are all enabled on this repo.
 - **Fixture safety:** Fixture files at `~/.agent-trace/runs/` contain full HTTP request and response bodies, including API keys and prompt contents. Add `.agent-trace/` and `*.db` to your `.gitignore`. Never commit a fixture generated against a production API key.
 - **Disclosure:** [SECURITY.md](SECURITY.md) — report vulnerabilities to `agent.obs.oss.security@gmail.com` with a 48-hour response SLA.
