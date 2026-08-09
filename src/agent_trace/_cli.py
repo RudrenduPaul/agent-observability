@@ -837,6 +837,59 @@ def _print_replay_span_diagnostics(
     _print_zero_task_updates(spans)
 
 
+def _print_replay_json_summary(
+    run_id: str,
+    fixture: Path,
+    original_span_count: int,
+    exchange_count: int,
+    replay_exchange_count: int,
+    trace_data: dict[str, object] | None,
+) -> None:
+    """Print the --json summary for `agent-trace replay`. Split out of
+    cmd_replay to keep that function's statement count under the ruff
+    PLR0915 threshold."""
+    print(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "fixture": str(fixture),
+                "original_span_count": original_span_count,
+                "recorded_exchanges": exchange_count,
+                "replay_exchanges_available": replay_exchange_count,
+                "trace": trace_data,
+            },
+            indent=2,
+            default=str,
+        )
+    )
+
+
+def _print_replay_original_trace(
+    trace_json_path: Path,
+    run_id: str,
+    trace_data: dict[str, object] | None,
+    all_exchanges: list[dict[str, Any]],
+) -> None:
+    """Print the original span tree (or a fallback message) for
+    `agent-trace replay`. Split out of cmd_replay to keep that function's
+    statement count under the ruff PLR0915 threshold."""
+    if trace_json_path.exists():
+        try:
+            from agent_trace.core.trace import Trace
+            from agent_trace.exporters.stdout import StdoutExporter
+
+            trace_obj = Trace.from_dict(trace_data or {})
+            print("--- Original span tree (from trace.json) ---")
+            StdoutExporter().export(trace_obj)
+            spans = (trace_data or {}).get("spans", [])
+            assert isinstance(spans, list)
+            _print_replay_span_diagnostics(spans, all_exchanges)
+        except Exception as exc:
+            print(f"Could not render span tree: {exc}")
+    else:
+        print(f"(No trace.json — run 'agent-trace show {run_id}' after recording)")
+
+
 def cmd_replay(args: argparse.Namespace) -> None:
     """Replay a recorded run and print the resulting span tree."""
     run_id: str = args.run_id
@@ -864,7 +917,9 @@ def cmd_replay(args: argparse.Namespace) -> None:
     if trace_json_path.exists():
         try:
             trace_data = json.loads(trace_json_path.read_text(encoding="utf-8"))
-            original_spans = trace_data.get("spans", [])
+            spans = (trace_data or {}).get("spans", [])
+            if isinstance(spans, list):
+                original_spans = spans
         except Exception:  # noqa: S110
             pass
 
@@ -899,36 +954,18 @@ def cmd_replay(args: argparse.Namespace) -> None:
             print()
 
     if as_json:
-        print(
-            json.dumps(
-                {
-                    "run_id": run_id,
-                    "fixture": str(fixture),
-                    "original_span_count": len(original_spans),
-                    "recorded_exchanges": exchange_count,
-                    "replay_exchanges_available": replay_exchange_count,
-                    "trace": trace_data,
-                },
-                indent=2,
-                default=str,
-            )
+        _print_replay_json_summary(
+            run_id,
+            fixture,
+            len(original_spans),
+            exchange_count,
+            replay_exchange_count,
+            trace_data,
         )
         return
 
     # Load and print the original trace
-    if trace_json_path.exists():
-        try:
-            from agent_trace.core.trace import Trace
-            from agent_trace.exporters.stdout import StdoutExporter
-
-            trace_obj = Trace.from_dict(trace_data or {})
-            print("--- Original span tree (from trace.json) ---")
-            StdoutExporter().export(trace_obj)
-            _print_replay_span_diagnostics((trace_data or {}).get("spans", []), all_exchanges)
-        except Exception as exc:
-            print(f"Could not render span tree: {exc}")
-    else:
-        print(f"(No trace.json — run 'agent-trace show {run_id}' after recording)")
+    _print_replay_original_trace(trace_json_path, run_id, trace_data, all_exchanges)
 
 
 # ---------------------------------------------------------------------------
