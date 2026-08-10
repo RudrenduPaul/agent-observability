@@ -459,5 +459,5 @@ Apache 2.0. Contributions welcome.
 
 ---
 
-*Built by Rudrendu Paul*
+*Built by Rudrendu Paul and Sourav Nandy*
 
