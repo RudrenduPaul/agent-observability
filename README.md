@@ -113,6 +113,44 @@ with replay("run_<id>") as ctx:
 
 ---
 
+## MCP Server
+
+agent-observability ships a [Model Context Protocol](https://modelcontextprotocol.io) server so an
+AI agent (Claude, Cursor, or any MCP-compatible client) can list, inspect, and replay recorded runs
+directly, without a human invoking the CLI by hand.
+
+Install the extra:
+
+```bash
+pip install "agent-observability-trace-cli[mcp]"
+```
+
+Add it to your MCP client's config (for Claude Desktop, `claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "agent-observability": {
+      "command": "uvx",
+      "args": ["--from", "agent-observability-trace-cli", "agent-trace-mcp"]
+    }
+  }
+}
+```
+
+The server exposes one tool, `run`, that shells out to the `agent-trace` CLI with the given
+subcommand and arguments plus `--json`, and returns the parsed JSON result:
+
+```
+run(["list"])
+run(["replay", "run_abc123def456"])
+```
+
+Transport is stdio, so there is nothing to host: the MCP client spawns the server as a local
+subprocess. Source: [`src/agent_trace/mcp_server.py`](src/agent_trace/mcp_server.py).
+
+---
+
 ## Supported frameworks
 
 LangGraph · OpenAI Agents SDK · CrewAI · AutoGen · LlamaIndex · Haystack · Agno · PydanticAI · Google GenAI
