@@ -93,6 +93,11 @@ agent-trace-mcp = "agent_trace.mcp_server:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_trace"]
 
+[tool.hatch.build]
+exclude = [
+  ".venv*/",
+]
+
 [tool.ruff]
 target-version = "py310"
 line-length = 88
