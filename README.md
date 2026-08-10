@@ -7,6 +7,8 @@
 [![CI](https://github.com/RudrenduPaul/agent-observability/actions/workflows/ci.yml/badge.svg)](https://github.com/RudrenduPaul/agent-observability/actions)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/RudrenduPaul/agent-observability/badge)](https://securityscorecards.dev/viewer/?uri=github.com/RudrenduPaul/agent-observability)
 
+<a href="https://www.producthunt.com/products/agent-observability?embed=true&utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-agent-observability" target="_blank" rel="noopener noreferrer"><img alt="agent-observability - Reproduce any agent failure without paying for it again | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1219630&theme=light"></a>
+
 **Record your agent's LLM calls once, replay them offline in under 1 ms, zero API calls, zero cost.**
 
 ![Terminal recording of agent-trace recording a live HTTP call, then replaying the same run offline with zero network requests](https://raw.githubusercontent.com/RudrenduPaul/agent-observability/main/docs/assets/dev-to-demos/demo-1-record-replay.gif)
