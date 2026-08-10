@@ -1,5 +1,9 @@
 # Agent Observability
 
+<!-- mcp-name: io.github.RudrenduPaul/agent-observability -->
+<!-- Ownership-proof string for registry.modelcontextprotocol.io publishing. Do not remove. -->
+
+
 [![PyPI](https://img.shields.io/pypi/v/agent-observability-trace-cli)](https://pypi.org/project/agent-observability-trace-cli/)
 [![npm](https://img.shields.io/npm/v/agent-observability-trace-cli)](https://www.npmjs.com/package/agent-observability-trace-cli)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
