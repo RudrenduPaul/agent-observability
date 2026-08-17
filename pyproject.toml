@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-observability-trace-cli"
-version = "0.1.9"
+version = "0.1.11"
 description = "AI agent observability with deterministic record/replay — capture any LangGraph or OpenAI Agents SDK run, replay it offline at zero API cost."
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -13,7 +13,7 @@ authors = [
     {name = "Rudrendu Paul"},
     {name = "Sourav Nandy"},
 ]
-keywords = ["agents", "observability", "tracing", "llm", "langgraph", "openai", "replay", "debugging"]
+keywords = ["agents", "agentic-ai", "observability", "tracing", "llm", "langgraph", "openai", "crewai", "autogen", "replay", "record-replay", "debugging", "mcp", "httpx", "cli"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
@@ -34,15 +34,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-autogen = ["autogen-agentchat>=0.4", "autogen-ext[openai]>=0.4"]
+autogen = ["autogen-agentchat>=0.7.5", "autogen-ext[openai]>=0.4"]
 langgraph = ["langgraph>=1.0.10", "langchain-core>=0.3"]
 langchain = ["langchain-core>=0.3"]
 mcp = ["mcp>=1.28.1"]
+mcp-server = ["mcp[cli]>=2.0.0"]
 openai-agents = ["openai-agents>=0.0.3"]
 crewai = ["crewai>=1.0.0"]
 llama-index = ["llama-index-core>=0.14"]
 pydantic-ai = ["pydantic-ai>=2.0"]
-haystack = ["haystack-ai>=2.0"]
+haystack = ["haystack-ai>=3.0.0"]
 agno = ["agno>=2.7"]
 google-genai = ["google-genai>=2.0", "langchain-google-genai>=4.0"]
 otlp = ["opentelemetry-exporter-otlp-proto-grpc>=1.25"]
@@ -87,9 +88,15 @@ Changelog = "https://github.com/RudrenduPaul/agent-observability/blob/main/CHANG
 
 [project.scripts]
 agent-trace = "agent_trace._cli:main"
+agent-trace-mcp = "agent_trace.mcp_server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_trace"]
+
+[tool.hatch.build]
+exclude = [
+  ".venv*/",
+]
 
 [tool.ruff]
 target-version = "py310"
