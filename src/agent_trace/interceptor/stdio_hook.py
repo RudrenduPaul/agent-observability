@@ -60,7 +60,7 @@ def _require_mcp() -> Any:
 
 
 def _classify_frame(root: Any) -> tuple[str, str | None, str | None]:
-    """Classify a ``JSONRPCMessage.root`` union member.
+    """Classify a ``JSONRPCMessage`` union member.
 
     Returns ``(frame_type, rpc_id, method)`` where ``frame_type`` is one of
     ``"request"``, ``"notification"``, ``"response"``, ``"error"``, or
@@ -129,7 +129,7 @@ class _RecordingReceiveStream:
         if not isinstance(item, SessionMessage):
             return
         try:
-            root = item.message.root
+            root = item.message
             frame_type, rpc_id, method = _classify_frame(root)
             payload = item.message.model_dump_json(by_alias=True, exclude_none=True)
             self._fixture.record_mcp_frame(
@@ -178,7 +178,7 @@ class _RecordingSendStream:
         if not isinstance(item, SessionMessage):
             return  # pragma: no cover — write_stream is SessionMessage-only
         try:
-            root = item.message.root
+            root = item.message
             frame_type, rpc_id, method = _classify_frame(root)
             payload = item.message.model_dump_json(by_alias=True, exclude_none=True)
             self._fixture.record_mcp_frame(

@@ -131,9 +131,7 @@ class TestRecordingReceiveStream:
         from mcp.shared.message import SessionMessage
 
         message = SessionMessage(
-            types.JSONRPCMessage(
-                types.JSONRPCResponse(jsonrpc="2.0", id=1, result={"tools": []})
-            )
+            types.JSONRPCResponse(jsonrpc="2.0", id=1, result={"tools": []})
         )
         inner = _FakeInnerStream([message])
         fixture = _make_fixture(tmp_path)
@@ -173,10 +171,8 @@ class TestRecordingReceiveStream:
         from mcp.shared.message import SessionMessage
 
         message = SessionMessage(
-            types.JSONRPCMessage(
-                types.JSONRPCNotification(
-                    jsonrpc="2.0", method="notifications/initialized", params=None
-                )
+            types.JSONRPCNotification(
+                jsonrpc="2.0", method="notifications/initialized", params=None
             )
         )
         inner = _FakeInnerStream([message])
@@ -212,13 +208,11 @@ class TestRecordingSendStream:
         from mcp.shared.message import SessionMessage
 
         message = SessionMessage(
-            types.JSONRPCMessage(
-                types.JSONRPCRequest(
-                    jsonrpc="2.0",
-                    id=7,
-                    method="tools/call",
-                    params={"name": "search", "arguments": {"q": "agents"}},
-                )
+            types.JSONRPCRequest(
+                jsonrpc="2.0",
+                id=7,
+                method="tools/call",
+                params={"name": "search", "arguments": {"q": "agents"}},
             )
         )
         inner = _FakeInnerStream([])
