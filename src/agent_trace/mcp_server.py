@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from typing import Any
 
 from mcp.server import MCPServer
 
@@ -83,7 +84,7 @@ mcp = MCPServer(
 
 
 @mcp.tool(description=_capture_cli_help())
-def run(args: list[str]) -> dict:
+def run(args: list[str]) -> dict[str, Any]:
     """Shell out to `agent-trace <args...> --json` and return the parsed
     JSON result as a dict. Errors (non-zero exit, unparsable stdout) are
     returned as a dict with an "error" key rather than raised, so a calling
@@ -111,7 +112,8 @@ def run(args: list[str]) -> dict:
         }
 
     try:
-        return json.loads(result.stdout)
+        parsed: dict[str, Any] = json.loads(result.stdout)
+        return parsed
     except json.JSONDecodeError as exc:
         return {
             "error": f"could not parse JSON output: {exc}",

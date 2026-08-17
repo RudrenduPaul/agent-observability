@@ -65,14 +65,14 @@ agent-trace run --name my_agent -- python my_agent.py
 # List recorded runs
 agent-trace list
 
-# Replay offline — zero network, zero cost
+# Replay offline: zero network, zero cost
 agent-trace replay run_<id>
 
 # Show the trace for a run
 agent-trace show run_<id>
 ```
 
-`list`, `inspect`, `diff`, `replay`, and `run` all support `--json` for machine-parseable output — an orchestrating agent or CI job can call any of them the same way a person would and parse the result. (`run --json` prints its own status to stderr and the child process's output to stdout, ending with one final JSON summary line, since the child's own output can't be made structured.) `show` has no `--json` mode of its own — it accepts `--errors-only` to filter its output to failed spans instead. See the full [CLI reference](#cli-reference) below for every subcommand's flags.
+`list`, `inspect`, `diff`, `replay`, and `run` all support `--json` for machine-parseable output, so an orchestrating agent or CI job can call any of them the same way a person would and parse the result. (`run --json` prints its own status to stderr and the child process's output to stdout, ending with one final JSON summary line, since the child's own output can't be made structured.) `show` has no `--json` mode of its own. It accepts `--errors-only` to filter its output to failed spans instead. See the full [CLI reference](#cli-reference) below for every subcommand's flags.
 
 ![Terminal recording of agent-trace subcommands run with --json, producing structured output an agent or CI job can parse directly](https://raw.githubusercontent.com/RudrenduPaul/agent-observability/main/docs/assets/dev-to-demos/demo-3-agent-native-json.gif)
 
@@ -93,7 +93,7 @@ result = fetch_data("hello")
 # Trace and fixture saved to ~/.agent-trace/runs/run_<id>/
 ```
 
-Replay offline — no API calls, no tokens:
+Replay offline, no API calls, no tokens:
 
 ```python
 from agent_trace import replay
@@ -188,7 +188,7 @@ Pretty-print the stored `trace.json` for a run.
 |---|---|---|
 | `--errors-only` | off | Only print ERROR-status spans, each with its captured exception text. |
 
-`show` has no `--json` mode — it prints the trace (colorized via `rich` when
+`show` has no `--json` mode. It prints the trace (colorized via `rich` when
 installed, plain `json.dumps` otherwise), not a structured summary object.
 
 ### `agent-trace replay <run_id>`
@@ -202,9 +202,6 @@ misattributed spans, checkpoint durability, zero-task updates).
 |---|---|---|
 | `run_id` | yes | Run ID, e.g. `run_abc123def456`. |
 | `--json` | no | Print a structured JSON summary (fixture path, span/exchange counts, the original trace) instead of the human-readable span tree. |
-
-
-No flags.
 
 ### `agent-trace inspect <run_id>`
 
@@ -220,7 +217,7 @@ for a run.
 | `--registered-tools` | none | Comma-separated list of registered tool names. Enables the tool-call name fuzzy-match, dotted-compound, ReAct action-name-not-registered, and tool-call-name-not-registered checks. |
 | `--configured-host` | none | The framework's configured LLM endpoint host. Enables the endpoint-host-mismatch check. |
 | `--check-kwarg` | none | Dotted kwarg path (e.g. `extra_body.chat_template_kwargs.thinking`) expected to be present on the wire. Flags requests where it's absent. |
-| `--diff-field` | none | Response field to check for wire-present-but-downstream-absent — a top-level key (e.g. `usage`) or a dotted/nested path with numeric list-index segments (e.g. `choices.0.message.reasoning_content`, for provider fields like DeepSeek's `reasoning_content`). |
+| `--diff-field` | none | Response field to check for wire-present-but-downstream-absent: a top-level key (e.g. `usage`) or a dotted/nested path with numeric list-index segments (e.g. `choices.0.message.reasoning_content`, for provider fields like DeepSeek's `reasoning_content`). |
 | `--diff-get-post-field` | none | Dotted field path (e.g. `instructions`) to compare between an earlier GET response and a later, causally-related POST request body referencing the same resource id (see issue #2620). Flags stale-value mismatches, such as a `GPTAssistantAgent` POST `/runs` still sending `instructions` that no longer match what GET `/assistants/{id}` returns. |
 | `--diff-get-post-id-field` | `id` | Field name the GET response uses for the resource id. |
 | `--diff-get-post-post-id-field` | same as `--diff-get-post-id-field` | Field name the POST request body uses to reference the same resource id, if different (e.g. `assistant_id`). |
@@ -247,7 +244,7 @@ for a shared LangGraph `thread_id` (see issue #161).
 
 Exec a child process with recording pre-enabled process-wide
 (`AGENT_TRACE_AUTO_RECORD=1`), so the first `import agent_trace` inside that
-process — even one owned by a third-party CLI like `langgraph dev` — starts
+process, even one owned by a third-party CLI like `langgraph dev`, starts
 recording with zero code changes required in your own agent code. Exits with
 the child process's own exit code.
 
@@ -256,7 +253,7 @@ the child process's own exit code.
 | `--run-id` | random (`run_<12-hex-chars>`), printed on start | Explicit run ID. |
 | `--name` | `auto-record` | Trace name recorded in `trace.json` metadata. |
 | `--json` | off | Print agent-trace's own status as one final JSON line on stdout (status lines go to stderr instead). Must come before the child command, e.g. `agent-trace run --json -- langgraph dev`. |
-| `child_command` (positional) | — | Everything after `--` is exec'd as the child process, e.g. `-- langgraph dev`. This captures the remainder of the command line, so `--run-id`/`--name`/`--json` must be given before it, not after. |
+| `child_command` (positional) | none | Everything after `--` is exec'd as the child process, e.g. `-- langgraph dev`. This captures the remainder of the command line, so `--run-id`/`--name`/`--json` must be given before it, not after. |
 
 ---
 
@@ -291,7 +288,7 @@ def test_agent_answer():
     assert "4" in result
 ```
 
-Set `AGENT_TRACE_NETWORK_GUARD=1` in CI. Any HTTP call not in the fixture raises `NetworkGuardError` immediately — catching regressions before they hit production.
+Set `AGENT_TRACE_NETWORK_GUARD=1` in CI. Any HTTP call not in the fixture raises `NetworkGuardError` immediately, catching regressions before they hit production.
 
 ```bash
 AGENT_TRACE_NETWORK_GUARD=1 uv run pytest tests/
@@ -317,7 +314,7 @@ LangSmith's VCR cassettes are Python + LangChain only, don't capture full wire b
 and require a LangSmith account. Agent Observability works on any Python HTTP client,
 needs no account, and replays in 0.93 ms with 100% fidelity.
 
-Most observability tools for LLM agents are **observe-only** — they show you a trace of what happened, but reproducing a failure still requires re-running the full agent against live APIs.
+Most observability tools for LLM agents are **observe-only**: they show you a trace of what happened, but reproducing a failure still requires re-running the full agent against live APIs.
 
 | Capability | Agent Observability | LangSmith | Langfuse | Helicone | OpenLLMetry |
 |---|---|---|---|---|---|
@@ -355,9 +352,9 @@ docker compose up -d
 
 Starts three services (all optional):
 
-- **Jaeger** (`http://localhost:16686`) — OTLP span ingestion and trace UI
-- **Grafana** (`http://localhost:3000`) — dashboards and alerts
-- **Tempo** (port 3200) — long-term trace storage backend
+- **Jaeger** (`http://localhost:16686`): OTLP span ingestion and trace UI
+- **Grafana** (`http://localhost:3000`): dashboards and alerts
+- **Tempo** (port 3200): long-term trace storage backend
 
 Then point your exporter at the collector:
 
@@ -373,11 +370,11 @@ exporter.export(trace)
 
 ## Real failures record/replay catches
 
-- Transient model output at step 6 causes a downstream tool to fail — unreproducible with a re-run, trivial to replay
-- Rate-limit response at step 3 triggers a silent fallback path — only visible in the recorded fixture bytes, not in a live re-run
-- Tool schema serialization error before HTTP dispatch — caught by `LangGraphTracer.on_llm_error` even though it never reaches the interceptor (see Known Limitations)
-- Non-deterministic tool ordering in a parallel branch — replay pins the exact sequence that produced the failure, so you're debugging the actual run instead of a fresh one
-- gRPC unary-stream response from Gemini that only fails on a specific chunk boundary — recorded once, replayed byte-for-byte instead of re-triggering a live streaming call each time
+- Transient model output at step 6 causes a downstream tool to fail. Unreproducible with a re-run, trivial to replay.
+- Rate-limit response at step 3 triggers a silent fallback path, visible only in the recorded fixture bytes, not in a live re-run.
+- Tool schema serialization error before HTTP dispatch, caught by `LangGraphTracer.on_llm_error` even though it never reaches the interceptor (see Known Limitations).
+- Non-deterministic tool ordering in a parallel branch: replay pins the exact sequence that produced the failure, so you're debugging the actual run instead of a fresh one.
+- gRPC unary-stream response from Gemini that only fails on a specific chunk boundary, recorded once and replayed byte-for-byte instead of re-triggering a live streaming call each time.
 
 ---
 
@@ -386,25 +383,25 @@ exporter.export(trace)
 Agent Observability's capture model is HTTP-interceptor-based (plus
 instrumented framework callbacks for the integrations under
 `src/agent_trace/integrations/`) and process-local. That model has real
-edges — stated explicitly here so they're clear before you hit one, not
+edges, stated explicitly here so they're clear before you hit one, not
 after:
 
 - **Process-local only.** Recording/replay happens inside the Python
   process you import `agent_trace` into (`httpx.Client(transport=
   RecordingTransport(...))`, `session.mount(..., RecordingAdapter(...))`,
-  or `ReplayEngine.replay()`'s monkeypatches — see
+  or `ReplayEngine.replay()`'s monkeypatches, see
   `src/agent_trace/interceptor/`). It cannot observe or replay calls made
   by a third-party **hosted** service you don't run or deploy yourself
-  (e.g. a vendor's own hosted chat assistant) — only your own process's
-  outbound calls.
+  (e.g. a vendor's own hosted chat assistant). It only sees your own
+  process's outbound calls.
 
 - **gRPC coverage is partial.** `src/agent_trace/interceptor/grpc_hook.py`
   patches `grpc.secure_channel`/`grpc.insecure_channel` (and the `grpc.aio`
   equivalents) to capture Gemini/Vertex AI traffic that bypasses `httpx`
-  entirely — unary-unary calls (e.g. `GenerateContent`) and sync
+  entirely. Unary-unary calls (e.g. `GenerateContent`) and sync
   unary-stream calls (e.g. `StreamGenerateContent`) are fully recorded and
   replayed. Client-streaming and bidirectional-streaming gRPC calls, and
-  any `grpc.aio` streaming call, are **not** captured — those go straight
+  any `grpc.aio` streaming call, are **not** captured. Those go straight
   to the live network unintercepted, both during recording and (if
   attempted) replay.
 
@@ -413,22 +410,22 @@ after:
   (`httpx_hook.py`) and `RecordingAdapter.send`
   (`requests_patch.py`) only run once a fully-constructed
   `httpx.Request`/`PreparedRequest` reaches them. Any exception raised
-  *before* that — while an SDK is serializing a tool schema, building
-  headers, or otherwise assembling the call, or even earlier, during plain
+  *before* that, while an SDK is serializing a tool schema, building
+  headers, or otherwise assembling the call, or even earlier during plain
   Python object construction (e.g. `TypeError` from `abc.ABCMeta` when
-  instantiating an abstract class incorrectly) — happens entirely upstream
+  instantiating an abstract class incorrectly), happens entirely upstream
   of the interceptor's capture surface and produces zero fixture rows.
   A wired-in framework integration's own error callback (e.g.
   `LangGraphTracer.on_llm_error`) *does* still capture such pre-HTTP
   exceptions when they propagate through that framework's own
-  `try`/`except` — so "invisible to the interceptor" is not the same as
-  "invisible everywhere": it depends on whether a framework integration is
+  `try`/`except`, so "invisible to the interceptor" is not the same as
+  "invisible everywhere". It depends on whether a framework integration is
   wired in for the exception to pass through.
 
 - **No visibility into a framework's own print/display code.** Exceptions
-  raised inside local logging/printing/display machinery — e.g. `rich`
-  Console output, IPython/Jupyter display hooks, triggered by a framework's
-  own `verbose=True` logging — have zero HTTP traffic and zero framework
+  raised inside local logging/printing/display machinery, e.g. `rich`
+  Console output or IPython/Jupyter display hooks, triggered by a framework's
+  own `verbose=True` logging, have zero HTTP traffic and zero framework
   callback surface. No existing or planned capture mechanism (HTTP
   interceptor, MCP stdio-transport hook, or any framework integration)
   observes this category of failure.
@@ -493,7 +490,7 @@ Yes. The project is Apache 2.0 licensed (see [LICENSE](LICENSE)), which permits 
 
 - Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR
 - Good first issues are labeled in [GitHub Issues](https://github.com/RudrenduPaul/agent-observability/issues)
-- Replay engine (`src/agent_trace/_replay/`) requires 80% test coverage — correctness-critical
+- Replay engine (`src/agent_trace/_replay/`) requires 80% test coverage (correctness-critical)
 - Interceptor (`src/agent_trace/interceptor/`) requires 80% test coverage
 - GitHub Discussions for design questions and ideas
 

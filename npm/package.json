@@ -1,7 +1,7 @@
 {
   "name": "agent-observability-trace-cli",
-  "version": "0.1.7",
-  "description": "npm-installable CLI wrapper for agent-trace, deterministic record/replay for LLM agents. Requires Python 3.10+ and the agent-observability-trace-cli PyPI package.",
+  "version": "0.1.8",
+  "description": "npm-installable CLI wrapper for agent-trace, deterministic record and replay for LLM agent HTTP traffic. Forwards straight to the real Python agent-trace CLI. Requires Python 3.10+ and the agent-observability-trace-cli PyPI package.",
   "bin": {
     "agent-trace": "bin/agent-trace.js"
   },
@@ -13,6 +13,7 @@
   "keywords": [
     "agent-trace",
     "ai-agents",
+    "agentic-ai",
     "observability",
     "tracing",
     "llm",
@@ -20,7 +21,8 @@
     "openai",
     "record-replay",
     "debugging",
-    "cli"
+    "cli",
+    "python-cli"
   ],
   "homepage": "https://github.com/RudrenduPaul/agent-observability#readme",
   "repository": {
