@@ -1,5 +1,24 @@
 # Agent Observability
 
+<!-- mcp-name: io.github.RudrenduPaul/agent-observability -->
+<!-- Ownership-proof string for registry.modelcontextprotocol.io publishing. Do not remove. -->
+
+
+[![PyPI](https://img.shields.io/pypi/v/agent-observability-trace-cli)](https://pypi.org/project/agent-observability-trace-cli/)
+[![npm](https://img.shields.io/npm/v/agent-observability-trace-cli)](https://www.npmjs.com/package/agent-observability-trace-cli)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![CI](https://github.com/RudrenduPaul/agent-observability/actions/workflows/ci.yml/badge.svg)](https://github.com/RudrenduPaul/agent-observability/actions)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/RudrenduPaul/agent-observability/badge)](https://securityscorecards.dev/viewer/?uri=github.com/RudrenduPaul/agent-observability)
+
+<a href="https://www.producthunt.com/products/agent-observability?embed=true&utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-agent-observability" target="_blank" rel="noopener noreferrer"><img alt="agent-observability - Reproduce any agent failure without paying for it again | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1219630&theme=light"></a>
+
+**Record your agent's LLM calls once, replay them offline in under 1 ms, zero API calls, zero cost.**
+
+![Terminal recording of agent-trace recording a live HTTP call, then replaying the same run offline with zero network requests](https://raw.githubusercontent.com/RudrenduPaul/agent-observability/main/docs/assets/dev-to-demos/demo-1-record-replay.gif)
+
+---
+
 Your LangGraph agent fails after step 8. LangSmith shows you what broke.
 To reproduce it: 8 more LLM calls. 30 more seconds. $0.15 more in API cost.
 If the failure was caused by a transient model output, you can't reproduce it at all.
@@ -12,15 +31,6 @@ Replay latency:       0.93 ms  mean (vs ~8,500 ms live on GPT-4o × 10 steps)
 Replay fidelity:      100%     (response bytes byte-for-byte identical)
 CI cost per replay:   $0
 ```
-
-![Terminal recording of agent-trace recording a live HTTP call, then replaying the same run offline with zero network requests](https://raw.githubusercontent.com/RudrenduPaul/agent-observability/main/docs/assets/dev-to-demos/demo-1-record-replay.gif)
-
-[![PyPI](https://img.shields.io/pypi/v/agent-observability-trace-cli)](https://pypi.org/project/agent-observability-trace-cli/)
-[![npm](https://img.shields.io/npm/v/agent-observability-trace-cli)](https://www.npmjs.com/package/agent-observability-trace-cli)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![CI](https://github.com/RudrenduPaul/agent-observability/actions/workflows/ci.yml/badge.svg)](https://github.com/RudrenduPaul/agent-observability/actions)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/RudrenduPaul/agent-observability/badge)](https://securityscorecards.dev/viewer/?uri=github.com/RudrenduPaul/agent-observability)
 
 ---
 
@@ -46,11 +56,6 @@ pip install agent-observability-trace-cli[openai-agents]
 
 ![Terminal recording of installing agent-observability-trace-cli into a fresh virtual environment, then running agent-trace version and recording a first HTTP call with agent-trace list showing the resulting run](https://raw.githubusercontent.com/RudrenduPaul/agent-observability/main/docs/demo.gif)
 
-## Supported frameworks
-
-LangGraph · OpenAI Agents SDK · CrewAI · AutoGen · LlamaIndex · Haystack · Agno · PydanticAI · Google GenAI
-Plus any `httpx.Client`, `httpx.AsyncClient`, or `requests.Session`. No framework required.
-
 ## 30-second CLI quickstart
 
 ```bash
@@ -68,6 +73,8 @@ agent-trace show run_<id>
 ```
 
 `list`, `inspect`, `diff`, `replay`, and `run` all support `--json` for machine-parseable output, so an orchestrating agent or CI job can call any of them the same way a person would and parse the result. (`run --json` prints its own status to stderr and the child process's output to stdout, ending with one final JSON summary line, since the child's own output can't be made structured.) `show` has no `--json` mode of its own. It accepts `--errors-only` to filter its output to failed spans instead. See the full [CLI reference](#cli-reference) below for every subcommand's flags.
+
+![Terminal recording of agent-trace subcommands run with --json, producing structured output an agent or CI job can parse directly](https://raw.githubusercontent.com/RudrenduPaul/agent-observability/main/docs/assets/dev-to-demos/demo-3-agent-native-json.gif)
 
 Want programmatic control instead of the CLI? Use the Python API:
 
@@ -96,11 +103,58 @@ with replay("run_<id>") as ctx:
     print(result)                 # identical to the original run
 ```
 
+> [!TIP]
 > To store the input for later retrieval in replay, call `ctx.fixture.set_metadata('input', query)` inside the recording context.
 
-> **Sync and async clients:** Agent Observability intercepts `httpx.Client`, `httpx.AsyncClient`, and `requests.Session`, including the async client used by default in the OpenAI Python SDK v1.x and Anthropic SDK. The patch is installed at request-dispatch time, so it also covers clients constructed before recording/replay starts (e.g. a module-level `openai.AsyncOpenAI()` instance).
+> [!NOTE]
+> **Sync and async clients:** Agent Observability intercepts `httpx.Client`, `httpx.AsyncClient`, and `requests.Session` — including the async client used by default in the OpenAI Python SDK v1.x and Anthropic SDK. The patch is installed at request-dispatch time, so it also covers clients constructed before recording/replay starts (e.g. a module-level `openai.AsyncOpenAI()` instance).
 
 ![Terminal recording of replaying a previously recorded run with zero network calls, then running agent-trace show to print the replayed span tree](https://raw.githubusercontent.com/RudrenduPaul/agent-observability/main/docs/usage.gif)
+
+---
+
+## MCP Server
+
+agent-observability ships a [Model Context Protocol](https://modelcontextprotocol.io) server so an
+AI agent (Claude, Cursor, or any MCP-compatible client) can list, inspect, and replay recorded runs
+directly, without a human invoking the CLI by hand.
+
+Install the extra:
+
+```bash
+pip install "agent-observability-trace-cli[mcp]"
+```
+
+Add it to your MCP client's config (for Claude Desktop, `claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "agent-observability": {
+      "command": "uvx",
+      "args": ["--from", "agent-observability-trace-cli", "agent-trace-mcp"]
+    }
+  }
+}
+```
+
+The server exposes one tool, `run`, that shells out to the `agent-trace` CLI with the given
+subcommand and arguments plus `--json`, and returns the parsed JSON result:
+
+```
+run(["list"])
+run(["replay", "run_abc123def456"])
+```
+
+Transport is stdio, so there is nothing to host: the MCP client spawns the server as a local
+subprocess. Source: [`src/agent_trace/mcp_server.py`](src/agent_trace/mcp_server.py).
+
+---
+
+## Supported frameworks
+
+LangGraph · OpenAI Agents SDK · CrewAI · AutoGen · LlamaIndex · Haystack · Agno · PydanticAI · Google GenAI
+Plus: any `httpx.Client`, `httpx.AsyncClient`, or `requests.Session` — no framework required.
 
 ---
 
@@ -168,6 +222,8 @@ for a run.
 | `--diff-get-post-id-field` | `id` | Field name the GET response uses for the resource id. |
 | `--diff-get-post-post-id-field` | same as `--diff-get-post-id-field` | Field name the POST request body uses to reference the same resource id, if different (e.g. `assistant_id`). |
 | `--json` | off | Print machine-readable JSON instead of human-readable flag lists. |
+
+![Terminal recording of agent-trace inspect auto-flagging malformed request/response shapes and cross-span anomalies for a recorded run](https://raw.githubusercontent.com/RudrenduPaul/agent-observability/main/docs/assets/dev-to-demos/demo-2-inspect.gif)
 
 ### `agent-trace diff <run_id_a> <run_id_b>`
 
@@ -378,10 +434,19 @@ after:
 
 ## Security
 
-- **Supply chain:** Releases are built and published via GitHub Actions (`release.yml`). SLSA Level 2 provenance via Sigstore OIDC signing is verified working as of v0.1.7 (`.sigstore.json` bundles genuinely produced for every dist artifact); SBOM (CycloneDX JSON + XML) is generated and attached to the GitHub Release alongside the signed artifacts.
+- **Supply chain:** Releases are built and published via GitHub Actions (`release.yml`). SLSA Level 2 provenance via Sigstore OIDC signing is verified working (`.sigstore.json` bundles genuinely produced for every dist artifact); SBOM (CycloneDX JSON + XML) is generated and attached to the GitHub Release alongside the signed artifacts.
 - **Vulnerability scanning:** `dependabot.yml` opens weekly pip and monthly GitHub Actions version-bump PRs. Dependabot security-advisory alerts, secret scanning, and secret scanning push protection are all enabled on this repo.
-- **Fixture safety:** Fixture files at `~/.agent-trace/runs/` contain full HTTP request and response bodies, including API keys and prompt contents. Add `.agent-trace/` and `*.db` to your `.gitignore`. Never commit a fixture generated against a production API key.
-- **Disclosure:** [SECURITY.md](SECURITY.md). Report vulnerabilities to `agent.obs.oss.security@gmail.com` with a 48-hour response SLA.
+- **Fixture safety:** Fixture files at `~/.agent-trace/runs/` contain full HTTP request and response bodies, including API keys and prompt contents. Add `.agent-trace/` and `*.db` to your `.gitignore`.
+- **Disclosure:** [SECURITY.md](SECURITY.md) — report vulnerabilities to `agent.obs.oss.security@gmail.com` with a 48-hour response SLA.
+
+> [!WARNING]
+> Never commit a fixture generated against a production API key. Fixture files capture full request/response bodies verbatim, so a committed fixture can leak real API keys and prompt contents into your git history.
+
+### Known upstream advisories
+
+- **`chromadb` (optional `[crewai]` extra only):** GHSA for a pre-authentication code injection vulnerability affecting chromadb 1.0.0 through the current latest release (1.5.9). The upstream fix (chroma-core/chroma PR #7237) merged 2026-07-07 but has not shipped in any PyPI release since — there is currently no patched version to pin to. `chromadb` is pulled in only by the optional `crewai` integration extra (`pip install agent-observability-trace-cli[crewai]`), not installed by default, and this project never runs a Chroma server with an exposed HTTP API, so the actual exploit path (an attacker-reachable `/api/v2/.../collections` endpoint) does not apply to normal usage of this package. If you install the `[crewai]` extra and run your own Chroma server elsewhere, track [the upstream advisory](https://github.com/advisories/GHSA-f4j7-r4q5-qw2c) and update `chromadb` as soon as a fixed release ships.
+
+  **Future roadmap:** once chromadb ships a release containing the fix, pin `chromadb` to that version immediately. If no fix has shipped by the next scheduled security review and the `[crewai]` extra sees negligible real-world usage, removing the extra entirely is the fallback under consideration to close this out for good.
 
 ---
 
@@ -433,4 +498,5 @@ Apache 2.0. Contributions welcome.
 
 ---
 
-*Built by Rudrendu Paul*
+*Built by Rudrendu Paul and Sourav Nandy*
+
