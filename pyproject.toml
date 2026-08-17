@@ -13,7 +13,7 @@ authors = [
     {name = "Rudrendu Paul"},
     {name = "Sourav Nandy"},
 ]
-keywords = ["agents", "observability", "tracing", "llm", "langgraph", "openai", "replay", "debugging"]
+keywords = ["agents", "agentic-ai", "observability", "tracing", "llm", "langgraph", "openai", "crewai", "autogen", "replay", "record-replay", "debugging", "mcp", "httpx", "cli"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
@@ -92,6 +92,11 @@ agent-trace-mcp = "agent_trace.mcp_server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_trace"]
+
+[tool.hatch.build]
+exclude = [
+  ".venv*/",
+]
 
 [tool.ruff]
 target-version = "py310"
