@@ -3,6 +3,20 @@
 All notable changes to agent-trace are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Security
+- `codeql.yml` was the one workflow file still referencing third-party
+  GitHub Actions by mutable major-version tag (`actions/checkout@v4`,
+  `github/codeql-action/{init,autobuild,analyze}@v3`) instead of a pinned
+  commit SHA — every other workflow (`ci.yml`, `release.yml`,
+  `benchmark.yml`, `scorecard.yml`) was already SHA-pinned. Pinned all four
+  steps to the same commit SHAs already used elsewhere in the repo for
+  these exact tags (`actions/checkout` v4 →
+  `3d3c42e5aac5ba805825da76410c181273ba90b1`, `github/codeql-action` v3 →
+  `e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81`), verified against the GitHub
+  API as real commits on the respective upstream repos.
+
 ## [0.1.8] - 2026-07-20
 
 ### Fixed
