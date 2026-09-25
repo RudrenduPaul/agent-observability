@@ -5,6 +5,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- npm 0.1.9: republished through npm Trusted Publishing with provenance, no code changes
+
 ### Security
 - `codeql.yml` was the one workflow file still referencing third-party
   GitHub Actions by mutable major-version tag (`actions/checkout@v4`,
