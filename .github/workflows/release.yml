@@ -5,6 +5,9 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: read
+
 jobs:
   release:
     name: Build and publish to PyPI
@@ -42,7 +45,7 @@ jobs:
       # active Python environment; outputs CycloneDX 1.6 by default.
       - name: Generate SBOM (JSON + XML)
         run: |
-          pip install cyclonedx-bom==4.5.0
+          pip install --require-hashes -r .github/requirements/sbom.txt
           cyclonedx-py environment --of JSON -o sbom.json
           cyclonedx-py environment --of XML  -o sbom.xml
 
