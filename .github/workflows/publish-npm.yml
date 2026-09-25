@@ -1,0 +1,33 @@
+name: Publish npm
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish agent-observability-trace-cli to npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: npm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Use npm 11.5.1 or newer (required for Trusted Publishing)
+        run: npm install -g npm@latest
+      - name: Check wrapper syntax
+        run: node --check bin/agent-trace.js
+      - name: Check package contents
+        run: npm pack --dry-run
+      - name: Publish to npm (Trusted Publishing, provenance is automatic)
+        run: npm publish --access public
