@@ -109,6 +109,7 @@ ignore = [
     "S101",      # assert is fine in tests
     "ANN401",    # Any is sometimes unavoidable in interop code
     "PLR0913",   # too many arguments — integration callbacks have many
+    "PLR0917",   # too many positional arguments, same rationale as PLR0913 (stable since ruff 0.16)
     "PLR2004",   # magic values are fine in tests/benchmarks
     "PLC0415",   # lazy imports inside functions are intentional for optional deps
     "B010",      # setattr with constant name is intentional to bypass mypy method-assign checks
